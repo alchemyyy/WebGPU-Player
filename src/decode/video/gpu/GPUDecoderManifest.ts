@@ -124,8 +124,9 @@ export type GPUDecoderManifestErrorCode =
     | 'name-empty'
     | 'output-duplicate'
     | 'output-format'
+    | 'packet-expression'
+    | 'packet-identifier'
     | 'packet-size'
-    | 'packet-syntax'
     | 'parser-syntax'
     | 'parser-version'
     | 'references-limit'
@@ -230,7 +231,7 @@ type ManifestDraft = {
     name: string
     openRepeat: OpenRepeat | null
     outputFormats: GPUDecoderOutputFormat[] | null
-    packetByteLength: number
+    packetByteLength: PassExpression
     parser: number | null
     references: number
     reorder: number
@@ -244,6 +245,7 @@ const DISPATCH_EXPRESSION_CODES: ExpressionCodes = { expression: 'dispatch-expre
 const REPEAT_EXPRESSION_CODES: ExpressionCodes = { expression: 'repeat-expression', identifier: 'repeat-identifier' };
 const STATE_SIZE_CODES: SizeCodes = { expression: 'state-expression', identifier: 'state-identifier', size: 'state-size' };
 const BUFFER_SIZE_CODES: SizeCodes = { expression: 'buffer-expression', identifier: 'buffer-identifier', size: 'buffer-size' };
+const PACKET_SIZE_CODES: SizeCodes = { expression: 'packet-expression', identifier: 'packet-identifier', size: 'packet-size' };
 
 /** Quotes header text in a detail, so an empty or spaced value stays visible. */
 function quote(text: string): string {
@@ -294,15 +296,6 @@ function splitTopLevel(text: string): string[] {
     }
     parts.push(text.slice(partStart).trim());
     return parts;
-}
-
-/** Parses a byte count with an optional B, KiB, or MiB unit. */
-function parseByteLength(text: string, line: number, code: GPUDecoderManifestErrorCode): number {
-    const match = SIZE_PATTERN.exec(text);
-    if (!match) {
-        throw new GPUDecoderManifestError(code, quote(text), line);
-    }
-    return Number(match[1]) * getUnitByteLength(match[2]);
 }
 
 /** Requires a byte length within [minimum, maximum], reporting `<subject> <value> < <minimum>` or `<subject> <value> > <maximum>`. */
@@ -641,8 +634,8 @@ function applyDirective(draft: ManifestDraft, directive: DecoderHeaderDirective)
             draft.reorder = parseCount(value, line, 'reorder-syntax', 'reorder-limit', GPU_DECODER_MAXIMUM_REORDER);
             return;
         case 'packet':
-            draft.packetByteLength = parseByteLength(value, line, 'packet-syntax');
-            requireByteRange(draft.packetByteLength, MINIMUM_BYTE_LENGTH, GPU_DECODE_MAXIMUM_PACKET_BYTE_LENGTH, line, 'packet-size', '');
+            // The session checks an expression's value for each stream against the same bounds
+            draft.packetByteLength = parseSizeExpression(value, line, PACKET_SIZE_CODES, MINIMUM_BYTE_LENGTH, GPU_DECODE_MAXIMUM_PACKET_BYTE_LENGTH, '');
             return;
         case 'state':
             draft.stateByteLength = parseSizeExpression(value, line, STATE_SIZE_CODES, EMPTY_STATE_BYTE_LENGTH, MAXIMUM_STORAGE_BUFFER_BINDING_SIZE, '');
@@ -796,7 +789,7 @@ function parseHeaderDraft(source: string): ParsedHeader {
         name: '',
         openRepeat: null,
         outputFormats: null,
-        packetByteLength: 0,
+        packetByteLength: { kind: 'number', value: 0 },
         parser: null,
         references: 0,
         reorder: 0,

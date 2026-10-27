@@ -24,7 +24,7 @@ import { createGPUDecoderBindGroupLayoutEntries, createGPUDecoderModule } from '
 import type { GPUDecoderDispatch, GPUDecoderErrorRecovery, GPUDecoderManifest } from 'webgpu-player/decode/video/gpu/GPUDecodeTypes';
 import { getGPUDecoderVectorFormats } from 'webgpu-player/decode/video/gpu/GPUDecoderVerification';
 
-import { loadDecoderProjectVideoPackage, readDecoderProjectSource } from '../../../test/helpers/decoderPackages';
+import { loadDecoderProjectVideoPackage, readDecoderProjectSource, requireFixedPacketByteLength } from '../../../test/helpers/decoderPackages';
 import { DECODERS_DIRECTORY } from '../../../test/helpers/enginePaths';
 import { installWebGPUGlobals } from '../../../test/decode/video/gpu/webGPUGlobals';
 
@@ -158,7 +158,7 @@ describe('the VC-1 decoder package', () => {
         expect(manifest.parser).toBe(GPU_DECODER_PARSER_ABI_VERSION);
         expect(manifest.references).toBe(ANCHOR_REFERENCE_COUNT);
         expect(manifest.reorder).toBe(ANCHOR_OUTPUT_DELAY);
-        expect(manifest.packetByteLength).toBeLessThanOrEqual(GPU_DECODE_MAXIMUM_PACKET_BYTE_LENGTH);
+        expect(requireFixedPacketByteLength(manifest)).toBeLessThanOrEqual(GPU_DECODE_MAXIMUM_PACKET_BYTE_LENGTH);
     });
 
     it('composes with the prelude of its output format, its body declaring every entry point it dispatches and none of the parse stage', () => {

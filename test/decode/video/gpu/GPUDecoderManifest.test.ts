@@ -371,7 +371,14 @@ const REJECTION_CASES: readonly RejectionCase[] = [
         quote(CAPITALIZED_MONOCHROME_VALUE)
     ],
     [ 'a repeated monochrome', [ ...MINIMAL_HEADER, MONOCHROME_DIRECTIVE_LINE, MONOCHROME_DIRECTIVE_LINE ], APPENDED_LINE + 1, 'directive-repeated', quote('monochrome') ],
-    [ 'a size with an unknown unit', replaceHeaderLine(MINIMAL_HEADER, 'packet', `//! packet: ${MALFORMED_SIZE}`), PACKET_LINE, 'packet-syntax', quote(MALFORMED_SIZE) ],
+    [
+        'a packet size with an unknown unit',
+        replaceHeaderLine(MINIMAL_HEADER, 'packet', `//! packet: ${MALFORMED_SIZE}`),
+        PACKET_LINE,
+        'packet-expression',
+        `${quote(MALFORMED_SIZE)} ${getExpressionErrorMessage(MALFORMED_SIZE)}`
+    ],
+    [ 'a packet size on another fact', replaceHeaderLine(MINIMAL_HEADER, 'packet', `//! packet: ${FOREIGN_FACT} * 4`), PACKET_LINE, 'packet-identifier', quote(FOREIGN_FACT) ],
     [
         'an oversized packet',
         replaceHeaderLine(MINIMAL_HEADER, 'packet', `//! packet: ${OVERSIZED_PACKET_MEBIBYTES} MiB`),
@@ -685,7 +692,7 @@ describe('parseGPUDecoderManifest', () => {
         expect(manifest.parser).toBe(GPU_DECODER_PARSER_ABI_VERSION);
         expect(manifest.references).toBe(REFERENCES);
         expect(manifest.reorder).toBe(REORDER);
-        expect(manifest.packetByteLength).toBe(PACKET_MEBIBYTES * MEBIBYTE);
+        expect(manifest.packetByteLength).toEqual({ kind: 'number', value: PACKET_MEBIBYTES * MEBIBYTE });
         expect(manifest.stateByteLength).toEqual({ kind: 'number', value: STATE_KIBIBYTES * KIBIBYTE });
         expect(manifest.buffers.map(buffer => [ buffer.name, buffer.indirect ])).toEqual([
             [ 'sliceDispatch', true ],
@@ -743,6 +750,12 @@ describe('parseGPUDecoderManifest', () => {
         // An expression that evaluates below the indirect minimum parses; the session reports it as 'buffer-size'
         expect(evaluatePassExpression(manifest.buffers[0].byteLength, facts)).toBe(0);
         expect(manifest.buffers[0].indirect).toBe(true);
+    });
+
+    it('sizes the packet by an expression over the stream and the output format, which the session checks against its bounds', () => {
+        const manifest = parseGPUDecoderManifest(createSource(replaceHeaderLine(MINIMAL_HEADER, 'packet', `//! packet: ${WHOLE_SIZE}`)));
+
+        expect(evaluatePassExpression(manifest.packetByteLength, getGPUDecoderFacts(SIZE_STREAM, SIZE_FORMAT))).toBe(SIZE_STREAM_SAMPLE_COUNT);
     });
 
     it('joins several accepts conditions so that all of them must hold', () => {

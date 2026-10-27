@@ -119,8 +119,8 @@ export type GPUDecoderManifest = {
     name: string
     /** The planar formats it writes; a session decodes into one of them. */
     outputFormats: readonly GPUDecoderOutputFormat[]
-    /** The largest packet in bytes, which sizes the packet ring. */
-    packetByteLength: number
+    /** The largest packet in bytes, a size expression the session evaluates for each stream, which sizes the packet ring. */
+    packetByteLength: PassExpression
     /** The version of the parser interface its package's module implements, or null for a decoder that reads the container's packets. */
     parser: number | null
     /** The pool slots the decoder keeps as references. */

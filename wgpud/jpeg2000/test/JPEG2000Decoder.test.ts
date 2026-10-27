@@ -25,7 +25,7 @@ import { createGPUDecoderBindGroupLayoutEntries, createGPUDecoderModule } from '
 import type { GPUDecoderBuffer, GPUDecoderDispatch, GPUDecoderManifest } from 'webgpu-player/decode/video/gpu/GPUDecodeTypes';
 import { getGPUDecoderVectorFormats } from 'webgpu-player/decode/video/gpu/GPUDecoderVerification';
 
-import { loadDecoderProjectVideoPackage, readDecoderProjectSource } from '../../../test/helpers/decoderPackages';
+import { loadDecoderProjectVideoPackage, readDecoderProjectSource, requireFixedPacketByteLength } from '../../../test/helpers/decoderPackages';
 import { DECODERS_DIRECTORY } from '../../../test/helpers/enginePaths';
 import { installWebGPUGlobals } from '../../../test/decode/video/gpu/webGPUGlobals';
 
@@ -315,8 +315,8 @@ describe('the WGSL JPEG 2000 decoder', () => {
     it('takes packets up to the record bound its parser enforces, within the packet ring\'s bound', () => {
         const recordByteLength = Number(requireMatch(RECORD_MAXIMUM_BYTE_LENGTH_PATTERN, manifest.body)[1]);
 
-        expect(manifest.packetByteLength).toBe(recordByteLength);
-        expect(manifest.packetByteLength).toBeLessThanOrEqual(GPU_DECODE_MAXIMUM_PACKET_BYTE_LENGTH);
+        expect(requireFixedPacketByteLength(manifest)).toBe(recordByteLength);
+        expect(requireFixedPacketByteLength(manifest)).toBeLessThanOrEqual(GPU_DECODE_MAXIMUM_PACKET_BYTE_LENGTH);
     });
 
     it.each(GPU_DECODER_OUTPUT_FORMATS)('composes with the prelude of %s, its body declaring every entry point it dispatches', (format: GPUDecoderOutputFormat) => {

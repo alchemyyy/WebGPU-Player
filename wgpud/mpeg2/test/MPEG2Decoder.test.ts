@@ -23,7 +23,7 @@ import { createGPUDecoderBindGroupLayoutEntries, createGPUDecoderModule } from '
 import type { GPUDecoderBuffer, GPUDecoderDispatch, GPUDecoderManifest } from 'webgpu-player/decode/video/gpu/GPUDecodeTypes';
 import { getGPUDecoderVectorFormats } from 'webgpu-player/decode/video/gpu/GPUDecoderVerification';
 
-import { loadDecoderProjectVideoPackage, readDecoderProjectSource } from '../../../test/helpers/decoderPackages';
+import { loadDecoderProjectVideoPackage, readDecoderProjectSource, requireFixedPacketByteLength } from '../../../test/helpers/decoderPackages';
 import { DECODERS_DIRECTORY } from '../../../test/helpers/enginePaths';
 import { installWebGPUGlobals } from '../../../test/decode/video/gpu/webGPUGlobals';
 
@@ -246,7 +246,7 @@ describe('the WGSL MPEG-2 decoder', () => {
         expect(manifest.parser).toBe(PARSER_INTERFACE_VERSION);
         expect(manifest.references).toBe(ANCHOR_REFERENCE_COUNT);
         expect(manifest.reorder).toBe(REORDER_DEPTH);
-        expect(manifest.packetByteLength).toBeLessThanOrEqual(GPU_DECODE_MAXIMUM_PACKET_BYTE_LENGTH);
+        expect(requireFixedPacketByteLength(manifest)).toBeLessThanOrEqual(GPU_DECODE_MAXIMUM_PACKET_BYTE_LENGTH);
     });
 
     it.each(OUTPUT_FORMATS)('composes with the prelude of %s, its body declaring every entry point it dispatches', (format: GPUDecoderOutputFormat) => {
@@ -295,7 +295,7 @@ describe('the WGSL MPEG-2 decoder', () => {
         const fullHDMacroblocks = FULL_HD_MACROBLOCK_COLUMNS * FULL_HD_MACROBLOCK_ROWS;
         const largestMacroblocks = (LARGEST_SIDE / MACROBLOCK_SIZE) ** 2;
         const blockEntryBytes = COEFFICIENTS_PER_BLOCK * BYTES_PER_WORD * getBlocksPerMacroblock(format);
-        const packetEntryBytes = ENTRIES_PER_PACKET_BYTE * BYTES_PER_WORD * manifest.packetByteLength;
+        const packetEntryBytes = ENTRIES_PER_PACKET_BYTE * BYTES_PER_WORD * requireFixedPacketByteLength(manifest);
 
         expect(evaluateBufferByteLength(requireBuffer(manifest, MACROBLOCKS_BUFFER_NAME), fullHD)).toBe(fullHDMacroblocks * MACROBLOCK_RECORD_BYTE_LENGTH);
         expect(evaluateBufferByteLength(requireBuffer(manifest, MACROBLOCKS_BUFFER_NAME), largest)).toBe(largestMacroblocks * MACROBLOCK_RECORD_BYTE_LENGTH);

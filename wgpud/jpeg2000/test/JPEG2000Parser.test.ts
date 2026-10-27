@@ -15,7 +15,7 @@ import { createGPUDecoderModule } from 'webgpu-player/decode/video/gpu/GPUDecode
 import type { GPUDecoderManifest } from 'webgpu-player/decode/video/gpu/GPUDecodeTypes';
 import { parseGPUDecoderVectorSet, type GPUDecoderVector } from 'webgpu-player/decode/video/gpu/GPUDecoderVectorSet';
 
-import { loadDecoderProjectVideoPackage, readDecoderProjectVectors } from '../../../test/helpers/decoderPackages';
+import { loadDecoderProjectVideoPackage, readDecoderProjectVectors, requireFixedPacketByteLength } from '../../../test/helpers/decoderPackages';
 
 const PROJECT = 'jpeg2000';
 // Parse workers the split decode spreads each picture's tiles over
@@ -286,7 +286,7 @@ describe('GPUDecoderParserInstance on the JPEG 2000 package\'s parser', () => {
                 expect(readHeaderField(record, 'MAGIC'), format).toBe(requireRecordField('MAGIC'));
                 expect(readHeaderField(record, 'VERSION'), format).toBe(requireRecordField('VERSION'));
                 expect(readHeaderField(record, 'BYTE_LENGTH'), format).toBe(record.byteLength);
-                expect(record.byteLength, format).toBeLessThanOrEqual(manifest.packetByteLength);
+                expect(record.byteLength, format).toBeLessThanOrEqual(requireFixedPacketByteLength(manifest));
                 expect(readHeaderField(record, 'WIDTH'), format).toBe(vector.stream.visibleRectangle.width);
                 expect(readHeaderField(record, 'HEIGHT'), format).toBe(vector.stream.visibleRectangle.height);
                 expect(readHeaderField(record, 'FORMAT_ERROR'), format).toBe(0);
@@ -440,7 +440,7 @@ describe('GPUDecoderParserInstance on the JPEG 2000 package\'s parser', () => {
             try {
                 const output = instance.decode(damaged);
                 for (const picture of output.pictures) {
-                    if (picture.record.byteLength > manifest.packetByteLength) {
+                    if (picture.record.byteLength > requireFixedPacketByteLength(manifest)) {
                         failures.push(`${index}: ${picture.record.byteLength} bytes`);
                     }
                 }

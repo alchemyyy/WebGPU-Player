@@ -21,7 +21,7 @@ import {
     GPU_DECODER_PARSER_STATUS
 } from 'webgpu-player/decode/video/gpu/GPUDecoderParser';
 import { parseGPUDecoderManifest } from 'webgpu-player/decode/video/gpu/GPUDecoderManifest';
-import { GPU_DECODER_MAXIMUM_REPEAT_COUNT, GPU_DECODER_PICTURE_FORMAT } from 'webgpu-player/decode/video/gpu/GPUDecodeTypes';
+import { GPU_DECODER_MAXIMUM_REPEAT_COUNT, GPU_DECODER_PICTURE_FORMAT, type GPUDecoderManifest } from 'webgpu-player/decode/video/gpu/GPUDecodeTypes';
 
 import { DECODER_OUTPUT_DIRECTORY, DECODERS_DIRECTORY, ENGINE_ROOT } from './enginePaths';
 import {
@@ -347,4 +347,13 @@ export async function loadDecoderProjectAudioSource(project: string): Promise<Au
         throw new Error(`Expected an audio decoder package, got '${decoderPackage.kind}'`);
     }
     return { manifest: decoderPackage.manifest, memory: decoderPackage.memory, module: decoderPackage.module };
+}
+
+/** Returns the packet size of a header that declares a fixed one; a header whose packet size is an expression of the stream fails. */
+export function requireFixedPacketByteLength(manifest: GPUDecoderManifest): number {
+    const packetByteLength = manifest.packetByteLength;
+    if (packetByteLength.kind !== 'number') {
+        throw new Error(`${manifest.name} sizes its packets by an expression of the stream`);
+    }
+    return packetByteLength.value;
 }

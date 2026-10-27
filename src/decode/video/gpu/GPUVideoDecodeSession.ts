@@ -519,6 +519,8 @@ export default class GPUVideoDecodeSession {
     // The index the next submitted picture takes, counted in decode order since the last reset
     private nextPictureIndex = 0;
     private readonly ownedBuffers: GPUBuffer[] = [];
+    // The largest packet the stream takes, which the header's packet size gives for its stream facts
+    private readonly packetByteLength: number;
     private packetIndex = 0;
     private readonly packetRing: GPUBuffer;
     private readonly packetRingByteLength: number;
@@ -560,7 +562,8 @@ export default class GPUVideoDecodeSession {
             stream.visibleRectangle
         );
         try {
-            this.packetRingByteLength = getGPUDecoderPacketRingByteLength(manifest);
+            this.packetByteLength = resources.sizes.packetByteLength;
+            this.packetRingByteLength = getGPUDecoderPacketRingByteLength(resources.sizes);
             this.packetRing = this.createBuffer('packet ring', this.packetRingByteLength, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
             this.packetUniforms = this.createBuffer(
                 'packet uniforms',
@@ -685,8 +688,8 @@ export default class GPUVideoDecodeSession {
         if (this.destroyed || this.failure) {
             return;
         }
-        if (packet.data.byteLength > this.manifest.packetByteLength) {
-            this.fail({ code: 'packet-size', detail: `${packet.data.byteLength} > ${this.manifest.packetByteLength}` });
+        if (packet.data.byteLength > this.packetByteLength) {
+            this.fail({ code: 'packet-size', detail: `${packet.data.byteLength} > ${this.packetByteLength}` });
             return;
         }
         if (packet.repeatCounts !== null && packet.repeatCounts.length !== this.manifest.repeats.length) {

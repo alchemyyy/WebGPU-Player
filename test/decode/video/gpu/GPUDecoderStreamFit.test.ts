@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { GPUDecoderOutputFormat } from 'webgpu-player/decode/video/gpu/GPUDecodeFormats';
+import { GPU_DECODE_MAXIMUM_PACKET_BYTE_LENGTH } from 'webgpu-player/decode/video/gpu/GPUDecodeLimits';
 import { parseGPUDecoderManifest } from 'webgpu-player/decode/video/gpu/GPUDecoderManifest';
 import {
     chooseGPUDecodeSessionStream,
@@ -50,11 +51,17 @@ const PACKET_BYTE_LENGTH = 65_536;
 // A packet past the limit a small device's ring holds
 const LARGE_PACKET_BYTE_LENGTH = SMALL_BUFFER_LIMIT;
 const WORD_BYTE_LENGTH = 4;
+// A packet size that grows with the stream, as AV1's records do, and its bytes per luma sample of the pool
+const PACKET_BYTES_PER_LUMA_SAMPLE = 8;
+const PACKET_EXPRESSION = `${PACKET_BYTES_PER_LUMA_SAMPLE} * stream.width * stream.height`;
+// A packet size past the 512 MiB a header may declare once a stream is this large
+const OVERSIZED_PACKET_BYTES_PER_LUMA_SAMPLE = 4_096;
+const OVERSIZED_PACKET_EXPRESSION = `stream.width * stream.height * ${OVERSIZED_PACKET_BYTES_PER_LUMA_SAMPLE}`;
 
 type DecoderOptions = {
     accepts?: string
     buffers?: readonly string[]
-    packetByteLength?: number
+    packet?: number | string
     state?: string
 };
 
@@ -67,7 +74,7 @@ function createManifest(options: DecoderOptions = {}): GPUDecoderManifest {
         '//! decoder: video',
         `//! accepts: ${accepts}`,
         `//! output: ${FORMAT}`,
-        `//! packet: ${options.packetByteLength ?? PACKET_BYTE_LENGTH}`,
+        `//! packet: ${options.packet ?? PACKET_BYTE_LENGTH}`,
         `//! state: ${options.state ?? STATE_BYTE_LENGTH}`,
         ...(options.buffers ?? [ `${FRAMES_BUFFER_NAME}, ${FRAMES_BYTES_PER_LUMA_SAMPLE} * stream.width * stream.height` ]).map(buffer => `//! buffer: ${buffer}`),
         '//! dispatch: decodePicture, 1'
@@ -78,10 +85,24 @@ function createManifest(options: DecoderOptions = {}): GPUDecoderManifest {
 const CONTAINER_STREAM = createGPUDecodeStreamFacts(CONTAINER_WIDTH, CONTAINER_HEIGHT, FORMAT);
 
 describe('evaluateGPUDecoderBufferSizes', () => {
-    it('evaluates the state and each scratch buffer for the stream', () => {
+    it('evaluates the state, each scratch buffer, and the largest packet for the stream', () => {
         const sizes = evaluateGPUDecoderBufferSizes(createManifest(), CONTAINER_STREAM, FORMAT);
 
-        expect(sizes).toEqual({ bufferByteLengths: [ FRAMES_BYTES_PER_LUMA_SAMPLE * CONTAINER_WIDTH * CONTAINER_CODED_HEIGHT ], stateByteLength: STATE_BYTE_LENGTH });
+        expect(sizes).toEqual({
+            bufferByteLengths: [ FRAMES_BYTES_PER_LUMA_SAMPLE * CONTAINER_WIDTH * CONTAINER_CODED_HEIGHT ],
+            packetByteLength: PACKET_BYTE_LENGTH,
+            stateByteLength: STATE_BYTE_LENGTH
+        });
+    });
+
+    it('sizes a packet whose size is an expression for each stream, so a larger stream takes larger packets', () => {
+        const manifest = createManifest({ packet: PACKET_EXPRESSION });
+        const declaredStream = createGPUDecodeStreamFacts(DECLARED_PICTURE.width, DECLARED_PICTURE.height, FORMAT);
+
+        expect(evaluateGPUDecoderBufferSizes(manifest, CONTAINER_STREAM, FORMAT).packetByteLength)
+            .toBe(PACKET_BYTES_PER_LUMA_SAMPLE * CONTAINER_WIDTH * CONTAINER_CODED_HEIGHT);
+        expect(evaluateGPUDecoderBufferSizes(manifest, declaredStream, FORMAT).packetByteLength)
+            .toBe(PACKET_BYTES_PER_LUMA_SAMPLE * DECLARED_CODED_WIDTH * DECLARED_CODED_HEIGHT);
     });
 
     it('throws the buffer-size failure for a buffer whose size is no byte count for the stream', () => {
@@ -90,20 +111,32 @@ describe('evaluateGPUDecoderBufferSizes', () => {
         expect(() => evaluateGPUDecoderBufferSizes(manifest, CONTAINER_STREAM, FORMAT)).toThrow(GPUVideoDecodeError);
         expect(() => evaluateGPUDecoderBufferSizes(manifest, CONTAINER_STREAM, FORMAT)).toThrow(`buffer-size: ${FRAMES_BUFFER_NAME}`);
     });
+
+    it('throws the packet-size failure for a packet past the largest a header may declare for the stream', () => {
+        const manifest = createManifest({ packet: OVERSIZED_PACKET_EXPRESSION });
+
+        expect(() => evaluateGPUDecoderBufferSizes(manifest, CONTAINER_STREAM, FORMAT))
+            .toThrow(`packet-size: ${CONTAINER_WIDTH * CONTAINER_CODED_HEIGHT * OVERSIZED_PACKET_BYTES_PER_LUMA_SAMPLE} > ${GPU_DECODE_MAXIMUM_PACKET_BYTE_LENGTH}`);
+    });
 });
 
 describe('findGPUDecoderBufferLimitFailure', () => {
     it('names the first buffer the device cannot hold whole: the state, a scratch buffer, then the packet ring', () => {
-        const manifest = createManifest({ packetByteLength: LARGE_PACKET_BYTE_LENGTH });
-        const ringByteLength = getGPUDecoderPacketRingByteLength(manifest);
+        const manifest = createManifest({ packet: LARGE_PACKET_BYTE_LENGTH });
+        const ringByteLength = 2 * LARGE_PACKET_BYTE_LENGTH;
+        const packetByteLength = LARGE_PACKET_BYTE_LENGTH;
 
-        expect(findGPUDecoderBufferLimitFailure(manifest, { bufferByteLengths: [ 1 ], stateByteLength: SMALL_BUFFER_LIMIT + 1 }, SMALL_BUFFER_LIMIT))
+        expect(findGPUDecoderBufferLimitFailure(manifest, { bufferByteLengths: [ 1 ], packetByteLength, stateByteLength: SMALL_BUFFER_LIMIT + 1 }, SMALL_BUFFER_LIMIT))
             .toEqual({ code: 'state-size', detail: `${SMALL_BUFFER_LIMIT + WORD_BYTE_LENGTH} > ${SMALL_BUFFER_LIMIT}` });
-        expect(findGPUDecoderBufferLimitFailure(manifest, { bufferByteLengths: [ SMALL_BUFFER_LIMIT + 1 ], stateByteLength: 0 }, SMALL_BUFFER_LIMIT))
+        expect(findGPUDecoderBufferLimitFailure(manifest, { bufferByteLengths: [ SMALL_BUFFER_LIMIT + 1 ], packetByteLength, stateByteLength: 0 }, SMALL_BUFFER_LIMIT))
             .toEqual({ code: 'buffer-size', detail: `${FRAMES_BUFFER_NAME} ${SMALL_BUFFER_LIMIT + WORD_BYTE_LENGTH} > ${SMALL_BUFFER_LIMIT}` });
-        expect(findGPUDecoderBufferLimitFailure(manifest, { bufferByteLengths: [ 1 ], stateByteLength: 0 }, SMALL_BUFFER_LIMIT))
+        expect(findGPUDecoderBufferLimitFailure(manifest, { bufferByteLengths: [ 1 ], packetByteLength, stateByteLength: 0 }, SMALL_BUFFER_LIMIT))
             .toEqual({ code: 'packet-size', detail: `ring ${ringByteLength} > ${SMALL_BUFFER_LIMIT}` });
-        expect(findGPUDecoderBufferLimitFailure(manifest, { bufferByteLengths: [ 1 ], stateByteLength: 0 }, LARGE_BUFFER_LIMIT)).toBeNull();
+        expect(findGPUDecoderBufferLimitFailure(manifest, { bufferByteLengths: [ 1 ], packetByteLength, stateByteLength: 0 }, LARGE_BUFFER_LIMIT)).toBeNull();
+    });
+
+    it('rings two word-aligned packets of the stream\'s largest packet', () => {
+        expect(getGPUDecoderPacketRingByteLength({ bufferByteLengths: [], packetByteLength: WORD_BYTE_LENGTH + 1, stateByteLength: 0 })).toBe(4 * WORD_BYTE_LENGTH);
     });
 });
 
@@ -155,6 +188,17 @@ describe('findGPUDecoderStreamFitFailure', () => {
         const manifest = createManifest({ state: 'stream.width - 1024' });
 
         expect(findGPUDecoderStreamFitFailure(manifest, CONTAINER_STREAM, FORMAT, LARGE_BUFFER_LIMIT)).toMatch(/^state-size: /);
+    });
+
+    it('refuses a packet ring the device cannot hold for a stream whose packets grow with it, and fits it for a smaller stream', () => {
+        // A decoder whose only large buffer is its ring, on a device whose limit holds the smaller stream's ring and not the larger one's
+        const manifest = createManifest({ buffers: [ `${FRAMES_BUFFER_NAME}, 1` ], packet: PACKET_EXPRESSION });
+        const declaredStream = createGPUDecodeStreamFacts(DECLARED_PICTURE.width, DECLARED_PICTURE.height, FORMAT);
+        const declaredRing = 2 * PACKET_BYTES_PER_LUMA_SAMPLE * DECLARED_CODED_WIDTH * DECLARED_CODED_HEIGHT;
+        const limit = declaredRing - 1;
+
+        expect(findGPUDecoderStreamFitFailure(manifest, declaredStream, FORMAT, limit)).toBe(`packet-size: ring ${declaredRing} > ${limit}`);
+        expect(findGPUDecoderStreamFitFailure(manifest, CONTAINER_STREAM, FORMAT, limit)).toBeNull();
     });
 });
 
