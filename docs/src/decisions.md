@@ -160,6 +160,8 @@ These were settled on stock Chrome on Windows, with a Chromium 153 source audit.
   The worker now walks each packet once and passes the NAL units to both, as the AV1 path passes its OBUs, and the frame-pool route's HDR10+ queue walks its packet once.
   The split returns the input itself when it removes nothing, and a view of the input's leading bytes when it removes only trailing NAL units, as Dolby Vision streams carry their RPU and an interleaved EL after the BL.
   Only a removal ahead of a BL NAL unit rebuilds the BL, with four-byte start codes.
+  An Annex B packet from MPEG-TS or M2TS therefore reaches the native decoder with its own three-byte start codes, and with the zero bytes Mediabunny leaves at its end when the stream puts zeros ahead of the next start code.
+  Chromium's hardware HEVC decoder takes both forms (10-27): Main 10, HDR10, and Dolby Vision Profile 8.1 streams in MPEG-TS and M2TS, unchanged packets and leading-bytes views alike, decoded every frame on the native route with the timestamps FFprobe reports.
   A buffer the engine allocated for one decode, a rebuilt BL, an AV1 temporal unit without its RPU, or a sanitized or color-neutralized access unit, moves into its `EncodedVideoChunk` through `transfer` instead of being copied.
   A packet's own bytes may share Mediabunny's read buffer, so they and any view of them are copied.
   The native decoder's own walks stay: its RASL check reads only the leading pictures after a key packet, its Chromium sanitizing only the first packet, and its color rewrite only key packets.
