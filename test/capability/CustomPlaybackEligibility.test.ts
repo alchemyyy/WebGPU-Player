@@ -282,9 +282,14 @@ function createCapabilities(): CustomDecodeCapabilities {
             av1: createCapability('av1', true),
             h264: createCapability('h264', true),
             hevc: createCapability('hevc', true),
+            h263: createNoEngineDecoderCapability('h263'),
             jpeg2000: createNoEngineDecoderCapability('jpeg2000'),
             mpeg1video: createNoEngineDecoderCapability('mpeg1video'),
             mpeg2video: createNoEngineDecoderCapability('mpeg2video'),
+            mpeg4: createNoEngineDecoderCapability('mpeg4'),
+            msmpeg4v1: createNoEngineDecoderCapability('msmpeg4v1'),
+            msmpeg4v2: createNoEngineDecoderCapability('msmpeg4v2'),
+            msmpeg4v3: createNoEngineDecoderCapability('msmpeg4v3'),
             vc1: createNoEngineDecoderCapability('vc1'),
             vp8: createCapability('vp8', true),
             wmv3: createNoEngineDecoderCapability('wmv3'),
@@ -5933,7 +5938,7 @@ describe('GPU video decode route', () => {
     const EIGHT_BIT_HEVC_PACKAGE = createVideoDecoderPackageForTest(createVideoDecoderSource({ id: 'hevc-8-bit', name: 'HEVC 8-bit', outputFormats: [ 'I420' ] }));
     const FIRST_TEN_BIT_HEVC_PACKAGE = createVideoDecoderPackageForTest(createVideoDecoderSource({ id: 'hevc-10-bit', name: 'HEVC 10-bit', outputFormats: [ 'I420P10' ] }));
     const SECOND_TEN_BIT_HEVC_PACKAGE = createVideoDecoderPackageForTest(createVideoDecoderSource({ id: 'hevc-10-bit-too', name: 'HEVC 10-bit too', outputFormats: [ 'I420P10' ] }));
-    const UNSUPPORTED_VIDEO_CODEC = 'mpeg4';
+    const UNSUPPORTED_VIDEO_CODEC = 'theora';
     const HDR10_STREAM = {
         ColorPrimaries: 'bt2020',
         ColorSpace: 'bt2020nc',
@@ -6862,7 +6867,7 @@ describe('AVI and codecs without a route', () => {
             .toBe(true);
     });
 
-    it.each([ 'mpeg4', 'MSMPEG4V3', 'h263', 'theora' ])('declines %s as a known codec without a route', (videoCodec) => {
+    it.each([ 'theora', 'THEORA' ])('declines %s as a known codec without a route', (videoCodec) => {
         expect(getCustomPlaybackEligibility(
             createAVIOptions(videoCodec, 'mp3'),
             createCapabilities(),
