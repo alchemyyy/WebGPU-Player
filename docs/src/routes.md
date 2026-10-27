@@ -13,7 +13,7 @@ A host calls these, in this order, for each playback:
 2. `CustomPlaybackRuntime.getCustomPlaybackRuntimeAvailability`, which fails without a secure context, Worker, `navigator.gpu`, or `VideoFrame`.
 3. `probeCustomDecodeCapabilities(item)`, the native-media audio probe, and the GPU authorizations the item needs (5 s each), before it advertises anything; see [Probes and caching](#probes-and-caching).
 4. `hasEligibleCustomVideoRoute`, to ask whether the runtime would present one item with the measured capabilities and authorizations.
-   It takes the GPU decoder packages a playback could use as `gpuVideoDecoderSummaries`, their codecs and output formats, since offers need the packages and the presenter's device; see [GPU decoders](#gpu-decoders).
+   It takes the GPU decoder packages a playback could use as `gpuVideoDecoderSummaries`, since offers need the packages and the presenter's device; see [GPU decoders](#gpu-decoders).
 5. `getCustomPlaybackEligibility`, when the session starts, with the route flags and authorized keys of `CustomPlaybackEligibilityOptions`.
    `allowRawSDR` needs only a settled `:sdr` raw key.
    `gpuVideoDecoders` holds the GPU decoder packages the host offers, from `PresentationSetup.getGPUVideoDecoderOffers`, and `allowFramePoolHDR` lets them present HDR; see [GPU decoders](#gpu-decoders).
@@ -138,8 +138,10 @@ A package may carry a parser module (`//! parser:`), which the selection carries
 HDR needs `allowFramePoolHDR`, which the host sets when it tone-maps.
 The route carries no Dolby Vision reconstruction or native color handling, so a compatible Dolby Vision base layer reaches it through step 1.4, and Profile 5 never does.
 
-`hasEligibleCustomVideoRoute` holds no offers, so a summary that names the stream's codec and lists its output format stands in for one, after the offers.
-It selects the route without a decoder, and leaves the `monochrome`, stream constraint, and buffer limit checks to the playback's offers.
+`hasEligibleCustomVideoRoute` holds no offers, so a `GPUVideoDecoderSummary` (`src/decode/video/gpu/GPUVideoDecoderCatalog.ts`) stands in for one, after the offers, and selects the route without a decoder.
+A summary names the package's codecs and output formats, and may carry the package's header and the buffer limit of the device a playback would decode on.
+`isGPUVideoDecoderSummaryFit` judges the stream as an offer would: by codec and format, then with a header by `monochrome` for a 4:0:0 stream and the `accepts` conditions, and with a limit by the frame pool, `state`, `buffer:`s, and packet ring.
+A summary without a header takes every stream of its codecs and formats, and leaves the other checks to the playback's offers.
 
 A package's self-test vectors run only when a host calls `verifyGPUDecoderPackage` (see [Decoder packages](decoder-packages.md)); eligibility never waits on them, and offering an unverified package is the host's choice.
 

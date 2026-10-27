@@ -480,7 +480,8 @@ Every start and seek is a new attempt on a new instance, which `audio_decoder_de
   The host passes them as the eligibility's `gpuVideoDecoders`.
 - The host passes its audio packages, in its order, as the eligibility's `audioDecoders`.
 - A host that fetches packages only when a playback needs them asks first what the playback decodes: `getGPUVideoDecodeTarget(options)` in `src/capability/CustomPlaybackEligibility.ts` names the video's codec and frame pool format, and `getPlaybackAudioCodec(options)` the codec of the audio track the eligibility selects.
-- Before a playback, a host passes what its video packages decode, their codecs and output formats, as `hasEligibleCustomVideoRoute`'s `gpuVideoDecoderSummaries`; see [GPU decoders](routes.md#gpu-decoders).
+- Before a playback, a host passes what its video packages decode as `hasEligibleCustomVideoRoute`'s `gpuVideoDecoderSummaries`: their codecs and output formats, and where it has them, each package's header and the device's buffer limit, so the summary runs the offers' fit check; see [GPU decoders](routes.md#gpu-decoders).
+  `parseGPUDecoderHeader` in `src/decode/video/gpu/GPUDecoderManifest.ts` reads a header without its body, such as a server's catalog carries, with every check of the manifest parser but the body's.
 - The eligibility prefers a native WebCodecs video route; otherwise it takes the first offer whose `accepts` conditions take the stream and whose pool, `state`, `buffer:`s, and packet ring each fit the buffer limit, on the `frame-pool` route with the `gpu` decoder backend.
   `findGPUDecoderStreamFitFailure` in `src/decode/video/gpu/GPUDecoderStreamFit.ts` checks them at the container's size.
   An HDR stream takes a package only when the host tone-maps frame-pool HDR, the `allowFramePoolHDR` presentation option.

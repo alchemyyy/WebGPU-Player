@@ -13,7 +13,7 @@ import { evaluateGPUDecoderByteLength, getGPUDecoderAcceptsFacts, getGPUDecoderF
 import { alignTo, createGPUFramePoolLayout, getGPUFramePoolSlotCount } from './GPUFramePool';
 import {
     GPUVideoDecodeError,
-    type GPUDecoderManifest,
+    type GPUDecoderHeader,
     type GPUDecoderPictureSize,
     type GPUDecodeStreamFacts,
     type GPUVideoDecodeFailure,
@@ -36,7 +36,7 @@ export type GPUDecoderBufferSizes = Readonly<{
  * Evaluates a decoder's state and scratch buffer sizes for the stream and format, each a whole byte count within its bounds.
  * Throws the 'state-size' or 'buffer-size' GPUVideoDecodeError with the value that failed.
  */
-export function evaluateGPUDecoderBufferSizes(manifest: GPUDecoderManifest, stream: GPUDecodeStreamFacts, format: GPUDecoderOutputFormat): GPUDecoderBufferSizes {
+export function evaluateGPUDecoderBufferSizes(manifest: GPUDecoderHeader, stream: GPUDecodeStreamFacts, format: GPUDecoderOutputFormat): GPUDecoderBufferSizes {
     const facts = getGPUDecoderFacts(stream, format);
     const state = evaluateGPUDecoderByteLength(manifest.stateByteLength, facts, EMPTY_STATE_BYTE_LENGTH, MAXIMUM_STORAGE_BUFFER_BINDING_SIZE);
     if (state.kind === 'invalid') {
@@ -55,7 +55,7 @@ export function evaluateGPUDecoderBufferSizes(manifest: GPUDecoderManifest, stre
 }
 
 /** Returns the byte length of a decoder's packet ring: its packets of the header's largest packet, each word aligned. */
-export function getGPUDecoderPacketRingByteLength(manifest: GPUDecoderManifest): number {
+export function getGPUDecoderPacketRingByteLength(manifest: GPUDecoderHeader): number {
     return alignTo(manifest.packetByteLength, BYTES_PER_WORD) * GPU_DECODE_PACKET_RING_PACKET_COUNT;
 }
 
@@ -64,7 +64,7 @@ export function getGPUDecoderPacketRingByteLength(manifest: GPUDecoderManifest):
  * the state as 'state-size', a scratch buffer as 'buffer-size', or the packet ring as 'packet-size'; null when every one fits.
  */
 export function findGPUDecoderBufferLimitFailure(
-    manifest: GPUDecoderManifest,
+    manifest: GPUDecoderHeader,
     sizes: GPUDecoderBufferSizes,
     maximumBufferByteLength: number
 ): GPUVideoDecodeFailure | null {
@@ -97,7 +97,7 @@ export function getGPUDecodeStreamPictureSize(stream: GPUDecodeStreamFacts): GPU
  * before the pool's rounding, so a decoder can bound its pictures as its codec's levels do.
  */
 export function acceptsGPUDecodeStream(
-    manifest: GPUDecoderManifest,
+    manifest: GPUDecoderHeader,
     stream: GPUDecodeStreamFacts,
     format: GPUDecoderOutputFormat,
     pictureSize: GPUDecoderPictureSize = getGPUDecodeStreamPictureSize(stream)
@@ -115,7 +115,7 @@ export function acceptsGPUDecodeStream(
 
 /** Returns the 'accepts' failure of a pool and picture size the decoder's `accepts` conditions refuse at the stream's bit depth, or null when they take them. */
 function findAcceptsFailure(
-    manifest: GPUDecoderManifest,
+    manifest: GPUDecoderHeader,
     stream: GPUDecodeStreamFacts,
     format: GPUDecoderOutputFormat,
     pictureSize: GPUDecoderPictureSize
@@ -131,7 +131,7 @@ function findAcceptsFailure(
 
 /** Returns `accepts: picture <width>x<height> in pool <width>x<height> at <depth> bits` when a decoder's `accepts` conditions refuse a stream and picture size, or null. */
 export function findGPUDecoderAcceptsFailure(
-    manifest: GPUDecoderManifest,
+    manifest: GPUDecoderHeader,
     stream: GPUDecodeStreamFacts,
     format: GPUDecoderOutputFormat,
     pictureSize: GPUDecoderPictureSize = getGPUDecodeStreamPictureSize(stream)
@@ -145,7 +145,7 @@ export function findGPUDecoderAcceptsFailure(
  * its frame pool and its state, scratch buffers, and packet ring; a null limit judges `accepts` alone.
  */
 function findStreamFitFailure(
-    manifest: GPUDecoderManifest,
+    manifest: GPUDecoderHeader,
     stream: GPUDecodeStreamFacts,
     format: GPUDecoderOutputFormat,
     maximumBufferByteLength: number | null,
@@ -174,7 +174,7 @@ function findStreamFitFailure(
  * its frame pool ('pool-size', or the pool layout's own failure), then its state, scratch buffers, and packet ring; null when it fits.
  */
 export function findGPUDecoderStreamFitFailure(
-    manifest: GPUDecoderManifest,
+    manifest: GPUDecoderHeader,
     stream: GPUDecodeStreamFacts,
     format: GPUDecoderOutputFormat,
     maximumBufferByteLength: number,
@@ -212,7 +212,7 @@ export type GPUDecodeSessionStreamChoice =
  * the pool before it grown to the picture; when the decoder fits neither, the change is refused with the fallback's failure.
  */
 export function chooseGPUDecodeSessionStream(
-    manifest: GPUDecoderManifest,
+    manifest: GPUDecoderHeader,
     format: GPUDecoderOutputFormat,
     stream: GPUDecodeStreamFacts,
     maximumPictureSize: GPUDecoderPictureSize | null,
@@ -253,7 +253,7 @@ export function chooseGPUDecodeSessionStream(
  * Throws the GPUVideoDecodeError of a stream change the decoder or the device refuses.
  */
 export function selectGPUDecodeSessionStream(
-    manifest: GPUDecoderManifest,
+    manifest: GPUDecoderHeader,
     format: GPUDecoderOutputFormat,
     stream: GPUDecodeStreamFacts,
     maximumPictureSize: GPUDecoderPictureSize | null,

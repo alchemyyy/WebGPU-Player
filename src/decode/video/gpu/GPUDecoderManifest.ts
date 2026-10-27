@@ -31,6 +31,7 @@ import {
     type GPUDecoderDispatch,
     type GPUDecoderDispatchRepeat,
     type GPUDecoderErrorRecovery,
+    type GPUDecoderHeader,
     type GPUDecoderManifest,
     type GPUDecoderPictureSize,
     isGPUDecoderErrorRecovery
@@ -768,11 +769,15 @@ function requireParsed<Value>(value: Value | null, directive: string, line: numb
     return value;
 }
 
-/**
- * Parses and validates a decoder's `//!` header, and checks its body against the dispatch sequence.
- * Throws a GPUDecoderManifestError with the failed check's code, a terse detail, and the source line.
- */
-export function parseGPUDecoderManifest(source: string): GPUDecoderManifest {
+/** A decoder source's header, parsed and checked, with its lines and the 1-based line where its body starts. */
+type ParsedHeader = {
+    bodyFirstLine: number
+    draft: ManifestDraft
+    lines: string[]
+};
+
+/** Parses and validates a decoder source's `//!` header, leaving its body unread. */
+function parseHeaderDraft(source: string): ParsedHeader {
     const lines = source.split(/\r?\n/);
     const { bodyFirstLine, directives } = readHeader(lines);
     if (directives.length === 0) {
@@ -806,7 +811,51 @@ export function parseGPUDecoderManifest(source: string): GPUDecoderManifest {
         const { line, remainingDispatchCount, repeat } = draft.openRepeat;
         throw new GPUDecoderManifestError('repeat-incomplete', `${remainingDispatchCount} of ${repeat.dispatchCount} dispatches missing`, line);
     }
-    const outputFormats = requireParsed(draft.outputFormats, 'output', 1);
+    return { bodyFirstLine, draft, lines };
+}
+
+/** Returns the header a checked draft describes. */
+function createHeader(draft: ManifestDraft): GPUDecoderHeader {
+    return {
+        accepts: requireParsed(draft.accepts, 'accepts', 1),
+        buffers: draft.buffers,
+        dispatches: draft.dispatches.map(located => located.dispatch),
+        errorRecoveries: draft.errorRecoveries,
+        errors: draft.errors,
+        id: draft.id,
+        monochrome: draft.monochrome,
+        name: draft.name,
+        outputFormats: requireParsed(draft.outputFormats, 'output', 1),
+        packetByteLength: draft.packetByteLength,
+        parser: draft.parser,
+        references: draft.references,
+        reorder: draft.reorder,
+        repeats: draft.repeats,
+        requiredFeatures: draft.requiredFeatures,
+        stateByteLength: draft.stateByteLength
+    };
+}
+
+/**
+ * Parses and validates a decoder's `//!` header alone, as a host reads it before it has the package, such as from a server's catalog; any body after it is not read.
+ * Every check of parseGPUDecoderManifest runs but the body's: its entry points and its declarations.
+ * Throws a GPUDecoderManifestError with the failed check's code, a terse detail, and the source line.
+ */
+export function parseGPUDecoderHeader(source: string): GPUDecoderHeader {
+    const { draft } = parseHeaderDraft(source);
+    for (const located of draft.dispatches) {
+        requireIndirectBuffer(draft.buffers, located);
+    }
+    return createHeader(draft);
+}
+
+/**
+ * Parses and validates a decoder's `//!` header, and checks its body against the dispatch sequence.
+ * Throws a GPUDecoderManifestError with the failed check's code, a terse detail, and the source line.
+ */
+export function parseGPUDecoderManifest(source: string): GPUDecoderManifest {
+    const { bodyFirstLine, draft, lines } = parseHeaderDraft(source);
+    const header = createHeader(draft);
 
     const body = lines.slice(bodyFirstLine - 1).join('\n');
     requirePreludeOwnedDeclarations(body, bodyFirstLine);
@@ -820,26 +869,7 @@ export function parseGPUDecoderManifest(source: string): GPUDecoderManifest {
         }
     }
 
-    return {
-        accepts: requireParsed(draft.accepts, 'accepts', 1),
-        body,
-        bodyFirstLine,
-        buffers: draft.buffers,
-        dispatches: draft.dispatches.map(located => located.dispatch),
-        errorRecoveries: draft.errorRecoveries,
-        errors: draft.errors,
-        id: draft.id,
-        monochrome: draft.monochrome,
-        name: draft.name,
-        outputFormats,
-        packetByteLength: draft.packetByteLength,
-        parser: draft.parser,
-        references: draft.references,
-        reorder: draft.reorder,
-        repeats: draft.repeats,
-        requiredFeatures: draft.requiredFeatures,
-        stateByteLength: draft.stateByteLength
-    };
+    return { ...header, body, bodyFirstLine };
 }
 
 /**

@@ -27,8 +27,10 @@ Commit hashes refer to the Jellyfin Web fork's `webgpu-player` branch, where the
   Never add decoder pair blacklists.
 - `hasEligibleCustomVideoRoute` answers for one item (10-06).
   Jellyfin labels some Dolby Vision streams in ranges a host's generic routes do not pair with their profile and depth, so the engine tells a host whether this item has a runtime route, and the host advertises exactly that item's route.
-  Since 10-16 it judges GPU decoders by package summaries, their codecs and output formats, because offers need the packages and the presenter's device, which negotiation may not have.
-  A summary skips the `accepts` conditions, `monochrome`, and the buffer limit, as a host's generic package routes do, so a stream past them negotiates, fails eligibility, and renegotiates.
+  Since 10-16 it judges GPU decoders by package summaries, because offers need the packages and the presenter's device, which negotiation may not have.
+  Since 10-27 a summary may carry its package's header, which a host reads from a server's catalog with `parseGPUDecoderHeader` before it has the package, and the buffer limit of the device a playback would decode on.
+  With them it runs the offers' fit check, `monochrome` included, so an item past the package's `accepts` conditions or the device's limit, such as an 8K Dolby Vision item on an HEVC base, is not advertised.
+  A summary without a header still takes every stream of its codecs and output formats.
 - Video probes run per item; audio probes always run (10-08).
   Probing every codec on the first negotiation of a page blocked PlaybackInfo for about 2.6 s, mostly on decoders the item did not contain.
   A video stream cannot change within a negotiation, since another version or item renegotiates, so the video probes follow the item's streams and run on demand.

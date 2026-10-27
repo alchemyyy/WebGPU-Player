@@ -27,8 +27,7 @@ import {
     hasPotentialCustomPlaybackVideoRoute,
     presentsInterlacedVideo,
     type CustomPlaybackEligibilityOptions,
-    type CustomVideoRouteOptions,
-    type GPUVideoDecoderSummary
+    type CustomVideoRouteOptions
 } from 'webgpu-player/capability/CustomPlaybackEligibility';
 import {
     HEVC_RANGE_EXTENSION_PROBE_DEFINITIONS,
@@ -54,7 +53,11 @@ import {
 import type { VideoDecoderPackage } from 'webgpu-player/decode/packages/DecoderPackage';
 import type { GPUDecoderOutputFormat } from 'webgpu-player/decode/video/gpu/GPUDecodeFormats';
 import { MEBIBYTE } from 'webgpu-player/decode/video/gpu/GPUDecodeLimits';
-import { createGPUVideoDecoderOffer, type GPUVideoDecoderOffer } from 'webgpu-player/decode/video/gpu/GPUVideoDecoderCatalog';
+import {
+    createGPUVideoDecoderOffer,
+    type GPUVideoDecoderOffer,
+    type GPUVideoDecoderSummary
+} from 'webgpu-player/decode/video/gpu/GPUVideoDecoderCatalog';
 
 import { createAudioDecoderPackageForTest } from '../helpers/audioDecoderPackageStubs';
 import { createDecoderProjectVideoPackageForTest, createVideoDecoderPackageForTest, createVideoDecoderSource } from '../helpers/decoderPackages';
@@ -6078,6 +6081,14 @@ describe('GPU video decode route', () => {
             outputFormats: HEVC_PACKAGE.manifest.outputFormats
         };
         const SUMMARY_ROUTE_OPTIONS: CustomVideoRouteOptions = { allowRawHDR: false, gpuVideoDecoderSummaries: [ HEVC_SUMMARY ] };
+        // What a server's catalog adds: the package's header
+        const HEVC_HEADER_SUMMARY: GPUVideoDecoderSummary = { ...HEVC_SUMMARY, header: HEVC_PACKAGE.manifest };
+        // WebGPU's default largest storage binding, 128 MiB, below its default largest buffer
+        const DEFAULT_STORAGE_BINDING_BYTE_LIMIT = 128 * MEBIBYTE;
+        const ULTRA_HD_8K_STREAM = { Height: ULTRA_HD_8K_CODED_HEIGHT, Width: ULTRA_HD_8K_CODED_WIDTH };
+        const FULL_HD_STREAM = { Height: FULL_HD_CODED_HEIGHT, Width: FULL_HD_CODED_WIDTH };
+        const HD_STREAM = { Height: 720, Width: 1280 };
+        const MONOCHROME_PIXEL_FORMAT = 'gray10le';
         // Profile 8.1, whose compatibility ID 1 declares an HDR10 base
         const DOLBY_VISION_HDR10_BASE_STREAM = {
             ...HDR10_STREAM,
@@ -6110,8 +6121,8 @@ describe('GPU video decode route', () => {
             )).toBe(false);
         });
 
-        it('leaves the decoder\'s stream conditions and the device\'s buffer limit to the playback\'s offers', () => {
-            const videoStream = { Height: ULTRA_HD_8K_CODED_HEIGHT, Width: ULTRA_HD_8K_CODED_WIDTH };
+        it('takes a summary without its package\'s header by codec and format alone, leaving the decoder\'s conditions to the playback\'s offers', () => {
+            const videoStream = ULTRA_HD_8K_STREAM;
 
             expect(hasEligibleCustomVideoRoute(createGPUMediaSource(videoStream), createCapabilitiesWithoutNativeHEVC(), SUMMARY_ROUTE_OPTIONS)).toBe(true);
             expect(getCustomPlaybackEligibility(
@@ -6119,6 +6130,54 @@ describe('GPU video decode route', () => {
                 createCapabilitiesWithoutNativeHEVC(),
                 createGPUEligibilityOptions()
             )).toEqual({ eligible: false, reason: 'codec-unsupported' });
+        });
+
+        it('runs the offers\' fit check with a summary\'s header, and the device\'s buffer limit where the summary gives it', () => {
+            const takesStream = (videoStream: Record<string, unknown>, maximumBufferByteLength?: number): boolean => hasEligibleCustomVideoRoute(
+                createGPUMediaSource(videoStream),
+                createCapabilitiesWithoutNativeHEVC(),
+                {
+                    ...SUMMARY_ROUTE_OPTIONS,
+                    gpuVideoDecoderSummaries: [ { ...HEVC_HEADER_SUMMARY, ...(maximumBufferByteLength === undefined ? {} : { maximumBufferByteLength }) } ]
+                }
+            );
+
+            // The header's accepts alone: 8K's pool of 7680x4352 is past the decoder's 8912896 samples, and 2160p's 3840x2176 within them
+            expect(takesStream(ULTRA_HD_8K_STREAM)).toBe(false);
+            expect(takesStream({})).toBe(true);
+            // Its pool of 29 I420P10 slots: 727 MB at 2160p and 186 MB at 1080p
+            expect(takesStream({}, LARGE_FRAME_POOL_BYTE_LIMIT)).toBe(true);
+            expect(takesStream({}, DEFAULT_FRAME_POOL_BYTE_LIMIT)).toBe(false);
+            expect(takesStream(FULL_HD_STREAM, DEFAULT_STORAGE_BINDING_BYTE_LIMIT)).toBe(false);
+            expect(takesStream(HD_STREAM, DEFAULT_STORAGE_BINDING_BYTE_LIMIT)).toBe(true);
+        });
+
+        it('judges a stream by a summary as a playback judges it by the offers on the same device', () => {
+            for (const videoStream of [ FULL_HD_STREAM, HD_STREAM ]) {
+                const offered = getCustomPlaybackEligibility(
+                    createGPUOptions(videoStream),
+                    createCapabilitiesWithoutNativeHEVC(),
+                    createGPUEligibilityOptions(DEFAULT_STORAGE_BINDING_BYTE_LIMIT)
+                ).eligible;
+
+                expect(hasEligibleCustomVideoRoute(
+                    createGPUMediaSource(videoStream),
+                    createCapabilitiesWithoutNativeHEVC(),
+                    { ...SUMMARY_ROUTE_OPTIONS, gpuVideoDecoderSummaries: [ { ...HEVC_HEADER_SUMMARY, maximumBufferByteLength: DEFAULT_STORAGE_BINDING_BYTE_LIMIT } ] }
+                )).toBe(offered);
+            }
+        });
+
+        it('takes a 4:0:0 stream only by a summary whose header declares monochrome', () => {
+            const mediaSource = createGPUMediaSource({ PixelFormat: MONOCHROME_PIXEL_FORMAT });
+            const takesStream = (summary: GPUVideoDecoderSummary): boolean => hasEligibleCustomVideoRoute(
+                mediaSource,
+                createCapabilitiesWithoutNativeHEVC(),
+                { ...SUMMARY_ROUTE_OPTIONS, gpuVideoDecoderSummaries: [ summary ] }
+            );
+
+            expect(takesStream(HEVC_HEADER_SUMMARY)).toBe(true);
+            expect(takesStream({ ...HEVC_HEADER_SUMMARY, header: { ...HEVC_PACKAGE.manifest, monochrome: false } })).toBe(false);
         });
 
         it('presents summarized HDR only when the host tone-maps it', () => {
@@ -6129,6 +6188,25 @@ describe('GPU video decode route', () => {
                 mediaSource,
                 createCapabilitiesWithoutNativeHEVC(),
                 { ...SUMMARY_ROUTE_OPTIONS, allowFramePoolHDR: true }
+            )).toBe(true);
+        });
+
+        it('refuses a declared Dolby Vision base past the summarized decoder\'s accepts, and takes one the device holds', () => {
+            const routeOptions: CustomVideoRouteOptions = {
+                ...SUMMARY_ROUTE_OPTIONS,
+                allowFramePoolHDR: true,
+                gpuVideoDecoderSummaries: [ { ...HEVC_HEADER_SUMMARY, maximumBufferByteLength: LARGE_FRAME_POOL_BYTE_LIMIT } ]
+            };
+
+            expect(hasEligibleCustomVideoRoute(
+                createGPUMediaSource({ ...DOLBY_VISION_HDR10_BASE_STREAM, ...ULTRA_HD_8K_STREAM }),
+                createCapabilitiesWithoutNativeHEVC(),
+                routeOptions
+            )).toBe(false);
+            expect(hasEligibleCustomVideoRoute(
+                createGPUMediaSource(DOLBY_VISION_HDR10_BASE_STREAM),
+                createCapabilitiesWithoutNativeHEVC(),
+                routeOptions
             )).toBe(true);
         });
 
