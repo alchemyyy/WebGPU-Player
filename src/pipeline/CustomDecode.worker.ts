@@ -41,6 +41,7 @@ import {
     type CustomAudioChannelLayout,
     type CustomAudioOutputChannelCount
 } from '../audio/processing/CustomAudioChannelLayout';
+import { getQualifiedCustomWaveChannelLayout } from '../audio/processing/CustomWaveChannelLayout';
 import {
     createDefaultAudioDownmixSettings,
     type AudioDownmixSettings
@@ -364,6 +365,8 @@ type PreparedAudioTrack = {
     audioTrack: InputAudioTrack
     // Mediabunny decodes samples here, or the audio decode worker runs a host's decoder package
     decoderBackend: 'mediabunny' | 'package'
+    /** The WAVE channel mask the container declares, which lays out the samples Mediabunny decodes, or null to lay them out by count */
+    declaredChannelMask: number | null
     decoderConfig: AudioDecoderConfig | null
     /** Declared by the container; the decoded layout is authoritative */
     inputChannelCount: number
@@ -383,6 +386,8 @@ type SelectedAudioTrackMetadata = {
     channelCount: number
     codec: AudioCodec | null
     decoderConfig: AudioDecoderConfig | null
+    /** The WAVE channel mask the container declares, which `inputChannelLayout` follows, or null */
+    declaredChannelMask: number | null
     inputChannelLayout: CustomAudioChannelLayout
     sampleRate: number
     timeResolution: number
@@ -1336,20 +1341,42 @@ async function getSelectedAudioTrackMetadata(
     if (!isSupportedCustomAudioSampleRate(sampleRate)) {
         throw new UnsupportedCustomDecodeSourceError('The selected audio sample rate is invalid');
     }
-    const inputChannelLayout = getCustomAudioChannelLayout(channelCount);
-    if (!inputChannelLayout) {
-        throw new UnsupportedCustomDecodeSourceError('The selected audio channel layout is unavailable');
-    }
+    const { declaredChannelMask, inputChannelLayout } = await getDeclaredInputChannelLayout(audioTrack, channelCount);
 
     return {
         audioTrack,
         channelCount,
         codec,
+        declaredChannelMask,
         decoderConfig,
         inputChannelLayout,
         sampleRate,
         timeResolution
     };
+}
+
+/**
+ * Lays the track's channels out by the WAVE channel mask its container declares, as WAVE_FORMAT_EXTENSIBLE does, or by their count without one.
+ * A mask the output stage does not qualify, or one that names more or fewer speakers than the track has channels, is refused rather than played in the wrong speakers.
+ */
+async function getDeclaredInputChannelLayout(
+    audioTrack: InputAudioTrack,
+    channelCount: number
+): Promise<{ declaredChannelMask: number | null, inputChannelLayout: CustomAudioChannelLayout }> {
+    const channelMask = await audioTrack.getChannelMask();
+    // A zero mask declares no speaker positions
+    if (channelMask === null || channelMask === 0) {
+        const inputChannelLayout = getCustomAudioChannelLayout(channelCount);
+        if (!inputChannelLayout) {
+            throw new UnsupportedCustomDecodeSourceError('The selected audio channel layout is unavailable');
+        }
+        return { declaredChannelMask: null, inputChannelLayout };
+    }
+    const qualifiedLayout = getQualifiedCustomWaveChannelLayout(channelMask);
+    if (!qualifiedLayout || qualifiedLayout.channelCount !== channelCount) {
+        throw new UnsupportedCustomDecodeSourceError(`The selected audio channel mask is unqualified: 0x${channelMask.toString(16)}`);
+    }
+    return { declaredChannelMask: channelMask, inputChannelLayout: qualifiedLayout.layout };
 }
 
 function prepareNativeMediaAudioTrack(metadata: SelectedAudioTrackMetadata): PreparedAudioTrack {
@@ -1358,6 +1385,7 @@ function prepareNativeMediaAudioTrack(metadata: SelectedAudioTrackMetadata): Pre
         channelCount,
         codec,
         decoderConfig,
+        declaredChannelMask,
         inputChannelLayout,
         sampleRate,
         timeResolution
@@ -1390,6 +1418,7 @@ function prepareNativeMediaAudioTrack(metadata: SelectedAudioTrackMetadata): Pre
         decoderBackend: 'mediabunny',
         decoderConfig,
         inputChannelCount: channelCount,
+        declaredChannelMask,
         inputChannelLayout,
         outputMode: 'native-media',
         outputChannelCount: channelCount as 2 | 6,
@@ -1419,6 +1448,7 @@ function preparePackageAudioTrack(
     const {
         audioTrack,
         channelCount,
+        declaredChannelMask,
         inputChannelLayout,
         sampleRate,
         timeResolution
@@ -1442,6 +1472,7 @@ function preparePackageAudioTrack(
         decoderBackend: 'package',
         decoderConfig: null,
         inputChannelCount: channelCount,
+        declaredChannelMask,
         inputChannelLayout,
         outputMode: 'decoded-pcm',
         outputChannelCount,
@@ -1460,6 +1491,7 @@ async function prepareMediabunnyDecodedAudioTrack(
         channelCount,
         codec,
         decoderConfig,
+        declaredChannelMask,
         inputChannelLayout,
         sampleRate,
         timeResolution
@@ -1492,6 +1524,7 @@ async function prepareMediabunnyDecodedAudioTrack(
         decoderBackend: 'mediabunny',
         decoderConfig,
         inputChannelCount: channelCount,
+        declaredChannelMask,
         inputChannelLayout,
         outputMode: 'decoded-pcm',
         outputChannelCount,
@@ -3298,6 +3331,7 @@ function openAudioDecodeAttempt(
         audioDownmixSettings: run.latestAudioDownmixSettings ?? createDefaultAudioDownmixSettings(),
         audioEpoch: run.audioEpoch,
         audioOutput,
+        channelMask: preparedAudioTrack.declaredChannelMask,
         decoderBackend: getAudioDecodeWorkerDecoderBackend(preparedAudioTrack),
         generation: run.generation,
         outputChannelCount: preparedAudioTrack.outputChannelCount,

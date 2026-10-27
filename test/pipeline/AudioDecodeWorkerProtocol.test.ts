@@ -58,6 +58,9 @@ const OVERLONG_FAILURE_MESSAGE = 'x'.repeat(MAXIMUM_AUDIO_DECODE_WORKER_FAILURE_
 const PACKAGE_BACKEND = 'package';
 const PACKAGE_CODEC = 'ac3';
 const PACKAGE_UNLISTED_CODEC = 'dts';
+// FFmpeg's 5.1 with back surrounds, which the output stage lays out, and quadraphonic, which it does not
+const FIVE_POINT_ONE_BACK_CHANNEL_MASK = 0x3F;
+const QUAD_CHANNEL_MASK = 0x33;
 
 // A stub E-AC-3 package, as a host offers its audio decoder packages
 const DECODER_PACKAGE = createAudioDecoderPackageForTest('E-AC-3', [ 'eac3', PACKAGE_CODEC ]);
@@ -112,6 +115,7 @@ function createOpenRequest(overrides: Record<string, unknown> = {}): AudioDecode
         audioDownmixAlgorithm: DEFAULT_CUSTOM_AUDIO_DOWNMIX_ALGORITHM,
         audioDownmixSettings: createDefaultAudioDownmixSettings(),
         audioOutput: null,
+        channelMask: null,
         decoderBackend: 'pcm',
         outputChannelCount: STEREO_CHANNEL_COUNT,
         packageDecoder: null,
@@ -163,6 +167,16 @@ describe('audio decode worker requests', () => {
         expect(isAudioDecodeWorkerRequest(createOpenRequest({ outputChannelCount: QUAD_OUTPUT_CHANNEL_COUNT }))).toBe(false);
         expect(isAudioDecodeWorkerRequest(createOpenRequest({ timeResolution: INVALID_TIME_RESOLUTION }))).toBe(false);
         expect(isAudioDecodeWorkerRequest({ ...ATTEMPT_KEY, type: UNKNOWN_REQUEST_TYPE })).toBe(false);
+    });
+
+    it('accepts an attempt whose declared channel mask the output stage lays out, and no other mask', () => {
+        const requestWithoutMask: Record<string, unknown> = { ...createOpenRequest() };
+        delete requestWithoutMask.channelMask;
+
+        expect(isAudioDecodeWorkerRequest(createOpenRequest({ channelMask: FIVE_POINT_ONE_BACK_CHANNEL_MASK }))).toBe(true);
+        expect(isAudioDecodeWorkerRequest(createOpenRequest({ channelMask: QUAD_CHANNEL_MASK }))).toBe(false);
+        expect(isAudioDecodeWorkerRequest(createOpenRequest({ channelMask: 0 }))).toBe(false);
+        expect(isAudioDecodeWorkerRequest(requestWithoutMask)).toBe(false);
     });
 
     it('accepts a package attempt with the package that decodes it', () => {

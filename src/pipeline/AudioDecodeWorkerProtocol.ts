@@ -5,6 +5,7 @@
 import type { Microseconds } from '../MediaTime';
 import { isAudioDecoderPackageSelection, type AudioDecoderPackageSelection } from '../decode/audio/AudioDecoderPackageInstance';
 import type { CustomAudioOutputChannelCount } from '../audio/processing/CustomAudioChannelLayout';
+import { getQualifiedCustomWaveChannelLayout } from '../audio/processing/CustomWaveChannelLayout';
 import type { AudioDownmixSettings } from '../audio/processing/CustomAudioDownmix';
 import {
     isCustomAudioDownmixAlgorithm,
@@ -49,6 +50,8 @@ export type AudioDecodeWorkerOpenAttemptRequest = AudioDecodeWorkerAttemptKey & 
     audioDownmixSettings: AudioDownmixSettings
     /** A resync's new worklet channel; the initial attempt's channel follows in `attach-output` */
     audioOutput: DecodeWorkerAudioOutputAttachment | null
+    /** The WAVE channel mask the container declares, which lays out the samples Mediabunny decodes; null lays them out by count */
+    channelMask: number | null
     decoderBackend: AudioDecodeWorkerDecoderBackend
     outputChannelCount: CustomAudioOutputChannelCount
     /** The package of a `package` attempt, and null for every other backend */
@@ -208,6 +211,7 @@ function isOpenAttemptRequest(value: Record<string, unknown>): boolean {
     return isCustomAudioDownmixAlgorithm(value.audioDownmixAlgorithm)
         && isAudioDownmixSettings(value.audioDownmixSettings)
         && (value.audioOutput === null || isAudioOutputAttachment(value.audioOutput))
+        && (value.channelMask === null || getQualifiedCustomWaveChannelLayout(Number(value.channelMask)) !== null)
         && isDecoderBackend(value.decoderBackend)
         && hasBackendPackage(value)
         && isDecodedAudioOutputChannelCount(value.outputChannelCount)

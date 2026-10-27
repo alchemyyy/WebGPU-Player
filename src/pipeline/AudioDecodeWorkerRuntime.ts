@@ -19,6 +19,7 @@ import {
     prepareCustomAudioOutputChannelData,
     type CustomAudioChannelLayout
 } from '../audio/processing/CustomAudioChannelLayout';
+import { getQualifiedCustomWaveChannelLayout } from '../audio/processing/CustomWaveChannelLayout';
 import DecodedAudioOutputStage, {
     UnsupportedDecodedAudioFormatError,
     type BoundDecodedAudioInput
@@ -637,9 +638,11 @@ class AudioDecodeWorkerRuntime {
         outputStage: DecodedAudioOutputStage,
         sample: AudioDecodeWorkerPCMSample
     ): StreamingAudioResamplerOutput[] {
+        // The container's mask lays the channels out when the decoded count is the one it declares
+        const declaredLayout = attempt.options.channelMask === null ? null : getQualifiedCustomWaveChannelLayout(attempt.options.channelMask);
         const boundInput = outputStage.bind({
             channelCount: sample.channelCount,
-            layout: null,
+            layout: declaredLayout?.channelCount === sample.channelCount ? declaredLayout.layout : null,
             sampleRate: sample.sampleRate
         }, attempt.streamingDownmixSettings);
         if (sample.frameCount === 0) {
