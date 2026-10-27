@@ -155,10 +155,12 @@ const TIMESTAMP_MICROSECONDS = 2_500_000;
 const TIMESTAMP_SECONDS = 2.5;
 const FRAME_DURATION_MICROSECONDS = 41_667;
 const SKIPPED_FRAME_COUNT = 2;
-// A refresh of a 60 Hz display, which the frame's draw presents 4 ms before the frame's own time
+// A refresh of a 60 Hz display, which the frame's draw presents 4 ms before the frame's own time, and the time between 23.976 fps frames
 const REFRESH_MICROSECONDS = 16_683.35;
 const REFRESH_SECONDS = 0.016_683_35;
 const TARGET_LEAD_MICROSECONDS = 4_000;
+const FILM_FRAME_DURATION_MICROSECONDS = 41_708.33;
+const FILM_FRAME_DURATION_SECONDS = 0.041_708_33;
 // Two hours in, where an f32 resolves media time only to about 0.5 ms
 const LATE_TIMESTAMP_MICROSECONDS = 7_200_041_667;
 
@@ -217,6 +219,7 @@ const HISTORY_DEPTH = 1;
 // Byte offsets of the presentation uniform's fields, in PRESENTATION_UNIFORMS_WGSL order
 const PRESENTATION_FIELD_OFFSETS = {
     fieldState: 56,
+    frameDurationSeconds: 68,
     frameIndex: 44,
     historyValid: 48,
     inputHeight: 36,
@@ -451,6 +454,7 @@ function createVideoFrame(): VideoFrame {
 function createFrameInput(source: PresentationFrameSource, newFrame = true): PresentationFrameInput {
     return {
         fieldState: PRESENTATION_FIELD_STATE.none,
+        frameDurationMicroseconds: 0,
         geometry: GEOMETRY,
         newFrame,
         refreshMicroseconds: 0,
@@ -541,6 +545,7 @@ function readPresentationSlot(bytes: ArrayBuffer, passIndex: number): Presentati
     const view = new DataView(bytes, passIndex * UNIFORM_SLOT_BYTE_LENGTH, PRESENTATION_UNIFORM_BYTE_LENGTH);
     return {
         fieldState: view.getUint32(PRESENTATION_FIELD_OFFSETS.fieldState, true),
+        frameDurationSeconds: view.getFloat32(PRESENTATION_FIELD_OFFSETS.frameDurationSeconds, true),
         frameIndex: view.getUint32(PRESENTATION_FIELD_OFFSETS.frameIndex, true),
         historyValid: view.getUint32(PRESENTATION_FIELD_OFFSETS.historyValid, true),
         inputHeight: view.getFloat32(PRESENTATION_FIELD_OFFSETS.inputHeight, true),
@@ -917,13 +922,14 @@ describe('PresentationExecutor', () => {
         expect(readLastPresentationSlot(harness, 0)).toMatchObject({ frameIndex: 1, sourceHeight: SCALED_HEIGHT, sourceWidth: SCALED_WIDTH });
     });
 
-    it('writes the media time a refresh covers and the draw\'s clock time after the frame\'s, exact even late in a long stream', async () => {
+    it('writes the media time a refresh covers, the draw\'s clock time after the frame\'s, exact even late in a long stream, and the time between frames', async () => {
         const harness = createDeviceHarness();
         const plan = createPlan({ passes: [ createRenderPass('Output', { bindings: [ { binding: 0, kind: 'engine', resource: 'external-texture' } ] }) ] });
         const executor = await PresentationExecutor.create(harness.device, plan);
 
         encodeFrame(executor, {
             ...createExternalFrameInput(),
+            frameDurationMicroseconds: FILM_FRAME_DURATION_MICROSECONDS,
             refreshMicroseconds: REFRESH_MICROSECONDS,
             targetTimeMicroseconds: LATE_TIMESTAMP_MICROSECONDS - TARGET_LEAD_MICROSECONDS,
             timestampMicroseconds: LATE_TIMESTAMP_MICROSECONDS
@@ -932,6 +938,7 @@ describe('PresentationExecutor', () => {
         const slot = readLastPresentationSlot(harness, 0);
         expect(slot.refreshSeconds).toBeCloseTo(REFRESH_SECONDS, FLOAT_PRECISION_DIGITS);
         expect(slot.targetOffsetSeconds).toBeCloseTo(-TARGET_LEAD_MICROSECONDS / 1_000_000, FLOAT_PRECISION_DIGITS);
+        expect(slot.frameDurationSeconds).toBeCloseTo(FILM_FRAME_DURATION_SECONDS, FLOAT_PRECISION_DIGITS);
     });
 
     it('maps passes that read raw planes onto the visible rectangle', async () => {

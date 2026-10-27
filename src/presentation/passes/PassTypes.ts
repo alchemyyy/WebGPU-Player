@@ -605,6 +605,8 @@ export type PresentationFrameSource =
 export type PresentationFrameInput = {
     /** PRESENTATION_FIELD_STATE bits: which field of which held frame presents, and whether the signal's frame is interlaced. */
     fieldState: number
+    /** The media time between the stream's frames: the mean of the recent new frames' durations; 0 before one is known. */
+    frameDurationMicroseconds: number
     geometry: TexturePresentationGeometry
     /** True advances history; false redraws the same frame. */
     newFrame: boolean

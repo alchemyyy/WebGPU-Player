@@ -202,6 +202,8 @@ export const PRESENTATION_FIELD_STATE = Object.freeze({
  * `fieldState` holds PRESENTATION_FIELD_STATE bits.
  * `refreshSeconds` is the media time one display refresh covers, 0 while the display is unmeasured or the clock stands still, and `targetOffsetSeconds`
  * the clock time the draw presents at, after `timestampSeconds`; the engine subtracts the two in double precision, so the offset keeps its precision late in a long stream.
+ * `frameDurationSeconds` is the media time between the stream's frames, from the recent new frames' durations, 0 before one is known;
+ * over `refreshSeconds`, it is the refreshes a frame lasts at the clock's rate.
  */
 export const PRESENTATION_UNIFORMS_WGSL = `struct PresentationUniforms {
     textureScale: vec2f,
@@ -216,13 +218,14 @@ export const PRESENTATION_UNIFORMS_WGSL = `struct PresentationUniforms {
     fieldState: u32,
     refreshSeconds: f32,
     targetOffsetSeconds: f32,
-    padding0: u32,
+    frameDurationSeconds: f32,
 }`;
 
 /** The values of one pass's `presentation` uniform. */
 export type PresentationUniformValues = {
     /** PRESENTATION_FIELD_STATE bits */
     fieldState: number
+    frameDurationSeconds: number
     frameIndex: number
     historyValid: number
     inputHeight: number
@@ -333,6 +336,7 @@ export function writePresentationUniform(target: DataView, byteOffset: number, v
     target.setUint32(byteOffset + 56, values.fieldState, true);
     target.setFloat32(byteOffset + 60, values.refreshSeconds, true);
     target.setFloat32(byteOffset + 64, values.targetOffsetSeconds, true);
+    target.setFloat32(byteOffset + 68, values.frameDurationSeconds, true);
 }
 
 /** Writes the frame pool layout uniform, in the field order of FramePoolLayoutUniforms. */

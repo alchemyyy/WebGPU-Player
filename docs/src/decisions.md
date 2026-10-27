@@ -1075,7 +1075,9 @@ These were settled on Firefox 157 on Windows.
   It blends the two frames a refresh spans by the share each covers, as libplacebo's `oversample` does.
   It blends at `OUTPUT` in the `display` domain, linearizing the sRGB encoding, so each frame is tone mapped with its own metadata, and identity SDR routes, whose color track is empty, keep it.
   Frames are taken one refresh ahead, so the frame that starts within a refresh is in history when it draws.
-  The display rate is a least-squares fit of rAF times over refresh counts, published with 0.1% hysteresis so jitter does not replan.
+  The display rate is a least-squares fit of rAF times over refresh counts, published with 0.1% hysteresis so jitter does not replan a condition that reads it.
+  Whether frames blend is judged on every draw, from the refreshes a frame lasts at the clock's rate, the media time between the recent frames over the media time a refresh covers, rather than by a `when` condition at plan time, which judged once from the declared frame rate and the display rate, missed a playback rate, and kept the pass out on a whole multiple; a playback rate, a new frame rate, or another display now takes effect within frames (10-27).
+  The media time between frames is a least-squares line through the frames' timestamps over frame counts rather than a mean of their durations (10-27): Matroska's millisecond timestamps put a mean of 16 durations of 24 fps video up to 0.2% off, which turned blending on and off at 144 Hz, where the line holds 6 refreshes per frame to 0.02%.
   `tolerance` defaults to 0.2%, so a 1000/1001 mismatch, which repeats a frame only every 16.7 s at 60 Hz, counts as no judder.
   A deinterlacing plan leaves it out, since its history holds fields rather than the frame after the shown one.
   Redraws start at the first display-rate pass, so a heavy pass before it, such as Anime4K, runs once per frame.

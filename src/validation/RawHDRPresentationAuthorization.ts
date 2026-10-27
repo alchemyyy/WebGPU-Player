@@ -513,6 +513,7 @@ export function encodeAuthorizationFrame(
     executor.encode(commandEncoder, {
         // Authorization renders the fixed chain, which no field state changes
         fieldState: PRESENTATION_FIELD_STATE.none,
+        frameDurationMicroseconds: 0,
         geometry: createIdentityGeometry(targetTexture.width, targetTexture.height),
         newFrame: true,
         refreshMicroseconds: 0,

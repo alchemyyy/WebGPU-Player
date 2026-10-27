@@ -7,7 +7,6 @@
 //! rate: display
 //! const mode: u32 = 0 in [0, 2]
 //! const tolerance: f32 = 0.002 in [0, 0.05]
-//! when: display.rate > 0 && (frame.rate > 0 || mode == 2) && abs(display.rate / max(frame.rate, 1) - ((mode == 0) * max(round(display.rate / max(frame.rate, 1)), 1) + (mode == 1))) > tolerance * ((mode == 0) * max(round(display.rate / max(frame.rate, 1)), 1) + (mode == 1))
 
 // Smooth motion: each display refresh shows the video frames it spans, blended by the share of the refresh each one covers,
 // so video whose frame rate the refresh rate is no multiple of plays without judder, and a refresh within one frame shows that frame untouched.
@@ -16,15 +15,18 @@
 // HOOKED is the newest frame, and HOOKED[-1] the one before it.
 // A refresh shows from the clock's time, targetOffsetSeconds after the newest frame starts, for refreshSeconds of media time;
 // the newest frame covers the part of the refresh from its start on, and the frame before it the rest.
-// While the clock stands still, as when paused, a refresh covers no media time and shows the frame the clock is in, unblended.
 //
-// The condition decides when smooth motion runs, by `mode`:
-// - 0, only if there would be motion judder without it: the display rate is no multiple of the frame rate, within `tolerance`.
-// - 1, also where the display rate is a multiple of the frame rate: the display rate is not the frame rate, within `tolerance`.
+// Whether frames blend is decided on every draw, from the cadence they play at right now: frameDurationSeconds, the media time between the
+// stream's recent frames, over refreshSeconds, the media time a refresh covers at the clock's rate, is the refreshes a frame lasts.
+// So a new frame rate, a playback rate, or another display takes effect within a few frames, and a refresh that need not blend shows the frame
+// the clock is in, as it would without the pass.
+// `mode` picks when frames blend:
+// - 0, only if there would be motion judder without it: a frame lasts no whole number of refreshes, within `tolerance`.
+// - 1, also where it does: a frame lasts other than one refresh, within `tolerance`.
 // - 2, always.
-// Elsewhere the plan leaves the pass out, so frames present as they are, without lookahead or redraws between them.
-// `tolerance` is relative: 0.002 counts 23.976 fps at 24 Hz and 29.97 fps at 60 Hz as multiples, whose rare repeated frame is no judder.
-// A stream that declares no frame rate runs the pass only in mode 2.
+// `tolerance` is relative: 0.002 counts 23.976 fps at 24 Hz and 29.97 fps at 60 Hz as whole multiples, whose rare repeated frame is no judder.
+// Until the display's refresh is measured, while the clock stands still, as when paused, and before a frame's duration is known in modes 0 and 1,
+// a refresh shows the frame the clock is in.
 //
 // The blend runs in linear light.
 // Display values are sRGB-encoded: on an HDR canvas, extended past 1 and mirrored below 0.
@@ -41,6 +43,18 @@ fn linearToSRGB(light: vec3f) -> vec3f {
     return sign(light) * encoded;
 }
 
+// Returns whether frames that last refreshesPerFrame refreshes each blend
+fn blendsAtCadence(refreshesPerFrame: f32) -> bool {
+    if (mode == 2u) {
+        return true;
+    }
+    if (refreshesPerFrame <= 0.0) {
+        return false;
+    }
+    let wholeRefreshes = select(max(round(refreshesPerFrame), 1.0), 1.0, mode == 1u);
+    return abs(refreshesPerFrame - wholeRefreshes) > tolerance * wholeRefreshes;
+}
+
 fn kernel(coordinate: vec2f) -> vec4f {
     let newest = HOOKED_tex(coordinate);
     // After a seek or a reset, history holds no frame before the newest, which then shows alone
@@ -48,8 +62,9 @@ fn kernel(coordinate: vec2f) -> vec4f {
         return newest;
     }
     let refresh = presentation.refreshSeconds;
+    // The frame the clock is in, untouched
     var newestShare = select(0.0, 1.0, presentation.targetOffsetSeconds >= 0.0);
-    if (refresh > 0.0) {
+    if (refresh > 0.0 && blendsAtCadence(presentation.frameDurationSeconds / refresh)) {
         newestShare = clamp((presentation.targetOffsetSeconds + refresh) / refresh, 0.0, 1.0);
     }
     if (newestShare >= 1.0) {

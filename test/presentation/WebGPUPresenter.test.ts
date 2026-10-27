@@ -295,6 +295,18 @@ const FIRST_ANIMATION_FRAME_MILLISECONDS = 5_000;
 const FILM_FRAME_RATE = 24;
 // The next frame starts 4 ms into the refresh that takes it
 const NEXT_FRAME_LEAD_MICROSECONDS = 4_000;
+// A color pass that runs only on a display measured faster than 50 Hz
+const DISPLAY_RATE_PASS_NAME = 'Fast display';
+const DISPLAY_RATE_PASS_SOURCE = [
+    `//! name: ${DISPLAY_RATE_PASS_NAME}`,
+    '//! shape: color',
+    '//! hook: OUTPUT',
+    '//! when: display.rate > 50',
+    '',
+    'fn apply(color: vec4f, position: vec2f) -> vec4f {',
+    '    return color;',
+    '}'
+].join('\n');
 
 // Above the 8192 texels a default WebGPU device allows
 const ADAPTER_MAXIMUM_TEXTURE_DIMENSION = 16_384;
@@ -4700,11 +4712,12 @@ describe('WebGPUPresenter', () => {
         expect(presenter.presentHeldFields(1, NEXT_RAW_FRAME_TIMESTAMP_MICROSECONDS)).toBe(false);
     });
 
-    it('draws smooth motion on every refresh once it measures a display the frame rate judders on, a refresh ahead of the clock', async () => {
+    it('draws smooth motion on every refresh from its first frame, a refresh ahead of the clock once the display is measured', async () => {
         const encode = vi.spyOn(PresentationExecutor.prototype, 'encode');
         const metadata = createPQColorMetadata();
         const { presenter } = await startRawRoutePresentation(metadata, 'I420P10', createHDRToSDRRenderSettings(), undefined, FILM_FRAME_RATE);
         await presenter.setPresentationPreset([ { parameters: {}, source: SMOOTH_MOTION_PASS } ]);
+        const revisions = presenter as unknown as { executorRevision: number; planRevision: number };
         const pushFrame = async (timestampMicroseconds: Microseconds, targetTimeMicroseconds: Microseconds): Promise<void> => {
             const presentedFrameCount = presenter.getTelemetry().presentedFrameCount;
             const frame = { ...createRawFrame('I420P10', metadata), timestampMicroseconds };
@@ -4719,25 +4732,25 @@ describe('WebGPUPresenter', () => {
         };
         // The first frame measures the layout, which plans again
         await pushFrame(RAW_FRAME_TIMESTAMP_MICROSECONDS, RAW_FRAME_TIMESTAMP_MICROSECONDS);
-        // Before the display is measured, frames present at the clock's time and nothing redraws between them
-        expect(getLastPlanRequest().facts).toMatchObject({ displayRate: null, frameRate: FILM_FRAME_RATE });
-        expect(presenter.getPresentationPlanReport().inactivePasses).toEqual([ { detail: '', name: SMOOTH_MOTION_PASS_NAME, reason: 'condition-false' } ]);
+        await vi.waitFor(() => expect(revisions.executorRevision).toBe(revisions.planRevision));
+        // The pass plans before the display is measured, and frames are taken at the clock's time until it is
+        expect(presenter.getPresentationPlanReport().activePasses).toEqual([ SMOOTH_MOTION_PASS_NAME ]);
         expect(presenter.getFrameLookaheadMicroseconds()).toBe(0);
-        expect(presenter.presentHeldFields(1, NEXT_RAW_FRAME_TIMESTAMP_MICROSECONDS)).toBe(false);
+        const planCount = vi.mocked(planPresentation).mock.calls.length;
 
         for (let index = 0; index < MEASURED_ANIMATION_FRAME_COUNT; index += 1) {
             presenter.recordAnimationFrame(FIRST_ANIMATION_FRAME_MILLISECONDS + (index * DISPLAY_REFRESH_MILLISECONDS), 1);
         }
 
-        await vi.waitFor(() => expect(presenter.getFrameLookaheadMicroseconds()).toBe(Math.floor(DISPLAY_REFRESH_MICROSECONDS)));
-        expect(getLastPlanRequest().facts.displayRate).toBeCloseTo(1_000 / DISPLAY_REFRESH_MILLISECONDS, 6);
-        expect(presenter.getPresentationPlanReport().activePasses).toEqual([ SMOOTH_MOTION_PASS_NAME ]);
+        // Measuring the display plans nothing again, as each draw reads the refresh, and frames are taken a refresh ahead
+        expect(planPresentation).toHaveBeenCalledTimes(planCount);
+        expect(presenter.getFrameLookaheadMicroseconds()).toBe(Math.floor(DISPLAY_REFRESH_MICROSECONDS));
         encode.mockClear();
         const laterFrameTimestampMicroseconds = addMicroseconds(NEXT_RAW_FRAME_TIMESTAMP_MICROSECONDS, RAW_FRAME_DURATION_MICROSECONDS);
         const laterFrameTargetMicroseconds = requireMicroseconds(laterFrameTimestampMicroseconds - NEXT_FRAME_LEAD_MICROSECONDS);
         const followingRefreshMicroseconds = requireMicroseconds(Math.round(laterFrameTargetMicroseconds + DISPLAY_REFRESH_MICROSECONDS));
 
-        // The new executor's history starts with the next frame
+        // The layout's executor's history starts with the next frame
         await pushFrame(NEXT_RAW_FRAME_TIMESTAMP_MICROSECONDS, NEXT_RAW_FRAME_TIMESTAMP_MICROSECONDS);
         // A refresh that starts before the frame after it takes that frame, and shows the frame before it, blended toward it
         await pushFrame(laterFrameTimestampMicroseconds, laterFrameTargetMicroseconds);
@@ -4758,9 +4771,24 @@ describe('WebGPUPresenter', () => {
             [ true, false, laterFrameTimestampMicroseconds, laterFrameTargetMicroseconds ],
             [ false, true, laterFrameTimestampMicroseconds, followingRefreshMicroseconds ]
         ]);
+        // Each draw carries the refresh it times and the frames' own duration, by which the pass judges whether frames blend
         for (const frameInput of frameInputs) {
             expect(frameInput.refreshMicroseconds).toBeCloseTo(DISPLAY_REFRESH_MICROSECONDS, 3);
+            expect(frameInput.frameDurationMicroseconds).toBe(RAW_FRAME_DURATION_MICROSECONDS);
         }
+    });
+
+    it('plans a pass whose condition reads display.rate again once the display is measured', async () => {
+        const { presenter } = await startRawRoutePresentation(createPQColorMetadata(), 'I420P10', createHDRToSDRRenderSettings());
+        await presenter.setPresentationPreset([ { parameters: {}, source: DISPLAY_RATE_PASS_SOURCE } ]);
+        expect(presenter.getPresentationPlanReport().inactivePasses).toEqual([ { detail: '', name: DISPLAY_RATE_PASS_NAME, reason: 'condition-false' } ]);
+
+        for (let index = 0; index < MEASURED_ANIMATION_FRAME_COUNT; index += 1) {
+            presenter.recordAnimationFrame(FIRST_ANIMATION_FRAME_MILLISECONDS + (index * DISPLAY_REFRESH_MILLISECONDS), 1);
+        }
+
+        await vi.waitFor(() => expect(presenter.getPresentationPlanReport().activePasses).toEqual([ DISPLAY_RATE_PASS_NAME ]));
+        expect(getLastPlanRequest().facts.displayRate).toBeCloseTo(1_000 / DISPLAY_REFRESH_MILLISECONDS, 6);
     });
 
     it('reports why a dual-layer route presents FEL frames as their base', async () => {

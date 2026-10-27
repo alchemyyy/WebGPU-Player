@@ -2469,7 +2469,8 @@ def build_validation_module(context: PassContext, body: str, declarations: PassD
         'struct PresentationUniforms {',
         '    textureScale: vec2f,', '    textureOffset: vec2f,', '    sourceSize: vec2f,', '    outputSize: vec2f,',
         '    inputSize: vec2f,', '    timestampSeconds: f32,', '    frameIndex: u32,', '    historyValid: u32,',
-        '    skippedFrames: u32,', '    fieldState: u32,', '    refreshSeconds: f32,', '    targetOffsetSeconds: f32,', '    padding0: u32,', '}',
+        '    skippedFrames: u32,', '    fieldState: u32,', '    refreshSeconds: f32,', '    targetOffsetSeconds: f32,',
+        '    frameDurationSeconds: f32,', '}',
         '@group(0) @binding(0) var<uniform> presentation: PresentationUniforms;',
         '@group(0) @binding(1) var validationSampler: sampler;',
         *VALIDATION_PRELUDE_FUNCTIONS

@@ -21,6 +21,7 @@ Each source file's tests are at the same relative path under `test/`, and integr
   While a plan deinterlaces it shows the frame before the newest, tells the frame loop its lookahead, and draws held fields from history.
   While a plan holds a display-rate pass it measures the display's refresh rate from the frame loop's animation frames, takes frames one refresh ahead, and redraws from history at each tick's clock time.
 - `DisplayRefresh.ts`: the display's refresh interval, a least-squares fit of animation frame times over refresh counts, reported once it is precise and restarted when the display changes.
+- `FrameInterval.ts`: the media time between a stream's frames, frame by frame: a least-squares fit of the last 24 new frames' timestamps over frame counts, counting skipped frames and restarted when the frame rate changes.
 - `DeinterlaceTimeline.ts`: the frames a deinterlacing plan's history holds and the draw a clock time picks: the field shown, of which frame, and its time, at double or single rate, with yadif's passthrough of progressive frames.
 - `PresentationInput.ts`: MediaStream metadata to color metadata; Dolby Vision descriptors with their RPU route; declared and exact native base metadata; the presented video ordinal; the known-SDR gate; the stream's fields from its `FieldOrder` or `IsInterlaced` and its size, and its declared frame rate, which `PresentationSetup.ts` hands the presenter.
 - `DolbyVisionGeometry.ts`: the P4 and P7 EL coded size (half the BL when the BL is wider than 1920).

@@ -223,7 +223,7 @@ The backing size is the CSS size times the device pixel ratio, capped by `maxTex
 - The presenter measures the display's refresh rate (`DisplayRefresh`) from the animation frame times the frame loop hands `recordAnimationFrame`: a least-squares line through the times over refresh counts, which counts skipped refreshes and averages timer coarsening up to 1 ms.
   It reports an interval once at least 30 frames fit the line with a relative standard error of at most 0.02%, over a window of 240 refreshes.
   A frame more than 0.4 intervals off the line, as after a move to another display, starts the measurement over, and a gap over 500 ms, as a paused loop leaves, starts a new window; the last measurement holds until the next is precise.
-- The `display.rate` fact is that rate, 0 until measured, and the presenter plans again while preset passes plan when it moves more than 0.1% (`DISPLAY_RATE_REPLAN_TOLERANCE`) from the rate the plan read.
+- The `display.rate` fact is that rate, 0 until measured, and the presenter plans again when it moves more than 0.1% (`DISPLAY_RATE_REPLAN_TOLERANCE`) from the rate the plan read, while a preset pass's `when` reads it.
 - A pass with `rate: display` plans only while frames come from the frame loop (`PlanRequest.displayRateAvailable`), and not in a deinterlacing plan; otherwise it is left out as `display-rate-unavailable`.
 - In a display-rate plan (`PresentationPlan.displayRate`) the pass that reads the source writes a texture rather than the canvas, and a display-rate color step gets a pass of its own, `Presentation color`.
 - The frame loop takes frames one refresh ahead of the clock (`getFrameLookaheadMicroseconds`), so the frame that starts within a refresh is in history when the refresh draws.
@@ -231,6 +231,8 @@ The backing size is the CSS size times the device pixel ratio, capped by `maxTex
   After a new executor is installed, nothing redraws until a frame's submission validated it.
 - The `presentation` uniform's `refreshSeconds` is the media time one refresh covers, the measured interval times the rate the clock advances at, which the frame loop hands over as 0 unless playing, and `targetOffsetSeconds` the clock time the draw presents at minus `timestampSeconds`, subtracted in double precision.
   The lookahead follows it, so a paused or seeking playback takes no frame ahead of the clock.
+- The uniform's `frameDurationSeconds` is the media time between frames (`FrameInterval`): the slope of a least-squares line through the last 24 new frames' timestamps over their frame counts, which evens out millisecond-rounded timestamps to inside 0.1% within 8 frames, where a mean of 16 frames' own durations strayed 0.2% on such a stream.
+  The frames the loop skipped between two it drew count by the last frame's own duration, else by the line, and a frame more than 0.4 frames off the line, as after a change of frame rate, starts the line over from the frame before it; a seek, a new generation, or a history discontinuity starts it over too.
 - Telemetry's presented media time is the frame the clock falls in: the one before the newest until the clock reaches the newest.
 - A history reset clears the display-rate frames.
 

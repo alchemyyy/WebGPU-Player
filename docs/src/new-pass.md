@@ -103,6 +103,8 @@ A pass with `rate: display` draws at the display's refresh rate rather than once
 - `presentation.refreshSeconds` is the media time one refresh covers, and `presentation.targetOffsetSeconds` the clock time the draw presents at minus `timestampSeconds`; the newest frame's share of the refresh is `clamp((targetOffsetSeconds + refreshSeconds) / refreshSeconds, 0, 1)`.
   `refreshSeconds` is 0 until the display rate is measured, and while the clock stands still, as when paused, when a refresh shows the frame the clock is in: the newest once `targetOffsetSeconds` reaches 0, else the one before it.
   The frame loop's tick after a pause redraws at the stopped clock, so a paused picture shows one frame.
+- `presentation.frameDurationSeconds` is the media time between the stream's frames, a line fitted through the recent new frames' timestamps, and 0 before a frame's time is known: the first frame after a seek is timed by its own duration, if it has one.
+  `frameDurationSeconds / refreshSeconds` is the refreshes a frame lasts at the clock's rate, by which `smooth-motion.wgsl` decides on each draw whether frames blend, so a playback rate or a new frame rate takes effect within frames.
 - A draw from history skips the passes that read the source and every pass before the first display-rate pass, whose outputs no draw of the frame changes, so a heavy pass before it runs once per frame.
 - The pass that reads the source then writes a texture rather than the canvas, and a color pass at the display rate gets a pass of its own rather than fusing into it.
 - A plane stage reads the source, which a draw from history skips, so `rate: display` on `LUMA`, `CHROMA`, or `NATIVE` is a header error.
@@ -182,7 +184,7 @@ fn kernel(coordinate: vec2f) -> vec4f {
 - Every expression reads the global facts, `source.width`, `source.height`, `output.width`, `output.height`, `luma.width`, `luma.height`, `chroma.width`, `chroma.height`, `frame.rate`, `display.rate`, `hdr.source`, `hdr.output`, and `rgb.source`, all fixed at plan time.
   The HDR facts are 1 or 0, and the luma and chroma sizes are the planes' (see [Planes](#planes)), so `chroma.width < luma.width` holds for subsampled chroma.
   `frame.rate` is the stream's declared frame rate, its average frame rate, else its real frame rate when the average is missing or at least 1000, and 0 when it declares none.
-  `display.rate` is the display's refresh rate in Hz, which the presenter measures from the frame loop's animation frames, and 0 until measured; the presenter plans again when the measurement moves more than 0.1% from the rate the plan read.
+  `display.rate` is the display's refresh rate in Hz, which the presenter measures from the frame loop's animation frames, and 0 until measured; the presenter plans again when the measurement moves more than 0.1% from the rate the plan read, while a pass's `when` reads it, and a pass that decides on each draw reads `presentation.refreshSeconds` instead.
   `rgb.source` is 1 where the source codes R, G, and B planes, where mpv fires its `RGB` hook rather than `LUMA` and `CHROMA`; no route presents such video, so it is 0 on every route.
 - `when` also reads the pass's own parameters and constants by name, at their current values, and the presenter plans again when one that a `when` reads changes.
 - `output` and `dispatch` also read `<NAME>.width` and `<NAME>.height` for `HOOKED` and each input, by its base name for a history input.
@@ -245,10 +247,10 @@ The engine owns every binding, and generates around each body:
   - `referenceWhiteNits() -> f32`, the nits of mpv's linear 1.0: the configured SDR white for an SDR source, BT.2408's HDR reference white, 203 nits, for HDR.
     A pass of the `linear` domain reads nits, so it divides by it to work in mpv's scale.
   - `rgbToPlanes(color: vec3f) -> vec3f` and `planesToRGB(planes: vec3f) -> vec3f`: 'source' RGB to the normalized Y, Cb, and Cr plane values of the source's own matrix and range, and back, each the other's exact inverse.
-- The `presentation` uniform, whose frame globals are `sourceSize`, `outputSize`, and `inputSize` as `vec2f`, `timestampSeconds`, `frameIndex`, `historyValid`, `skippedFrames`, `fieldState`, `refreshSeconds`, and `targetOffsetSeconds`.
+- The `presentation` uniform, whose frame globals are `sourceSize`, `outputSize`, and `inputSize` as `vec2f`, `timestampSeconds`, `frameIndex`, `historyValid`, `skippedFrames`, `fieldState`, `refreshSeconds`, `targetOffsetSeconds`, and `frameDurationSeconds`.
   `historyValid` counts the earlier frames history holds: 0 after a reset, rising by one per new frame to the plan's deepest history, so a pass that reads history weighs it by `historyValid`, as `temporal-blend.wgsl` does.
   `skippedFrames` counts the frames dropped since the previous new frame, which a temporal pass may treat as a soft reset.
-  `refreshSeconds` and `targetOffsetSeconds` time a draw within the display's refreshes (see [Display rate](#display-rate)).
+  `refreshSeconds`, `targetOffsetSeconds`, and `frameDurationSeconds` time a draw within the display's refreshes and the stream's frames (see [Display rate](#display-rate)).
   [Architecture](architecture.md#presentation) lists when history resets.
 - The vertex stage and the fragment or compute entry point that call the body's entry point.
 

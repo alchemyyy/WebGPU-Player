@@ -713,6 +713,7 @@ export class PresentationExecutor {
     private readonly sourceKind: PresentationSourceKind;
     private readonly uniformValues: PresentationUniformValues = {
         fieldState: 0,
+        frameDurationSeconds: 0,
         frameIndex: 0,
         historyValid: 0,
         inputHeight: 0,
@@ -1390,6 +1391,7 @@ export class PresentationExecutor {
             setSourceSize(values, frame.source);
         }
         values.fieldState = frame.fieldState;
+        values.frameDurationSeconds = frame.frameDurationMicroseconds / MICROSECONDS_PER_SECOND;
         values.frameIndex = getRecordedFrameNumber(this.frameCount, frame.newFrame);
         values.historyValid = Math.min(historyFrameNumber, this.historySaturation);
         values.outputHeight = geometry.viewportHeight;

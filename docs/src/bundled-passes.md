@@ -53,14 +53,15 @@ In `smooth-motion.wgsl`, each display refresh shows the frames it spans, the new
 A refresh within one frame shows that frame untouched, and so does every refresh while the clock stands still, so a paused picture shows one frame.
 The blend runs in linear light of the display's sRGB encoding, extended past 1 and mirrored below 0 on an HDR canvas.
 
-Its `mode` constant picks when it runs:
+Whether frames blend is decided on every draw, from the refreshes a frame lasts: the media time between the stream's recent frames over the media time a refresh covers at the clock's rate, so a playback rate, a new frame rate, or another display takes effect within frames.
+Its `mode` constant picks when frames blend:
 
-- 0, the default: only where there would be motion judder without it, when the display rate is no integer multiple of the frame rate within `tolerance`.
-- 1: also where the display rate is a multiple, when the display rate is not the frame rate within `tolerance`.
+- 0, the default: only where there would be motion judder without it, when a frame lasts no whole number of refreshes within `tolerance`.
+- 1: also where it does, when a frame lasts other than one refresh within `tolerance`.
 - 2: always.
 
-`tolerance` is relative and defaults to 0.002, so 23.976 fps at 24 Hz counts as a multiple.
-A stream that declares no frame rate runs it only in mode 2, and nothing runs it before the display rate is measured.
+`tolerance` is relative and defaults to 0.002, so 23.976 fps at 24 Hz counts as a whole multiple.
+A refresh that need not blend shows the frame the clock is in, as it would without the pass; so does every refresh until the display is measured, and, in modes 0 and 1, before a frame's duration is known.
 
 - It hooks `OUTPUT` in the `display` domain, so each frame is tone mapped with its own metadata before it enters history.
 - A deinterlacing plan leaves it out as `display-rate-unavailable`.
