@@ -14,12 +14,12 @@ use super::profiles::profile5::Profile5;
 use super::profiles::profile81::Profile81;
 use super::profiles::profile84::Profile84;
 
-use super::dovi_rpu::CRC32_TERMINATOR_BITS;
 use super::extension_metadata::WithExtMetadataBlocks;
 use super::rpu_data_header::RpuDataHeader;
 
-// 16 bits min for required level 254 + CRC32 + 0x80
-const DM_DATA_PAYLOAD2_MIN_BITS: u64 = 56;
+// FFmpeg parses a CM v4.0 section when more than 48 bits remain, more than the alignment bits,
+// the CRC32, and the 0x80 terminator take
+const DM_DATA_PAYLOAD2_MIN_BITS: u64 = 49;
 
 #[derive(Debug, Default, Clone)]
 #[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
@@ -95,28 +95,19 @@ pub(crate) fn vdr_dm_data_payload(
         VdrDmData::parse(reader)?
     };
 
-    // No extension block may run into the CRC32 and terminator that end the RPU, and the
-    // sections share FFmpeg's limits on block count
+    // The sections share FFmpeg's limits on block count
     let mut block_counts = ExtensionBlockCounts::default();
-    if let Some(cmv29_dm_data) = DmData::parse::<CmV29DmData>(
-        reader,
-        compressed_dm_data,
-        CRC32_TERMINATOR_BITS,
-        &mut block_counts,
-    )
-    .with_context(|| CmV29DmData::VERSION)?
+    if let Some(cmv29_dm_data) =
+        DmData::parse::<CmV29DmData>(reader, compressed_dm_data, &mut block_counts)
+            .with_context(|| CmV29DmData::VERSION)?
     {
         vdr_dm_data.cmv29_metadata = Some(DmData::V29(cmv29_dm_data));
     }
 
     if reader.available()? >= DM_DATA_PAYLOAD2_MIN_BITS
-        && let Some(cmv40_dm_data) = DmData::parse::<CmV40DmData>(
-            reader,
-            compressed_dm_data,
-            CRC32_TERMINATOR_BITS,
-            &mut block_counts,
-        )
-        .with_context(|| CmV40DmData::VERSION)?
+        && let Some(cmv40_dm_data) =
+            DmData::parse::<CmV40DmData>(reader, compressed_dm_data, &mut block_counts)
+                .with_context(|| CmV40DmData::VERSION)?
     {
         vdr_dm_data.cmv40_metadata = Some(DmData::V40(cmv40_dm_data));
     }

@@ -136,17 +136,22 @@ These were settled on stock Chrome on Windows, with a Chromium 153 source audit.
   Since 10-15 it also takes the container's profile for an RPU whose header reveals none, as FFmpeg takes the configuration record's (`dovi_parser_set_container_profile`, from the worker's RPU profile); a header that reveals its profile keeps it.
   And an RPU's own header decides its layer, as FFmpeg's `use_nlq` does: a single-layer RPU that reuses a dual-layer mapping stays single-layer, and a dual-layer one that reuses a mapping stored without NLQ is a MEL whose residual adds nothing, where both were rejected before, one by the host's layer check and one by the bridge.
   Every color space and chroma format works because the composer maps the decoded components as they are and the RPU's own matrices convert them, as for Profile 5's IPT.
-  The AV1 EMDF container is bounded before it sizes a buffer.
+  The AV1 EMDF container is bounded before it sizes a buffer, and since 10-27 its payload size must lie between 6 and 512 bytes and its protection bits read 0x400, as FFmpeg requires.
   Upstream rejected syntax that FFmpeg's `dovi_rpudec.c` accepts, so the patches follow FFmpeg:
   - header limits widened to FFmpeg's (8 to 16-bit layers, coefficient precision up to 32 bits, no mapping color space or chroma check);
   - a mapping method per piece rather than per component;
   - unsupported syntax as a typed error;
   - panics returned as errors;
   - display-metadata extension blocks framed and bounded as `parse_ext_blocks` does (10-27).
-    A block whose coded length runs past the payload or falls short of its level's fields, an L2 `ms_weight` below -1, and more than 7 static or 25 dynamic blocks in one RPU reject it, as in FFmpeg.
+    A block whose coded length runs past the data or falls short of its level's fields, an L2 `ms_weight` below -1, and more than 7 static or 25 dynamic blocks in one RPU reject it, as in FFmpeg.
     An L1 in the CM v4.0 section is kept with its fields zeroed, as FFmpeg keeps it, so an RPU whose CM v2.9 section codes no L1 presents one of zeros.
     Unknown and other misplaced levels, and L8, L9, or L10 lengths without a defined layout, are skipped, where FFmpeg keeps them zeroed or partly read, because nothing reads them.
     Until 10-27 a short block was skipped and a misplaced L1 dropped, so that any valid L1 survived, and the block count was bounded only by the input size; the parser now rejects and keeps what FFmpeg does.
+  - the end of an RPU read as FFmpeg reads it (10-27).
+    The CRC32 and the 0x80 terminator follow the metadata and its alignment bits at once, so leftover bits before the CRC32 reject the RPU, alignment bits of any value are skipped, and bytes after the terminator are ignored.
+    The CRC32 is not verified, because FFmpeg verifies it only when asked to and even then only logs a mismatch.
+    A CM v4.0 section is read when more than 48 bits remain after the CM v2.9 section, FFmpeg's test.
+    Until 10-27 upstream's reading held: the last five bytes were the CRC32 and terminator, bits between them and the metadata were kept, nonzero alignment bits and a CRC32 mismatch rejected the RPU, and so did bytes after the terminator.
 - Mixed pieces and linear interpolation are packed per segment (10-08).
   A component may mix polynomial and MMR pieces, as FFmpeg reads them, so the snapshot (schema 2) stores the method per segment: an MMR segment has an order above 0 in its last slot.
   Polynomial linear interpolation, which FFmpeg rejects for lack of samples and ETSI GS CCM 001 V1.1.1 does not define, is read as annex A of US 10,701,399 B2 codes it.

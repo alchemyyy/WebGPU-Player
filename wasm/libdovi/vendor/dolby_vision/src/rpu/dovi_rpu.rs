@@ -27,7 +27,6 @@ use crate::utils::{
 };
 
 pub(crate) const FINAL_BYTE: u8 = 0x80;
-pub(crate) const CRC32_TERMINATOR_BITS: u64 = 40;
 
 /// based on empiric  data
 /// RPU is usually between 150-400 bytes (including emulation prevention bytes)
@@ -114,9 +113,8 @@ impl DoviRpu {
 
     #[inline(always)]
     pub(crate) fn parse(data: &[u8]) -> Result<DoviRpu> {
+        // Trailing zero bytes are byte stream padding, not part of the RPU
         let trailing_zeroes = data.iter().rev().take_while(|b| **b == 0).count();
-
-        // Ignore trailing bytes
         let rpu_end = data.len() - trailing_zeroes;
 
         // Minimum: 1 prefix byte + at least 1 byte payload + 4 CRC32 bytes + 1 final byte = 7
@@ -125,27 +123,9 @@ impl DoviRpu {
             "RPU data too short: {rpu_end} bytes after trimming trailing zeroes"
         );
 
-        let last_byte = data[rpu_end - 1];
-
-        // Minus 4 bytes for the CRC32, 1 for the 0x80 ending byte
-        let crc32_start = rpu_end - 5;
-
-        // Ignoring the prefix byte
-        let received_crc32 = compute_crc32(&data[1..crc32_start]);
-
-        if last_byte != FINAL_BYTE {
-            bail!("Invalid RPU last byte: {}", last_byte);
-        }
-
+        // The CRC32 is read but not verified: FFmpeg checks it only under AV_EF_CRCCHECK, and
+        // then only logs a mismatch unless AV_EF_EXPLODE is also set
         let mut dovi_rpu = DoviRpu::read_rpu_data(&data[..rpu_end])?;
-
-        if received_crc32 != dovi_rpu.rpu_data_crc32 {
-            bail!(
-                "RPU CRC32 does not match the data. Received: {}, expected {}",
-                received_crc32,
-                dovi_rpu.rpu_data_crc32
-            );
-        }
 
         dovi_rpu.trailing_zeroes = trailing_zeroes;
 
@@ -191,32 +171,19 @@ impl DoviRpu {
             None
         };
 
-        // rpu_alignment_zero_bit
+        // rpu_alignment_zero_bit, skipped whatever its value, as FFmpeg's align_get_bits does
         while !reader.byte_aligned() {
-            ensure!(!reader.read_bit()?, "rpu_alignment_zero_bit != 0");
+            reader.read_bit()?;
         }
 
-        // CRC32 is at the end, there can be more data in between
-        let remaining = if reader.available()? > CRC32_TERMINATOR_BITS {
-            let mut remaining: BitVec<u8, Msb0> = BitVec::new();
-
-            while reader.available()? != CRC32_TERMINATOR_BITS {
-                remaining.push(reader.read_bit()?);
-            }
-
-            Some(remaining)
-        } else {
-            None
-        };
-
-        let avail = reader.available()?;
-        if avail != CRC32_TERMINATOR_BITS {
-            bail!("expected {CRC32_TERMINATOR_BITS} remaining bits but have {avail} bits");
-        }
-
+        // The CRC32 and the terminator follow at once, as FFmpeg reads them: leftover bits put
+        // another byte where the terminator belongs, and bytes after the terminator are ignored
         let rpu_data_crc32 = reader.read::<32, u32>()?;
         let last_byte = reader.read::<8, u8>()?;
-        ensure!(last_byte == FINAL_BYTE, "last byte should be 0x80");
+        ensure!(
+            last_byte == FINAL_BYTE,
+            "RPU byte {last_byte:#04X} stands where the 0x80 terminator belongs"
+        );
 
         Ok(DoviRpu {
             dovi_profile: header.get_dovi_profile(),
@@ -224,7 +191,6 @@ impl DoviRpu {
             header,
             rpu_data_mapping,
             vdr_dm_data,
-            remaining,
             rpu_data_crc32,
             ..Default::default()
         })

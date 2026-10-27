@@ -23,6 +23,21 @@ Every deviation from upstream:
   FFmpeg bounds an RPU only by its own length and its EMDF payload size, and an RPU that reuses a stored mapping without display metadata is shorter than either minimum.
   `DoviRpu::parse` still requires the prefix, a payload byte, the CRC32, and the terminator.
 
+## The end of an RPU, read as FFmpeg reads it
+
+- `DoviRpu::read_rpu_data` skips `rpu_alignment_zero_bit` whatever its values, as FFmpeg's `align_get_bits` does, instead of rejecting nonzero bits.
+- It reads the CRC32 and the 0x80 terminator right after the alignment, as FFmpeg does, and rejects any other byte where the terminator belongs.
+  Upstream took the last five bytes as the CRC32 and terminator and kept any bits between the metadata and them as `remaining`, which is now always None; FFmpeg meets a CRC32 byte where the terminator belongs and rejects the RPU.
+  Bytes after the terminator are ignored, as in FFmpeg, where upstream required the terminator to be the last nonzero byte.
+- `DoviRpu::parse` no longer compares the CRC32 with the data.
+  FFmpeg checks it only under `AV_EF_CRCCHECK`, off by default, and even then only logs a mismatch unless `AV_EF_EXPLODE` is set.
+  The coded CRC32 is still read and reported.
+- `vdr_dm_data_payload` parses a CM v4.0 section when more than 48 bits remain after the CM v2.9 section, FFmpeg's test, instead of at least 56.
+- Trailing zero bytes are still trimmed before parsing, as byte stream padding.
+  FFmpeg counts them toward its 48-bit test; its HEVC parser keeps one zero byte before a 4-byte start code in the RPU NAL unit.
+- `convert_av1_rpu_payload_to_regular` requires an EMDF payload size of 6 through 512 bytes and the 17 bits after the payload to be 0x400 (`emdf_payload_id` 0 and the protection lengths), as FFmpeg validates them; what follows is ignored.
+  Upstream checked neither.
+
 ## Unsupported syntax as a typed error
 
 - `rpu::UnsupportedRpuSyntax`, new in `rpu/mod.rs`: syntax with no known payload layout, for which FFmpeg returns AVERROR_PATCHWELCOME.
@@ -65,10 +80,10 @@ The layout follows annex A.1.5 of US 10,701,399 B2 and the crate's own commented
 
 An extension block rejects an RPU where FFmpeg's rejects it, and is otherwise kept or skipped by its level.
 
-- `DmData::parse` takes `compressed`, `trailing_bits`, and the RPU's `ExtensionBlockCounts`, and frames every block by its coded `ext_block_length`.
+- `DmData::parse` takes `compressed` and the RPU's `ExtensionBlockCounts`, and frames every block by its coded `ext_block_length`.
   It reads that whole payload, then parses a known level from the payload alone, so no block can read into the next one, and the remaining payload is skipped.
-- The skip stays inside the metadata: a coded length that runs past the payload, which ends `trailing_bits` before the data ends, is an error, as is a length whose bit count overflows.
-  RPUs pass `CRC32_TERMINATOR_BITS`, made `pub(crate)` in `dovi_rpu.rs`, and the ST 2094-10 SEI passes 0.
+- A coded length that runs past the data is an error, as is a length whose bit count overflows.
+  A block that reaches into an RPU's CRC32 leaves too few bytes for the CRC32 and terminator after it, which rejects the RPU, as in FFmpeg.
 - `dm_alignment_zero_bit` and `ext_dm_alignment_zero_bit` are skipped whatever their values, instead of rejecting nonzero bits.
 - `WithExtMetadataBlocks::parse_block` is a per-level parser over one block's payload that returns `Result<Option<ExtMetadataBlock>>`.
   It returns None for unknown levels and for the other CM version's levels, which are skipped and not kept, instead of rejecting them or storing them as reserved blocks; FFmpeg keeps them with zeroed fields, which nothing reads.
@@ -116,6 +131,4 @@ These parse paths cannot panic on input, so they keep upstream's code.
 
 ## Kept from upstream, more lenient than FFmpeg
 
-- `DoviRpu::parse_itu_t35_dovi_metadata_obu` checks the provider code, the provider-oriented code, and the EMDF header, then reads the payload its size names and ignores what follows, including AV1 trailing bits.
-  Unlike FFmpeg, it neither checks the `emdf_protection` footer nor caps the payload at 512 bytes; the RPU's CRC32 still guards the payload.
 - `num_ext_blocks` and `ext_block_length` are read as whole Exp-Golomb codes, where FFmpeg's `get_ue_golomb_31` misreads values above 30.

@@ -219,7 +219,8 @@ Other conditions:
 - A separate-track P7 (a base track and an EL track) selects the same routes.
   `test/capability/CustomPlaybackEligibility.test.ts` covers it.
 - An RPU the parser rejects ends the custom session, which then falls back.
-  The parser follows FFmpeg's `dovi_rpudec.c`: a display-metadata extension block that runs past the payload or falls short of its level's fields, an L2 `ms_weight` below -1, or more than 7 static or 25 dynamic blocks reject the RPU, an L1 in the CM v4.0 section counts as an L1 of zeros, and unknown, other misplaced, or padded blocks are skipped.
+  The parser follows FFmpeg's `dovi_rpudec.c`: a display-metadata extension block that runs past the data or falls short of its level's fields, an L2 `ms_weight` below -1, or more than 7 static or 25 dynamic blocks reject the RPU, an L1 in the CM v4.0 section counts as an L1 of zeros, and unknown, other misplaced, or padded blocks are skipped.
+  Leftover bits before the CRC32, or an AV1 EMDF wrapper whose size or protection bits FFmpeg refuses, also reject it, while a CRC32 mismatch and bytes after the 0x80 terminator do not, as in FFmpeg.
   It also reads what FFmpeg does not: polynomial and MMR pieces mixed within one component, polynomial linear interpolation (see [Decisions](decisions.md#video-decode-and-dolby-vision)), and any mapping color space or chroma format.
 
 ## Not supported

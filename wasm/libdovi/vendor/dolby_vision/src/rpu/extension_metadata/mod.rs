@@ -70,19 +70,19 @@ pub(crate) fn ensure_block_length(level: u8, length: u64, minimum_length: u64) -
     Ok(())
 }
 
-/// Reads the coded payload of one extension block, which must end before the trailing bits
-/// that follow the metadata, such as an RPU's CRC32 and terminator
+/// Reads the coded payload of one extension block, which must end before the data does.
+/// A payload that reaches into an RPU's CRC32 and terminator leaves too few bytes for them after it,
+/// which rejects the RPU, as in FFmpeg
 fn read_extension_block_payload(
     reader: &mut BsIoSliceReader,
     ext_block_length: u64,
-    trailing_bits: u64,
 ) -> Result<Vec<u8>> {
-    let payload_bits = reader.available()?.saturating_sub(trailing_bits);
+    let available_bits = reader.available()?;
     ensure!(
         ext_block_length
             .checked_mul(8)
-            .is_some_and(|length_bits| length_bits <= payload_bits),
-        "Extension block length {ext_block_length} runs past the metadata payload"
+            .is_some_and(|length_bits| length_bits <= available_bits),
+        "Extension block length {ext_block_length} runs past the data"
     );
 
     let mut payload = vec![0; ext_block_length as usize];
@@ -190,12 +190,11 @@ pub trait WithExtMetadataBlocks {
 impl DmData {
     /// Parses one CM section the way FFmpeg's parse_ext_blocks does: every block is framed by its
     /// coded length, a known level is kept, and any other block is skipped. `compressed` drops
-    /// static levels, `trailing_bits` follow the metadata and bound every block payload, and
-    /// `block_counts` carries the RPU's blocks across its sections to bound their number
+    /// static levels, and `block_counts` carries the RPU's blocks across its sections to bound
+    /// their number
     pub(crate) fn parse<T: WithExtMetadataBlocks + Default>(
         reader: &mut BsIoSliceReader,
         compressed: bool,
-        trailing_bits: u64,
         block_counts: &mut ExtensionBlockCounts,
     ) -> Result<Option<T>> {
         let num_ext_blocks = reader.read_ue()?;
@@ -211,7 +210,7 @@ impl DmData {
             let ext_block_length = reader.read_ue()?;
             let ext_block_level = reader.read::<8, u8>()?;
             block_counts.count(ext_block_level, compressed)?;
-            let payload = read_extension_block_payload(reader, ext_block_length, trailing_bits)?;
+            let payload = read_extension_block_payload(reader, ext_block_length)?;
 
             // A block parses only from its own payload, so it never reads into the next one,
             // and its ext_dm_alignment_zero_bit padding is skipped whatever its value

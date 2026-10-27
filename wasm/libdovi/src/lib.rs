@@ -1595,6 +1595,7 @@ mod tests {
     const LEVEL1_AVERAGE_PQ_WORD: usize = 40;
     const SCENE_REFRESH_WORD: usize = 41;
     const AFFECTED_DM_METADATA_ID_WORD: usize = 42;
+    const RPU_CRC32_WORD: usize = 45;
     const COMPONENT_BYTE_OFFSET: usize =
         HEADER_BYTE_LENGTH + ((COLOR_FLOAT_COUNT + NLQ_FLOAT_COUNT) * size_of::<f32>());
     const LUMA_PIVOT_BYTE_OFFSET: usize =
@@ -2912,19 +2913,110 @@ mod tests {
     }
 
     #[test]
-    fn extension_block_running_past_the_payload_is_malformed() {
-        let input = encode_with_extension_sections(|writer| {
+    fn extension_block_running_past_the_data_or_into_the_crc32_is_malformed() {
+        let past_the_data = encode_with_extension_sections(|writer| {
             writer.write_unsigned_exp_golomb(1);
             writer.fill_to_byte(0);
             // A 200-byte block whose payload the RPU ends before
             writer.write_unsigned_exp_golomb(200);
             writer.write_bits(1, 8);
         });
-
-        let failure = parse_into(&mut ParserContext::default(), &input).unwrap_err();
-
+        let failure = parse_into(&mut ParserContext::default(), &past_the_data).unwrap_err();
         assert_eq!(failure.code, STATUS_PARSE_FAILED);
-        assert!(failure.message.contains("runs past the metadata payload"));
+        assert!(failure.message.contains("runs past the data"));
+
+        // A 3-byte block of an unknown level that only the CRC32 completes leaves too few bytes for it
+        let into_the_crc32 = encode_with_extension_sections(|writer| {
+            writer.write_unsigned_exp_golomb(1);
+            writer.fill_to_byte(0);
+            writer.write_unsigned_exp_golomb(3);
+            writer.write_bits(200, 8);
+        });
+        let failure = parse_into(&mut ParserContext::default(), &into_the_crc32).unwrap_err();
+        assert_eq!(failure.code, STATUS_PARSE_FAILED);
+    }
+
+    #[test]
+    fn leftover_bytes_before_the_crc32_reject_the_rpu_as_in_ffmpeg() {
+        // FFmpeg reads the CRC32 right after the metadata, so the terminator check meets a CRC32 byte.
+        // After both sections; and after the CM v2.9 section only, where more than 48 remaining
+        // bits make FFmpeg read the leftover byte as an empty CM v4.0 section first
+        let after_both_sections = encode_with_extension_sections(|writer| {
+            write_extension_section(writer, &[level1_block(LEVEL1_VALUES)], 0);
+            write_extension_section(writer, &[level254_block()], 0);
+            writer.write_bits(0, 8);
+        });
+        let after_one_section = encode_with_extension_sections(|writer| {
+            write_extension_section(writer, &[level1_block(LEVEL1_VALUES)], 0);
+            writer.write_bits(0x80, 8);
+            writer.write_bits(0, 8);
+        });
+
+        for input in [after_both_sections, after_one_section] {
+            let failure = parse_into(&mut ParserContext::default(), &input).unwrap_err();
+
+            assert_eq!(failure.code, STATUS_PARSE_FAILED);
+            assert!(
+                failure
+                    .message
+                    .contains("where the 0x80 terminator belongs")
+            );
+        }
+    }
+
+    #[test]
+    fn nonzero_alignment_bits_before_the_crc32_are_skipped_as_in_ffmpeg() {
+        // An RPU that reuses a stored mapping without display metadata ends in prev_vdr_rpu_id's 1 bit
+        let mut reusing = without_color_metadata(profile8_rpu());
+        reusing.header.use_prev_vdr_rpu_flag = true;
+        reusing.rpu_data_mapping = None;
+        let written = reusing.write_rpu().unwrap();
+        let crc_offset = written.len() - RPU_TRAILER_BYTE_LENGTH;
+        let last_set_bit = (0..crc_offset * 8)
+            .rev()
+            .find(|position| read_bits(&written, *position, 1) == 1)
+            .unwrap();
+        let alignment_bit_count = (crc_offset * 8) - last_set_bit - 1;
+        assert!(alignment_bit_count > 0);
+        let ones = (1 << alignment_bit_count) - 1;
+
+        let mut context = ParserContext::default();
+        parse_into(&mut context, &encode(&profile8_rpu())).unwrap();
+        let expected = parse_into(&mut context, &encode(&reusing)).unwrap();
+        // encode_with_bits recomputes the CRC32, which the snapshot carries
+        let input = encode_with_bits(&reusing, last_set_bit + 1, alignment_bit_count, ones);
+        let mut output = parse_into(&mut context, &input).unwrap();
+        let crc_word = RPU_CRC32_WORD * 4..(RPU_CRC32_WORD + 1) * 4;
+        output[crc_word.clone()].copy_from_slice(&expected[crc_word]);
+
+        assert_eq!(output, expected);
+    }
+
+    #[test]
+    fn crc32_mismatches_and_bytes_after_the_terminator_are_ignored_as_in_ffmpeg() {
+        let input = encode(&profile8_rpu());
+        let expected = parse_into(&mut ParserContext::default(), &input).unwrap();
+
+        let mut trailing = input.clone();
+        trailing.extend_from_slice(&[0x55, 0xAA]);
+        assert_eq!(
+            parse_into(&mut ParserContext::default(), &trailing).unwrap(),
+            expected
+        );
+
+        // The snapshot carries the coded CRC32, which is all that differs
+        let mut mismatched = input.clone();
+        let crc_offset = mismatched.len() - RPU_TRAILER_BYTE_LENGTH;
+        mismatched[crc_offset] ^= 0x01;
+        let output = parse_into(&mut ParserContext::default(), &mismatched).unwrap();
+        assert_ne!(
+            header_word(&output, RPU_CRC32_WORD),
+            header_word(&expected, RPU_CRC32_WORD)
+        );
+        let mut restored = output.clone();
+        restored[RPU_CRC32_WORD * 4..RPU_CRC32_WORD * 4 + 4]
+            .copy_from_slice(&expected[RPU_CRC32_WORD * 4..RPU_CRC32_WORD * 4 + 4]);
+        assert_eq!(restored, expected);
     }
 
     #[test]
@@ -3043,14 +3135,19 @@ mod tests {
     }
 
     #[test]
-    fn emdf_payload_sizes_that_overflow_or_pass_the_data_are_errors() {
-        // 65535 bytes, then a variable_bits chain past 32 bits; upstream aborts the release WASM on both
+    fn emdf_payload_sizes_outside_ffmpegs_bounds_or_past_the_data_are_errors() {
+        // 65535 and 5 bytes, outside FFmpeg's 6 to 512, 100 bytes the data ends before, then a
+        // variable_bits chain past 32 bits; upstream aborts the release WASM on the first and last
         let oversized = av1_payload_with_emdf_payload_size_chunks(&[0xFE, 0xFF]);
+        let undersized = av1_payload_with_emdf_payload_size_chunks(&[5]);
+        let past_the_data = av1_payload_with_emdf_payload_size_chunks(&[100]);
         let overflowing = av1_payload_with_emdf_payload_size_chunks(&[0xFF; 5]);
         for (input, message) in [
+            (oversized, "EMDF payload size 65535 is outside 6 to 512"),
+            (undersized, "EMDF payload size 5 is outside 6 to 512"),
             (
-                oversized,
-                "EMDF payload size 65535 exceeds the remaining data",
+                past_the_data,
+                "EMDF payload size 100 exceeds the remaining data",
             ),
             (overflowing, "variable_bits value exceeds 32 bits"),
         ] {
@@ -3059,6 +3156,34 @@ mod tests {
             assert_eq!(failure.code, STATUS_PARSE_FAILED);
             assert!(failure.message.contains(message), "{}", failure.message);
         }
+    }
+
+    #[test]
+    fn emdf_protection_bits_are_required_as_in_ffmpeg() {
+        let rpu = profile8_rpu();
+        let payload_size = rpu.write_rpu().unwrap().len() - 1;
+        assert!(payload_size < 256);
+        // The country code, the provider codes, the EMDF header, a one-chunk size, then the payload
+        let protection_bit_offset = 8 + 16 + 32 + EMDF_HEADER_BIT_LENGTH + 9 + (payload_size * 8);
+        let payload = encode_av1(&rpu);
+        assert_eq!(read_bits(&payload, protection_bit_offset, 17), 0x400);
+
+        // protection_length_primary 1 coded as 0
+        let mut altered = payload.clone();
+        let set_bit_offset = protection_bit_offset + 6;
+        altered[set_bit_offset / 8] ^= 0x80 >> (set_bit_offset % 8);
+        let failure = parse_av1_into(&mut ParserContext::default(), &altered).unwrap_err();
+        assert_eq!(failure.code, STATUS_PARSE_FAILED);
+        assert!(
+            failure.message.contains("EMDF protection"),
+            "{}",
+            failure.message
+        );
+
+        // A payload that ends before its protection bits
+        let truncated = &payload[..protection_bit_offset.div_ceil(8)];
+        let failure = parse_av1_into(&mut ParserContext::default(), truncated).unwrap_err();
+        assert_eq!(failure.code, STATUS_PARSE_FAILED);
     }
 
     #[test]
