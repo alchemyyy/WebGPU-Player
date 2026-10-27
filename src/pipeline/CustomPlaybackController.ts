@@ -60,6 +60,7 @@ import type {
     CustomPlaybackState,
     CustomPlaybackTelemetry,
     CustomPlaybackVideoDecodeLagTelemetry,
+    CustomPlaybackVideoPresentationPreparer,
     CustomVideoDecodeSession,
     CustomVideoDecodeSessionFactory
 } from './CustomPlaybackControllerTypes';
@@ -110,6 +111,8 @@ type PendingStartup = {
     /** Time sampled since the startup began; measured by the samples, not a clock */
     totalElapsedMilliseconds: number
     mediaReady: boolean
+    /** The presentation prepared for the track's declared facts, which the startup's ready waits for */
+    presentationPreparation: Promise<void>
 };
 
 type ClockStarvation = 'audio' | 'video';
@@ -510,6 +513,7 @@ export default class CustomPlaybackController {
     private terminalAudioDrainGeneration: number | null = null;
     private terminalAudioTailReleased = false;
     private readonly videoDecodeSession: CustomVideoDecodeSession;
+    private videoPresentationPreparer: CustomPlaybackVideoPresentationPreparer | null = null;
     private readonly timeUpdateIntervalMicroseconds: Microseconds;
     private volume = 1;
     /** Drops late frames unpresented until video reaches the clock after a hidden period */
@@ -698,6 +702,19 @@ export default class CustomPlaybackController {
             startTimeMicroseconds: mediaTimeMicroseconds
         };
         return this.beginPlayback(seekOptions, desiredPlaying, 'seeking');
+    }
+
+    /**
+     * Has each starting generation prepare presentation for what its track declares before the first frame, between the worker's configuration
+     * and the generation's ready, which waits for the preparation; a frame loop registers its presenter here. Returns what unregisters it.
+     */
+    public setVideoPresentationPreparer(preparer: CustomPlaybackVideoPresentationPreparer): () => void {
+        this.videoPresentationPreparer = preparer;
+        return (): void => {
+            if (this.videoPresentationPreparer === preparer) {
+                this.videoPresentationPreparer = null;
+            }
+        };
     }
 
     /** Sets normalized output gain without changing mute state. */
@@ -1366,7 +1383,8 @@ export default class CustomPlaybackController {
             startedAtMicroseconds: this.readMonotonicTime(),
             timer,
             totalElapsedMilliseconds: 0,
-            mediaReady: false
+            mediaReady: false,
+            presentationPreparation: Promise.resolve()
         };
     }
 
@@ -1610,6 +1628,11 @@ export default class CustomPlaybackController {
                 type: 'static-hdr-metadata'
             });
         }
+        const preparer = this.videoPresentationPreparer;
+        if (preparer) {
+            // A preparation that fails leaves the first frame to plan for itself, as it would without one
+            this.pendingStartup.presentationPreparation = preparer(event.videoFacts).catch((): void => undefined);
+        }
     }
 
     private handleVideoReady(event: Extract<CustomDecodeSessionEvent, { type: 'ready' }>): void {
@@ -1646,6 +1669,11 @@ export default class CustomPlaybackController {
 
         pendingStartup.completing = true;
         try {
+            // The first frame is due once the startup completes, so the presentation prepared for it comes first
+            await pendingStartup.presentationPreparation;
+            if (!this.isPendingStartupActive(pendingStartup)) {
+                return;
+            }
             let appliedPlaying = pendingStartup.desiredPlaying;
             while (true) {
                 appliedPlaying = pendingStartup.desiredPlaying;

@@ -312,6 +312,16 @@ export type DecodedPresentationFrame =
     | DecodedRawPresentationFrame
     | DecodedVideoPresentationFrame;
 
+/**
+ * What a decoded stream declares before its first frame, which the decode worker reads from the track: the chroma its decoder configuration declares,
+ * and the visible size its frames are expected to have.
+ */
+export type DecodedVideoStreamFacts = Readonly<{
+    chromaFormat: VideoChromaFormat | null
+    frameHeight: number
+    frameWidth: number
+}>;
+
 export type IdentityColorPipelineConfiguration = {
     /** The stream's color, whose matrix and range the browser converts its frames with, and which the planes of plane passes derive through */
     metadata: InputColorMetadata
@@ -2197,34 +2207,53 @@ export default class WebGPUPresenter {
     }
 
     /**
+     * Plans for what a decoded stream declares before its first frame, its chroma format and frame size, and builds that plan's executor, whose
+     * pipelines compile with createRenderPipelineAsync; resolves once it is installed, or at once when the facts change no plan.
+     * The first frame of those facts then presents without a replan, and a frame that differs replans as it would without them.
+     * A stale generation, or one that fell back, changes nothing.
+     */
+    async prepareDecodedVideo(facts: DecodedVideoStreamFacts, generation: number): Promise<void> {
+        if (!this.isCurrent(generation) || this.fallbackLatched) {
+            return;
+        }
+        if (this.applyStreamFacts(null, { height: facts.frameHeight, width: facts.frameWidth }, facts.chromaFormat)) {
+            await this.applyPlanInputs();
+        }
+    }
+
+    /**
      * Follows what deinterlacing plans depend on in a frame: its visible size, which they run at, and whether it is interlaced, which makes the session's plans
      * deinterlace; a change starts building a plan for it, which later frames present with.
      */
     private followFrameFields(decodedFrame: DecodedPresentationFrame): void {
         const fields = this.getEffectiveFrameFields(decodedFrame.fields ?? null);
-        const visibleSize = getDecodedFrameVisibleSize(decodedFrame);
+        if (this.applyStreamFacts(fields, getDecodedFrameVisibleSize(decodedFrame), decodedFrame.chromaFormat ?? null)) {
+            void this.applyPlanInputs();
+        }
+    }
+
+    /** Takes a frame's or a stream's fields, visible size, and chroma format into the plan facts; returns whether the plan revision advanced. */
+    private applyStreamFacts(fields: VideoFrameFields | null, visibleSize: VisibleSize, chromaFormat: VideoChromaFormat | null): boolean {
         const previousFacts = this.videoFieldFacts;
         const previousChromaLocation = this.streamChromaLocation;
         const previousChromaSubsampling = this.streamChromaSubsampling;
-        let changed = this.changeDeinterlaceInputs((): void => {
+        const changed = this.changeDeinterlaceInputs((): void => {
             if (fields !== null && fields.scan !== 'progressive') {
                 this.interlacedFrameSeen = true;
             }
             this.videoFieldFacts = { ...this.videoFieldFacts, frameHeight: visibleSize.height, frameWidth: visibleSize.width };
         });
-        this.streamChromaLocation = decodedFrame.chromaFormat?.location ?? null;
-        this.streamChromaSubsampling = decodedFrame.chromaFormat?.subsampling ?? null;
+        this.streamChromaLocation = chromaFormat?.location ?? null;
+        this.streamChromaSubsampling = chromaFormat?.subsampling ?? null;
         // Every route's signal or planes read chroma as the stream declares it, so a change replans whatever the preset; the planner returns the same plan,
         // which keeps its executor, where nothing reads it. Preset passes plan their planes at the frame's sample size.
         const chromaChanged = previousChromaLocation !== this.streamChromaLocation || previousChromaSubsampling !== this.streamChromaSubsampling;
         const sizeChanged = previousFacts.frameWidth !== visibleSize.width || previousFacts.frameHeight !== visibleSize.height;
         if (!changed && (chromaChanged || (sizeChanged && this.presetPasses.some(isPlannedPresetPass)))) {
             this.planRevision += 1;
-            changed = true;
+            return true;
         }
-        if (changed) {
-            void this.applyPlanInputs();
-        }
+        return changed;
     }
 
     /** Applies a change to what deinterlacing plans depend on; a change to the deinterlacing plans take advances the plan revision, and returns true. */

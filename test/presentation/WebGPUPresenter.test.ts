@@ -3656,11 +3656,13 @@ describe('WebGPUPresenter', () => {
         deviceHarness.createRenderPipelineAsync.mockImplementationOnce(() => pipelineResult.promise);
 
         presenter.endSession(2);
+        // The device keeps the identity pass compiled, so the new session's only compile is the preset pass, which never settles in time
+        await presenter.setPresentationPreset([ { parameters: {}, source: TUNED_COLOR_PASS_SOURCE } ]);
         vi.useFakeTimers();
         presenter.startSession(3);
         await vi.advanceTimersByTimeAsync(microsecondsToMilliseconds(WEBGPU_RESOURCE_OPERATION_TIMEOUT_MICROSECONDS));
 
-        // The identity executor of the new session is the third build, after the first session's identity and raw ones
+        // The first session compiled the identity and raw passes; the new session compiles only its preset pass
         expect(deviceHarness.createRenderPipelineAsync).toHaveBeenCalledTimes(3);
         expect(fallbackHandler).toHaveBeenCalledOnce();
         expect(fallbackHandler).toHaveBeenCalledWith(3, 'pipeline-creation-failed', `executor: ${RESOURCE_TIMEOUT_DETAIL}`);
@@ -4913,6 +4915,96 @@ describe('WebGPUPresenter', () => {
         const planCount = vi.mocked(planPresentation).mock.calls.length;
         await pushFrame(NEXT_RAW_FRAME_TIMESTAMP_MICROSECONDS, presentedFrameCount + 2);
         expect(planPresentation).toHaveBeenCalledTimes(planCount);
+    });
+
+    it('builds the plan of a declared chroma location before the first frame, whose draw then compiles nothing', async () => {
+        const metadata = createPQColorMetadata();
+        const { deviceHarness, presenter } = await startRawRoutePresentation(metadata, 'I420P10', createHDRToSDRRenderSettings());
+        const firstFrame = { ...createRawFrame('I420P10', metadata), timestampMicroseconds: RAW_FRAME_TIMESTAMP_MICROSECONDS };
+
+        await presenter.prepareDecodedVideo({
+            chromaFormat: DECLARED_CHROMA_FORMAT,
+            frameHeight: firstFrame.visibleRectangle.height,
+            frameWidth: firstFrame.visibleRectangle.width
+        }, 1);
+        expect(getLastPlanRequest().chain.signal).toEqual(createRawYUVSignal('I420P10', metadata, false, DECLARED_CHROMA_FORMAT.location));
+        const shaderModuleCount = deviceHarness.createShaderModule.mock.calls.length;
+        const pipelineCount = deviceHarness.createRenderPipelineAsync.mock.calls.length;
+        const planCount = vi.mocked(planPresentation).mock.calls.length;
+        const presentedFrameCount = presenter.getTelemetry().presentedFrameCount;
+
+        expect(presenter.presentDecodedFrame({
+            chromaFormat: DECLARED_CHROMA_FORMAT,
+            durationMicroseconds: RAW_FRAME_DURATION_MICROSECONDS,
+            frame: firstFrame,
+            mediaTimeMicroseconds: RAW_FRAME_TIMESTAMP_MICROSECONDS,
+            outputMode: 'raw-planes',
+            videoEpoch: FIRST_VIDEO_EPOCH
+        }, 1)).toBe(true);
+        await vi.waitFor(() => expect(presenter.getTelemetry().presentedFrameCount).toBe(presentedFrameCount + 1));
+
+        expect(planPresentation).toHaveBeenCalledTimes(planCount);
+        expect(deviceHarness.createShaderModule).toHaveBeenCalledTimes(shaderModuleCount);
+        expect(deviceHarness.createRenderPipelineAsync).toHaveBeenCalledTimes(pipelineCount);
+    });
+
+    it('builds the deinterlacing plan of an interlaced stream of undeclared size once the track declares its frame size, before the first frame', async () => {
+        const metadata = createPQColorMetadata();
+        const { deviceHarness, presenter } = await startRawRoutePresentation(
+            metadata,
+            'I420P10',
+            createHDRToSDRRenderSettings(),
+            { ...INTERLACED_STREAM_FIELDS, frameHeight: null, frameWidth: null }
+        );
+        expect(getLastPlanRequest().deinterlace).toBeNull();
+
+        await presenter.prepareDecodedVideo({ chromaFormat: null, frameHeight: INTERLACED_FRAME_HEIGHT, frameWidth: INTERLACED_FRAME_WIDTH }, 1);
+        expect(getLastPlanRequest().deinterlace).toEqual({ bitDepth: metadata.bitDepth, frameHeight: INTERLACED_FRAME_HEIGHT, frameWidth: INTERLACED_FRAME_WIDTH });
+        const pipelineCount = deviceHarness.createRenderPipelineAsync.mock.calls.length;
+        const presentedFrameCount = presenter.getTelemetry().presentedFrameCount;
+
+        expect(presenter.presentDecodedFrame({
+            durationMicroseconds: RAW_FRAME_DURATION_MICROSECONDS,
+            frame: { ...createRawFrame('I420P10', metadata, INTERLACED_FRAME_WIDTH, INTERLACED_FRAME_HEIGHT), timestampMicroseconds: RAW_FRAME_TIMESTAMP_MICROSECONDS },
+            mediaTimeMicroseconds: RAW_FRAME_TIMESTAMP_MICROSECONDS,
+            outputMode: 'raw-planes',
+            videoEpoch: FIRST_VIDEO_EPOCH
+        }, 1, undefined, RAW_FRAME_TIMESTAMP_MICROSECONDS)).toBe(true);
+        await vi.waitFor(() => expect(presenter.getTelemetry().presentedFrameCount).toBe(presentedFrameCount + 1));
+
+        expect(deviceHarness.createRenderPipelineAsync).toHaveBeenCalledTimes(pipelineCount);
+    });
+
+    it('ignores track facts of a stale generation', async () => {
+        const metadata = createPQColorMetadata();
+        const { presenter } = await startRawRoutePresentation(metadata, 'I420P10', createHDRToSDRRenderSettings());
+        const planCount = vi.mocked(planPresentation).mock.calls.length;
+
+        await presenter.prepareDecodedVideo({ chromaFormat: DECLARED_CHROMA_FORMAT, frameHeight: 4, frameWidth: 8 }, 2);
+
+        expect(planPresentation).toHaveBeenCalledTimes(planCount);
+    });
+
+    it('compiles nothing for a later session on the kept device that plans the same passes', async () => {
+        const metadata = createPQColorMetadata();
+        const { deviceHarness, presenter } = await startRawRoutePresentation(metadata, 'I420P10', createHDRToSDRRenderSettings());
+        const shaderModuleCount = deviceHarness.createShaderModule.mock.calls.length;
+        const pipelineCount = deviceHarness.createRenderPipelineAsync.mock.calls.length;
+        const surfaceHarness = createSurfaceHarness();
+
+        presenter.endSession(2);
+        presenter.startSession(3);
+        presenter.setDecodedFramePushMode(true, 3);
+        presenter.attach(surfaceHarness.surface, 3);
+        await expect(presenter.configureColorPipeline({
+            inputMode: 'raw-yuv',
+            metadata,
+            rawFrameFormat: 'I420P10',
+            settings: createHDRToSDRRenderSettings()
+        }, 3)).resolves.toBe(true);
+
+        expect(deviceHarness.createShaderModule).toHaveBeenCalledTimes(shaderModuleCount);
+        expect(deviceHarness.createRenderPipelineAsync).toHaveBeenCalledTimes(pipelineCount);
     });
 
     it('replans for a new output size only while preset passes take part in plans, keeping live parameter values', async () => {

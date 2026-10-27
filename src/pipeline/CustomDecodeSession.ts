@@ -2,7 +2,7 @@ import type { AudioDecoderPackageSelection } from '../decode/audio/AudioDecoderP
 import { createEngineWorker } from '../EngineAssets';
 import type { Microseconds } from '../MediaTime';
 import { ingestWorkerTimingEvents, isTimingTraceActive, recordTimingEvent } from '../TimingTrace';
-import type { DecodedFramePoolPresentationFrame, DecodedPresentationFrame } from '../presentation/WebGPUPresenter';
+import type { DecodedFramePoolPresentationFrame, DecodedPresentationFrame, DecodedVideoStreamFacts } from '../presentation/WebGPUPresenter';
 import { isGPUDecoderOutputFormat } from '../decode/video/gpu/GPUDecodeFormats';
 import { getGPUDecoderParserModule } from '../decode/video/gpu/GPUDecoderParser';
 import { createGPUDecodeStreamFacts } from '../decode/video/gpu/GPUFramePool';
@@ -147,6 +147,8 @@ export type CustomDecodeSessionEvent =
         generation: number
         staticHDRMetadata?: StaticHDRMetadata
         type: 'configured'
+        /** What the track declares of its frames before the first one: the chroma format and the visible size */
+        videoFacts: DecodedVideoStreamFacts
     }
     | {
         audio: DecodeWorkerReadyAudioConfiguration | null
@@ -1659,7 +1661,12 @@ export default class CustomDecodeSession {
             codec: videoCodec,
             generation: generationRecord.generation,
             ...(generationRecord.staticHDRMetadata ? { staticHDRMetadata: generationRecord.staticHDRMetadata } : {}),
-            type: 'configured'
+            type: 'configured',
+            videoFacts: {
+                chromaFormat: generationRecord.videoChromaFormat,
+                frameHeight: message.codedHeight,
+                frameWidth: message.codedWidth
+            }
         });
 
         if (!audioConfiguration) {

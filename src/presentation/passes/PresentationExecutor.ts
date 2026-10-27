@@ -59,6 +59,11 @@ import {
     type PlaneTextureSet,
     uploadPlanes
 } from './PlaneTextureSource';
+import {
+    getCompiledPresentationPass,
+    type CompiledPresentationPass,
+    type PresentationPassPipeline
+} from './PresentationPipelineCache';
 
 const VERTEX_ENTRY_POINT = 'vertexMain';
 const FRAGMENT_ENTRY_POINT = 'fragmentMain';
@@ -136,9 +141,7 @@ type ComputeRecording = { dispatch: ComputeDispatch; kind: 'compute'; pipeline: 
 
 type RenderRecording = { kind: 'render'; pipeline: GPURenderPipeline; target: RenderTarget };
 
-type PassPipeline =
-    | { kind: 'compute'; pipeline: GPUComputePipeline }
-    | { kind: 'render'; pipeline: GPURenderPipeline };
+type PassPipeline = PresentationPassPipeline;
 
 type ExecutorPass = {
     bindGroupLayout: GPUBindGroupLayout
@@ -218,19 +221,13 @@ function mapCompileMessage(message: GPUCompilationMessage, lineMap: readonly Pas
     };
 }
 
-async function collectCompileErrors(
-    passes: readonly PlannedPass[],
-    shaderModules: readonly GPUShaderModule[]
-): Promise<PresentationCompileMessage[]> {
-    const compilationInfos = await Promise.all(shaderModules.map(
-        (shaderModule: GPUShaderModule): Promise<GPUCompilationInfo> => shaderModule.getCompilationInfo()
-    ));
+/** Returns the error messages of a pass's compiled module, each mapped back to the user pass line it came from. */
+async function collectCompileErrors(pass: PlannedPass, shaderModule: GPUShaderModule): Promise<PresentationCompileMessage[]> {
+    const compilationInfo = await shaderModule.getCompilationInfo();
     const messages: PresentationCompileMessage[] = [];
-    for (let passIndex = 0; passIndex < passes.length; passIndex += 1) {
-        for (const message of compilationInfos[passIndex].messages) {
-            if (message.type === 'error') {
-                messages.push(mapCompileMessage(message, passes[passIndex].lineMap));
-            }
+    for (const message of compilationInfo.messages) {
+        if (message.type === 'error') {
+            messages.push(mapCompileMessage(message, pass.lineMap));
         }
     }
     return messages;
@@ -328,13 +325,13 @@ function createBindGroupLayoutEntry(
     }
 }
 
-function createBindGroupLayout(device: GPUDevice, pass: PlannedPass, resources: LayoutResources): GPUBindGroupLayout {
+function createBindGroupLayoutEntries(pass: PlannedPass, resources: LayoutResources): GPUBindGroupLayoutEntry[] {
     const visibility = pass.kind === 'compute' ? GPUShaderStage.COMPUTE : GPUShaderStage.FRAGMENT;
     const entries: GPUBindGroupLayoutEntry[] = [];
     for (const binding of pass.bindings) {
         entries.push(createBindGroupLayoutEntry(binding, visibility, resources));
     }
-    return device.createBindGroupLayout({ entries, label: pass.label });
+    return entries;
 }
 
 function getRenderTargetFormat(
@@ -351,41 +348,98 @@ function getRenderTargetFormat(
     }
 }
 
+/** What one pass's pipeline depends on: its WGSL and stage, its bind group layout, and a render pass's target format. */
+type PassCompileRequest = Readonly<{
+    layoutEntries: readonly GPUBindGroupLayoutEntry[]
+    pass: PlannedPass
+    targetFormat: GPUTextureFormat | null
+}>;
+
+function getPassCompileKey(request: PassCompileRequest): string {
+    const { layoutEntries, pass, targetFormat } = request;
+    return JSON.stringify([ pass.kind, pass.label, targetFormat, layoutEntries, pass.code ]);
+}
+
 async function createPassPipeline(
     device: GPUDevice,
-    output: PlannedOutput,
-    pass: PlannedPass,
+    request: PassCompileRequest,
     shaderModule: GPUShaderModule,
-    bindGroupLayout: GPUBindGroupLayout,
-    textures: ReadonlyMap<string, PlannedTexture>
+    bindGroupLayout: GPUBindGroupLayout
 ): Promise<PassPipeline> {
+    const { pass, targetFormat } = request;
     const layout = device.createPipelineLayout({ bindGroupLayouts: [ bindGroupLayout ], label: pass.label });
-    switch (pass.kind) {
-        case 'compute':
-            return {
-                kind: 'compute',
-                pipeline: await device.createComputePipelineAsync({
-                    compute: { entryPoint: COMPUTE_ENTRY_POINT, module: shaderModule },
-                    label: pass.label,
-                    layout
-                })
-            };
-        case 'render':
-            return {
-                kind: 'render',
-                pipeline: await device.createRenderPipelineAsync({
-                    fragment: {
-                        entryPoint: FRAGMENT_ENTRY_POINT,
-                        module: shaderModule,
-                        targets: [ { format: getRenderTargetFormat(pass, output, textures) } ]
-                    },
-                    label: pass.label,
-                    layout,
-                    primitive: { topology: 'triangle-list' },
-                    vertex: { entryPoint: VERTEX_ENTRY_POINT, module: shaderModule }
-                })
-            };
+    if (pass.kind === 'compute' || targetFormat === null) {
+        return {
+            kind: 'compute',
+            pipeline: await device.createComputePipelineAsync({
+                compute: { entryPoint: COMPUTE_ENTRY_POINT, module: shaderModule },
+                label: pass.label,
+                layout
+            })
+        };
     }
+    return {
+        kind: 'render',
+        pipeline: await device.createRenderPipelineAsync({
+            fragment: {
+                entryPoint: FRAGMENT_ENTRY_POINT,
+                module: shaderModule,
+                targets: [ { format: targetFormat } ]
+            },
+            label: pass.label,
+            layout,
+            primitive: { topology: 'triangle-list' },
+            vertex: { entryPoint: VERTEX_ENTRY_POINT, module: shaderModule }
+        })
+    };
+}
+
+/** Compiles one pass; it rejects with a PresentationCompileError when the pass's WGSL does not compile. */
+async function compilePass(device: GPUDevice, request: PassCompileRequest): Promise<CompiledPresentationPass> {
+    const { layoutEntries, pass } = request;
+    const bindGroupLayout = device.createBindGroupLayout({ entries: [ ...layoutEntries ], label: pass.label });
+    const shaderModule = device.createShaderModule({ code: pass.code, label: pass.label });
+    const compileErrors = await collectCompileErrors(pass, shaderModule);
+    if (compileErrors.length > 0) {
+        throw new PresentationCompileError(compileErrors);
+    }
+    return { bindGroupLayout, pipeline: await createPassPipeline(device, request, shaderModule, bindGroupLayout) };
+}
+
+/**
+ * Returns every pass of a plan compiled on a device, from the device's pipeline cache where it kept them.
+ * Compile errors of every failing pass reject together, in pass order, as one PresentationCompileError.
+ */
+async function compilePlanPasses(
+    device: GPUDevice,
+    plan: PresentationPlan,
+    resources: LayoutResources
+): Promise<CompiledPresentationPass[]> {
+    const requests = plan.passes.map((pass: PlannedPass): PassCompileRequest => ({
+        layoutEntries: createBindGroupLayoutEntries(pass, resources),
+        pass,
+        targetFormat: pass.kind === 'render' ? getRenderTargetFormat(pass, plan.output, resources.textures) : null
+    }));
+    const results = await Promise.allSettled(requests.map((request: PassCompileRequest): Promise<CompiledPresentationPass> => (
+        getCompiledPresentationPass(device, getPassCompileKey(request), (): Promise<CompiledPresentationPass> => compilePass(device, request))
+    )));
+    const compileMessages: PresentationCompileMessage[] = [];
+    const compiledPasses: CompiledPresentationPass[] = [];
+    for (const result of results) {
+        if (result.status === 'fulfilled') {
+            compiledPasses.push(result.value);
+        } else if (result.reason instanceof PresentationCompileError) {
+            compileMessages.push(...result.reason.messages);
+        }
+    }
+    if (compileMessages.length > 0) {
+        throw new PresentationCompileError(compileMessages);
+    }
+    const failure = results.find((result: PromiseSettledResult<CompiledPresentationPass>): result is PromiseRejectedResult => result.status === 'rejected');
+    if (failure) {
+        throw failure.reason;
+    }
+    return compiledPasses;
 }
 
 function collectEngineResources(passes: readonly PlannedPass[]): Set<EngineBindingResource> {
@@ -791,18 +845,14 @@ export class PresentationExecutor {
             passTextures.set(texture.id, texture);
         }
         const layoutResources: LayoutResources = { float32Filterable: device.features.has(FLOAT32_FILTERABLE_FEATURE), passTextures, textures };
-        const bindGroupLayouts = plan.passes.map((pass: PlannedPass): GPUBindGroupLayout => createBindGroupLayout(device, pass, layoutResources));
-        const shaderModules = plan.passes.map((pass: PlannedPass): GPUShaderModule => (
-            device.createShaderModule({ code: pass.code, label: pass.label })
-        ));
-        const compileErrors = await collectCompileErrors(plan.passes, shaderModules);
-        if (compileErrors.length > 0) {
-            throw new PresentationCompileError(compileErrors);
-        }
-        const pipelines = await Promise.all(plan.passes.map((pass: PlannedPass, index: number): Promise<PassPipeline> => (
-            createPassPipeline(device, plan.output, pass, shaderModules[index], bindGroupLayouts[index], textures)
-        )));
-        return new PresentationExecutor(device, plan, bindGroupLayouts, pipelines, passTextureViews);
+        const compiledPasses = await compilePlanPasses(device, plan, layoutResources);
+        return new PresentationExecutor(
+            device,
+            plan,
+            compiledPasses.map((compiledPass: CompiledPresentationPass): GPUBindGroupLayout => compiledPass.bindGroupLayout),
+            compiledPasses.map((compiledPass: CompiledPresentationPass): PassPipeline => compiledPass.pipeline),
+            passTextureViews
+        );
     }
 
     /** Writes the render settings uniform; it does nothing when the plan does not bind render settings. */

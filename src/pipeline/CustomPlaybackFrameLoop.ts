@@ -2,7 +2,7 @@
 import type { Microseconds } from '../MediaTime';
 import { requireMicroseconds } from '../TimeMath';
 import type WebGPUPresenter from '../presentation/WebGPUPresenter';
-import type { DecodedPresentationFrame } from '../presentation/WebGPUPresenter';
+import type { DecodedPresentationFrame, DecodedVideoStreamFacts } from '../presentation/WebGPUPresenter';
 import type CustomPlaybackController from './CustomPlaybackController';
 
 /** How often a hidden page drains decoded video. */
@@ -34,6 +34,7 @@ export default class CustomPlaybackFrameLoop {
     private presentationGeneration: number;
     private frameCallback: number | null = null;
     private backgroundDrainTimer: ReturnType<typeof globalThis.setInterval> | null = null;
+    private readonly unregisterPresentationPreparer: () => void;
 
     constructor(options: CustomPlaybackFrameLoopOptions) {
         this.controller = options.controller;
@@ -41,6 +42,10 @@ export default class CustomPlaybackFrameLoop {
         this.isCurrent = options.isCurrent;
         this.onFailure = options.onFailure;
         this.presentationGeneration = options.presentationGeneration;
+        // Each starting generation builds the plan its track declares before the first frame is due, in the generation frames then present in
+        this.unregisterPresentationPreparer = this.controller.setVideoPresentationPreparer(
+            (facts: DecodedVideoStreamFacts): Promise<void> => this.presenter.prepareDecodedVideo(facts, this.presentationGeneration)
+        );
     }
 
     /** The presentation generation frames present in; a seek or a paused refresh moves the playback to a new one. */
@@ -106,10 +111,11 @@ export default class CustomPlaybackFrameLoop {
         }
     }
 
-    /** Stops presenting and draining. */
+    /** Stops presenting and draining, and preparing presentation for the controller's later generations. */
     destroy(): void {
         this.cancel();
         this.stopBackgroundDrain();
+        this.unregisterPresentationPreparer();
     }
 
     /**

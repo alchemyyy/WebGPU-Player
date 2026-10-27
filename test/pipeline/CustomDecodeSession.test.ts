@@ -1093,7 +1093,8 @@ describe('CustomDecodeSession', () => {
                 maximumContentLightLevelNits: 500,
                 maximumFrameAverageLightLevelNits: 200
             },
-            type: 'configured'
+            type: 'configured',
+            videoFacts: { chromaFormat: null, frameHeight: 1_080, frameWidth: 1_920 }
         } ]);
 
         const firstFrame = emitFrame(worker, 7, 1_100_000);
@@ -1197,7 +1198,8 @@ describe('CustomDecodeSession', () => {
                 audio: null,
                 codec: 'hvc1.2.4.L153.B0',
                 generation: 8,
-                type: 'configured'
+                type: 'configured',
+                videoFacts: { chromaFormat: null, frameHeight: 1_080, frameWidth: 1_920 }
             } ]);
         }
     );
@@ -1783,7 +1785,9 @@ describe('CustomDecodeSession', () => {
             audio: null,
             codec: 'hvc1.2.4.L153.B0',
             generation: 18,
-            type: 'configured'
+            type: 'configured',
+            // The track's coded size is the size its frames are expected to show
+            videoFacts: { chromaFormat: null, frameHeight: 2_080, frameWidth: 3_840 }
         } ]);
     });
 
@@ -2208,7 +2212,8 @@ describe('CustomDecodeSession', () => {
             audio: audioConfiguration,
             codec: 'hev1.2.4.L153.B0',
             generation: 9,
-            type: 'configured'
+            type: 'configured',
+            videoFacts: { chromaFormat: null, frameHeight: 1_080, frameWidth: 1_920 }
         } ]);
 
         emitFrame(worker, 9, 1_000_000);
