@@ -71,11 +71,13 @@ const CUSTOM_MATROSKA_VIDEO_CODECS: readonly CustomVideoCodec[] = Object.freeze(
 export const CUSTOM_MATROSKA_PROFILE_CONTAINER = 'mkv';
 // Mediabunny's AVI demuxer stamps packets in decode order, which the sample sink reorders but the owned HEVC path does not, so HEVC stays out
 const CUSTOM_AVI_VIDEO_CODECS: readonly CustomVideoCodec[] = Object.freeze([ 'h264', 'vp8', 'vp9', 'av1' ]);
-// The WAVEFORMATEX tags Mediabunny maps; FLAC and Vorbis in AVI carry no decoder description Mediabunny reads
+// The audio Mediabunny maps from WAVEFORMATEX or a WAVE_FORMAT_EXTENSIBLE SubFormat, with FLAC and Vorbis described by their strf extradata
 const CUSTOM_AVI_AUDIO_CODECS: readonly CustomAudioCodec[] = Object.freeze([
     'aac',
     'mp3',
     'ac3',
+    'flac',
+    'vorbis',
     'pcm_u8',
     'pcm_s16le',
     'pcm_s24le',

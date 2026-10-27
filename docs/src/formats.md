@@ -18,12 +18,13 @@ It does not play live streams, HLS or DASH, or a server transcode.
 | MP4, M4V, MOV, 3GP, 3G2 | H.264, HEVC, VP8, VP9, AV1, VC-1 | AAC, Opus, FLAC, MP3, Vorbis, AC-3, E-AC-3, DTS, TrueHD, PCM |
 | MOV, MJ2 | JPEG 2000 | AAC, Opus, FLAC, MP3, Vorbis, AC-3, E-AC-3, PCM |
 | MPEG-TS, M2TS, MTS | H.264, HEVC, MPEG-1, MPEG-2, VC-1 | AAC, MP3, AC-3, E-AC-3, DTS |
-| AVI | H.264, VP8, VP9, AV1 | AAC, MP3, AC-3, PCM |
+| AVI | H.264, VP8, VP9, AV1 | AAC, MP3, AC-3, FLAC, Vorbis, PCM |
 | FLV, ASF (WMV), MPEG program streams (MPG, VOB), Ogg, RealMedia, MXF, and every other container | Not supported | Not supported |
 
 PCM in Matroska is 8-bit unsigned, 16, 24, or 32-bit integer in either byte order, or little-endian 32 or 64-bit float.
 PCM in MP4, M4V, and MOV is 16, 24, or 32-bit integer or 32 or 64-bit float, in either byte order; MOV also carries 8-bit, mu-law, and A-law PCM.
-PCM in AVI is 8-bit unsigned, little-endian 16, 24, or 32-bit integer or 32 or 64-bit float, mu-law, or A-law.
+PCM in AVI is 8-bit unsigned, little-endian 16, 24, or 32-bit integer or 32 or 64-bit float, mu-law, or A-law, under its own format tag or as the SubFormat of WAVE_FORMAT_EXTENSIBLE, which FFmpeg writes for a layout other than mono or stereo, a rate above 48 kHz, or integer samples wider than 16 bits.
+FLAC and Vorbis in AVI play when their `strf` extradata holds the STREAMINFO block or the three Xiph-laced Vorbis headers, as FFmpeg's muxer writes them.
 The rows come from `capability/CustomContainerCodecSupport.ts`.
 
 AVI plays only what its `idx1` index covers: a file whose video stream outruns the index, as an OpenDML file past about 1 GiB does, is refused, since Mediabunny reads no OpenDML index.

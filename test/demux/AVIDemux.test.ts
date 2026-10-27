@@ -34,6 +34,13 @@ const PCM_S16_BYTES_PER_SAMPLE = 2;
 const MP3_CONSTANT_BYTE_RATE = 8_000;
 // FFmpeg drops the first frame of a B-frame-free x264 encode into an empty chunk, so its second packet starts a slot late
 const DROPPED_FRAME_SLOT_COUNT = 1;
+const FIVE_POINT_ONE_CHANNEL_COUNT = 6;
+const PCM_S24_BYTES_PER_SAMPLE = 3;
+const PCM_F32_BYTES_PER_SAMPLE = 4;
+// FFmpeg's FLAC encoder codes 4608-sample frames at 48 kHz
+const FLAC_FRAME_SAMPLE_COUNT = 4_608;
+// 'fLaC', a metadata block header, and the 34-byte STREAMINFO
+const FLAC_DESCRIPTION_BYTE_LENGTH = 42;
 // Where the stream header of the first stream list keeps dwLength: after RIFF, hdrl, avih, the strl list, and strh's own header
 const STREAM_HEADER_FOURCC = 'strh';
 const STREAM_HEADER_LENGTH_OFFSET = 8 + 32;
@@ -58,7 +65,12 @@ const AVI_VECTORS: readonly AVIVectorExpectation[] = [
     { audioCodec: 'aac', audioDecoderCodec: 'mp4a.40.2', fileName: 'vp9-aac.avi', videoCodec: 'vp9', videoDecoderCodec: 'vp09.00.10.08.01.02.02.02.00' },
     { audioCodec: 'ac3', audioDecoderCodec: 'ac-3', fileName: 'av1-ac3.avi', videoCodec: 'av1', videoDecoderCodec: 'av01.0.00M.08' },
     { audioCodec: 'ac3', audioDecoderCodec: 'ac-3', fileName: 'hevc-ac3.avi', videoCodec: 'hevc', videoDecoderCodec: 'hev1.1.6.L60.90' },
-    { audioCodec: 'mp3', audioDecoderCodec: 'mp3', fileName: 'mpeg4-mp3.avi', videoCodec: 'mpeg4', videoDecoderCodec: 'mp4v' }
+    { audioCodec: 'mp3', audioDecoderCodec: 'mp3', fileName: 'mpeg4-mp3.avi', videoCodec: 'mpeg4', videoDecoderCodec: 'mp4v' },
+    { audioCodec: 'pcm-s24', audioDecoderCodec: 'pcm-s24', fileName: 'vp9-pcm_s24le-5.1.avi', videoCodec: 'vp9', videoDecoderCodec: 'vp09.00.10.08.01.02.02.02.00' },
+    { audioCodec: 'pcm-f32', audioDecoderCodec: 'pcm-f32', fileName: 'vp9-pcm_f32le-5.1.avi', videoCodec: 'vp9', videoDecoderCodec: 'vp09.00.10.08.01.02.02.02.00' },
+    { audioCodec: 'flac', audioDecoderCodec: 'flac', fileName: 'vp9-flac-5.1.avi', videoCodec: 'vp9', videoDecoderCodec: 'vp09.00.10.08.01.02.02.02.00' },
+    { audioCodec: 'flac', audioDecoderCodec: 'flac', fileName: 'vp9-flac.avi', videoCodec: 'vp9', videoDecoderCodec: 'vp09.00.10.08.01.02.02.02.00' },
+    { audioCodec: 'vorbis', audioDecoderCodec: 'vorbis', fileName: 'vp9-vorbis.avi', videoCodec: 'vp9', videoDecoderCodec: 'vp09.00.10.08.01.02.02.02.00' }
 ];
 
 function readAVIVector(fileName: string): Uint8Array {
@@ -168,6 +180,29 @@ describe('AVI through the fork\'s demuxer', () => {
             pcm.input.dispose();
             ac3.input.dispose();
             aac.input.dispose();
+        }
+    });
+
+    it('reads 5.1 WAVE_FORMAT_EXTENSIBLE PCM by bytes and FLAC per frame, with FLAC and Vorbis described', async () => {
+        const pcmS24 = await readTrackPair('vp9-pcm_s24le-5.1.avi');
+        const pcmF32 = await readTrackPair('vp9-pcm_f32le-5.1.avi');
+        const flac = await readTrackPair('vp9-flac-5.1.avi');
+        const vorbis = await readTrackPair('vp9-vorbis.avi');
+        try {
+            expectContiguousAudio(pcmS24.audioPackets, (packet: EncodedPacket): number => packet.byteLength / (FIVE_POINT_ONE_CHANNEL_COUNT * PCM_S24_BYTES_PER_SAMPLE));
+            expectContiguousAudio(pcmF32.audioPackets, (packet: EncodedPacket): number => packet.byteLength / (FIVE_POINT_ONE_CHANNEL_COUNT * PCM_F32_BYTES_PER_SAMPLE));
+            // The declared block alignment is no block size: each chunk holds one frame
+            expectContiguousAudio(flac.audioPackets, (): number => FLAC_FRAME_SAMPLE_COUNT);
+            const [ flacTrack ] = await flac.input.getAudioTracks();
+            expect(await flacTrack.getNumberOfChannels()).toBe(FIVE_POINT_ONE_CHANNEL_COUNT);
+            expect((await flacTrack.getDecoderConfig())?.description?.byteLength).toBe(FLAC_DESCRIPTION_BYTE_LENGTH);
+            const [ vorbisTrack ] = await vorbis.input.getAudioTracks();
+            expect((await vorbisTrack.getDecoderConfig())?.description?.byteLength).toBeGreaterThan(0);
+        } finally {
+            pcmS24.input.dispose();
+            pcmF32.input.dispose();
+            flac.input.dispose();
+            vorbis.input.dispose();
         }
     });
 

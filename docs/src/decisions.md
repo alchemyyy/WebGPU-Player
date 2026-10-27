@@ -40,11 +40,14 @@ Commit hashes refer to the Jellyfin Web fork's `webgpu-player` branch, where the
   Worker scripts and glue were warmed in the HTTP cache rather than spawned early, so no worker or compile competed with a running probe's real-time-factor measurement.
   The exact probes and their measurements left with the CPU decoders (10-13), so only the range-extension probes download vectors, and nothing is warmed.
 - AVI carries only what the fork's AVI demuxer and the engine's routes play (10-15).
-  The rule takes H.264, VP8, VP9, and AV1 with AAC, MP3, AC-3, and the PCM formats WAVEFORMATEX maps, all checked against FFmpeg-made AVI vectors.
+  The rule takes H.264, VP8, VP9, and AV1 with AAC, MP3, AC-3, FLAC, Vorbis, and the PCM formats WAVEFORMATEX maps, all checked against FFmpeg-made AVI vectors.
   HEVC stays out: AVI keeps no presentation times, and the owned HEVC path presents packets as stamped, while H.264's sample sink reorders by timestamp, except on WebKit.
   On WebKit the sink orders decoded frames by their packets' timestamps, which AVI gives in decode order, so eligibility and the prefilter refuse H.264 in AVI there as `presentation-order-unsupported` unless its profile, Baseline or Constrained Baseline, codes no B-frames (10-16).
   Recovering the order would need each picture's order count parsed from the slices, which no part of that route reads.
-  FLAC and Vorbis in AVI carry no decoder description Mediabunny reads, and WAVE_FORMAT_EXTENSIBLE is not mapped.
+  FLAC, Vorbis, and WAVE_FORMAT_EXTENSIBLE joined the rule once the fork read them (10-27): the fork maps the SubFormat GUID as FFmpeg's `riffdec.c` does, a format tag under the media subtype bases or AC-3 and E-AC-3 by their own GUIDs, and builds FLAC's `fLaC` description from the STREAMINFO in the extradata, while Vorbis's Xiph-laced headers are already WebCodecs's form.
+  The fork times a FLAC chunk as one frame whatever block alignment the format declares: FFmpeg's muxer declares the bytes of a sample frame, which FFmpeg's own reader ignores only up to 4 bytes, so it stretches a 5.1 FLAC frame over a minute.
+  The fork keeps the channel mask, but Mediabunny has no layout to give it through, so the engine still lays channels out by their count, which for FFmpeg's masks is the same WAVE order.
+  E-AC-3 stays out of the AVI rule: FFmpeg writes it as WAVE_FORMAT_EXTENSIBLE, which the fork now maps, but no vector checks it.
   The demuxer reads no OpenDML index, so `AVIIndexCoverage.ts` refuses a video track whose stream header's declared length outruns its `idx1` packets by more than a second, as `opendml-index-unread`, rather than stopping near 1 GiB.
 - A known codec without a route is refused as such (10-15).
   Mediabunny identifies MPEG-4 Part 2, and no WebCodecs decoder or package decodes it, so eligibility answers `video-codec-without-route` for it, H.263, MS-MPEG4, and Theora, and the worker refuses an MPEG-4 Part 2 track with `The selected video codec has no decode route: mpeg4`.
@@ -960,7 +963,7 @@ These were settled on Firefox 157 on Windows.
   Its only host is the Jellyfin plugin's add-on.
 - Mediabunny comes from the user's fork, vendored as a submodule and aliased, not installed (10-15).
   The fork, [alchemyyy/mediabunny](https://github.com/alchemyyy/mediabunny), is Mediabunny 1.61.5 with six upstream pull requests merged, each in a merge commit named after it with its authors' commits kept: #155 (AVI), #156 (MPEG-4 Part 2), #298 (MP4 chapters), #409 (AIFF), #443 (ASS subtitle muxing), and #495 (`getUnsupportedFeatures`).
-  On top of them the fork times AVI audio chunks as FFmpeg's `get_duration` does, and demuxes MPEG-1, MPEG-2, and VC-1 from MPEG-TS and M2TS.
+  On top of them the fork times AVI audio chunks as FFmpeg's `get_duration` does, maps WAVE_FORMAT_EXTENSIBLE AVI audio and describes FLAC and Vorbis in AVI (`v2-avi-wave-format-extensible`, `v2-avi-flac-vorbis`), and demuxes MPEG-1, MPEG-2, and VC-1 from MPEG-TS and M2TS.
   Fixes meant for upstream are cut from upstream's `main`, one branch per bug, and merged into the fork's `main` in a merge commit named after the branch: `fix-matroska-laced-header-stripping` and `fix-custom-decoder-close-after-failure` (10-16).
   `vendor/mediabunny` pins the fork's commit as a shallow submodule, the way the add-on pins its hls.js fork.
   A `file:` dependency would have installed the fork's development dependencies into the host's lockfile, so nothing installs it: the tsconfig `paths` entry maps `mediabunny` to the folder for tsc, esbuild, and Vitest, the sandbox's Vite config and the host's webpack and Vitest configs alias it, and both ESLint configs ignore the import.
