@@ -43,6 +43,8 @@ const DOLBY_VISION_RPU_PROFILE = 8;
 // metadata_type 4 and the Dolby Vision ITU-T T.35 header, which start every RPU metadata OBU payload
 const DOLBY_VISION_METADATA_PREFIX: readonly number[] = [ 0x04, 0xB5, 0x00, 0x3B, 0x00, 0x00, 0x08, 0x00 ];
 const FRAMES = AV1_HDR10_PLUS_EXPECTATIONS.frames;
+// The codec string the vectors' sequence header declares: 10-bit 4:2:0 in BT.2100 PQ
+const HDR10_PLUS_CODEC_STRING = 'av01.0.00M.10.0.110.09.16.09.0';
 const MEDIA_FILES = new Map<string, Uint8Array>([
     [ HDR10_PLUS_MATROSKA_FILE_NAME, readAV1HDR10PlusVector(HDR10_PLUS_MATROSKA_FILE_NAME) ],
     [ HDR10_PLUS_MP4_FILE_NAME, readAV1HDR10PlusVector(HDR10_PLUS_MP4_FILE_NAME) ],
@@ -112,6 +114,20 @@ describe('CustomDecode.worker AV1 route', () => {
             requirePostedHDR10PlusResult(frameResponse.HDR10PlusMetadata, FRAMES[frameIndex]);
         }
     });
+
+    it.each([ HDR10_PLUS_MATROSKA_FILE_NAME, HDR10_PLUS_MP4_FILE_NAME ])(
+        'configures the browser\'s decoder for %s with its codec string and without the av1C, which the AV1 registration does not use',
+        async (fileName: string) => {
+            const workerScope = await startDecodeWorker(MEDIA_FILES);
+
+            const responses = await decodeToEnd(workerScope, createWorkerStartRequest(fileName));
+
+            expect(getReadyResponse(responses).codec).toBe(HDR10_PLUS_CODEC_STRING);
+            expect(FakeVideoDecoder.instances).toHaveLength(1);
+            expect(FakeVideoDecoder.instances[0].configuration).toMatchObject({ codec: HDR10_PLUS_CODEC_STRING });
+            expect(FakeVideoDecoder.instances[0].configuration).not.toHaveProperty('description');
+        }
+    );
 
     it('loads the RPU parser on a Dolby Vision route and parses each RPU for its frame', async () => {
         const createSession = await spyOnRPUParserSessions();
