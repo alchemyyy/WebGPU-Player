@@ -1,3 +1,6 @@
 {
-    "decoder": "mpeg4.wgsl"
+    "decoder": "mpeg4.wgsl",
+    "vectors": [
+        { "format": "I420", "root": "decodersDirectory", "path": "mpeg4/vectors/mpeg4-gmc-qpel-b.mkv", "decoderOptions": [ "-threads", "1", "-flags", "+bitexact" ], "codecPrivate": "bitmap-info-header" }
+    ]
 }
