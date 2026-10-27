@@ -2066,13 +2066,14 @@ const GRAIN_BYTE_MASK: u32 = 255u;
 // The film grain area (frameData from getFilmGrainOffset()), in words: three templates of at most 73 rows of 41 words, each word
 // holding a row's column j in its low half and column j + half the row in its high half (so no two lanes of the AR filter's
 // wavefront ever touch one word in a step); three scaling tables of 4096 byte entries; and each 32x32 luma block's random offsets
-// as one byte, stripe after stripe in whole words
+// as one byte, stripe after stripe in whole words: ceil(width / 128) words for each of ceil(height / 32) stripes, at most 8,976 for
+// a level 6 pool of 35,651,584 samples rounded up to 64
 const GRAIN_TEMPLATE_WORDS: u32 = 2993u;
 const GRAIN_LUMA_TEMPLATE: u32 = 0u;
 const GRAIN_SCALING_TABLES: u32 = 8979u;
 const GRAIN_SCALING_TABLE_WORDS: u32 = 1024u;
 const GRAIN_BLOCK_OFFSETS: u32 = 12051u;
-const GRAIN_BLOCK_OFFSETS_WORDS: u32 = 4096u;
+const GRAIN_BLOCK_OFFSETS_WORDS: u32 = 10240u;
 // The transform family's tables area: the Gaussian sequence, two entries per word, then the random generator's row jumps: for each
 // template width (82 and 44 columns) and row, the 16 columns of the matrix that moves a template's start register to the row's start
 const GRAIN_GAUSSIAN_TABLE: u32 = 0u;
