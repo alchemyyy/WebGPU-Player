@@ -44,5 +44,14 @@ export function getLibraryAssets() {
             join(rangeExtensionDirectory, fileName)
         ]);
     }
+
+    // The raw AV1 qualification streams of the formats outside Main 10
+    const av1RawFormatDirectory = join(CODEC_VECTOR_ASSETS_DIRECTORY, 'av1-raw-format');
+    for (const fileName of readdirSync(av1RawFormatDirectory).filter(name => name.endsWith('.obu'))) {
+        assets.push([
+            `webgpu-player/av1-raw/${fileName.replace(/\.obu$/u, '.bin')}`,
+            join(av1RawFormatDirectory, fileName)
+        ]);
+    }
     return assets;
 }
