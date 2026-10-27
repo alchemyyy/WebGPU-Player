@@ -99,6 +99,7 @@ It is a minimal project that builds one package and runs nowhere on its own.
 | `hevc` | HEVC Main, Main 10, and the range extensions, on the GPU | The Rust parser in `parser/` | The nine HEVC range extension vectors | None, MIT |
 | `jpeg2000` | JPEG 2000 YUV pictures at 4:2:0, 4:2:2, and 4:4:4, 8 to 12 bits, on the GPU | The Rust parser in `parser/` | One stream per output format in `vectors/`, from FFmpeg's and OpenJPEG's encoders | None, MIT |
 | `mpeg2` | MPEG-1 and MPEG-2 Video at 4:2:0, 4:2:2, and 4:4:4, on the GPU | The Rust parser in `parser/`, which reads sequence headers | One stream per chroma format in `vectors/`, from its own syntax exerciser | None, MIT |
+| `mpeg4` | MPEG-4 Part 2, H.263, and MS-MPEG4 versions 1 to 3 at 8-bit 4:2:0, on the GPU | The Rust parser in `parser/` | One Xvid stream with GMC, quarter-sample motion, and B-VOPs in `vectors/`, beside the media of every codec and container its routes take | None, MIT |
 | `vc1` | VC-1 Advanced and WMV3 (Simple, Main, and Complex), on the GPU | The Rust parser in `parser/` | The VC-1 Advanced stream in `src/capability/vectors/qualification/vc1/` | None, MIT |
 | `uncompressed` | Uncompressed planar packets, on the GPU | None | None | None, MIT; the template of a WGSL-only decoder |
 | `eac3` | AC-3 and E-AC-3 | FFmpeg's AC-3 and E-AC-3 decoders | None | FFmpeg, LGPL-2.1-or-later |
@@ -108,7 +109,8 @@ It is a minimal project that builds one package and runs nowhere on its own.
 `decoder.json` names the project's decoder source, the WGSL file or audio manifest the package carries, under `decoder`.
 Each project's header declares the project's name as its package id, such as `//! id: hevc`, so a rebuilt package replaces the one a host stored before.
 A WGSL decoder may name a list of files instead, which the build joins in order into the one source the package carries: each later file follows a `// Decoder source: <file>` line, so a compile message leads back to its file, and only the first file may hold header lines.
-A video project lists its self-test vectors under `vectors`, each with its output `format`, the layout key of its `root` folder in `tools/constants.json`, its `path` there, and optionally the FFmpeg `decoderOptions` of the reference decode.
+A video project lists its self-test vectors under `vectors`, each with its output `format`, the layout key of its `root` folder in `tools/constants.json`, its `path` there, optionally the FFmpeg `decoderOptions` of the reference decode, and optionally `codecPrivate`, the layout of the codec private data the vector passes the decoder.
+That is the stream's extradata, or with `bitmap-info-header` a 40-byte BITMAPINFOHEADER of the stream's size and FourCC before it, as the engine passes the `mpeg4` package (see [Codec private data](decoder-packages.md#codec-private-data)).
 A project with a `Makefile` builds its module with `make module`, which writes `wgpud/build/<project>/module.wasm`; a project without one packs an empty module, as a decoder without a parser does.
 Each `Makefile` includes `wgpud/rules.mk`, which pins the toolchain, FFmpeg, dcadec, and libaom, and holds the rules to build an FFmpeg audio module, a libdcadec module, libaom, and a Rust module.
 `wgpud/include/audio_decoder_interface.h` declares the [audio decoder interface](decoder-packages.md#the-audio-decoder-interface) for C modules.
@@ -148,7 +150,7 @@ A failed build or load check fails the run after the other packages are written.
 ### Self-test vectors
 
 `scripts/codec_vector_assets/generate_decoder_package_vectors.py` reads the vectors each `decoder.json` lists and writes `wgpud/<project>/<project>.vectors`, the set the package carries in its vectors section (see [Self-test vectors](decoder-packages.md#self-test-vectors)).
-A project whose streams no script elsewhere writes keeps them in its own `vectors/`, from a generator of its own: `generate_mpeg2_decoder_vectors.py`, `generate_jpeg2000_decoder_vectors.py`, and `generate_av1_decoder_vectors.py`.
+A project whose streams no script elsewhere writes keeps them in its own `vectors/`, from a generator of its own: `generate_mpeg2_decoder_vectors.py`, `generate_jpeg2000_decoder_vectors.py`, `generate_av1_decoder_vectors.py`, and `generate_mpeg4_decoder_vectors.py`.
 The files are committed, byte for byte (`.gitattributes` marks them `-text`), and `--check` fails unless they match what the generators write.
 `scripts/generate_all_codec_vector_assets.py` runs them with the other generators, a project's own media first.
 

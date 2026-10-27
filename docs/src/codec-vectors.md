@@ -41,7 +41,8 @@ The HEVC range-extension, AV1 raw-format, AV1 Dolby Vision, HDR10+ AV1, and HDR1
 | `generate_mpeg2_decoder_vectors.py` | Outside `bin/`: `wgpud/mpeg2/vectors/`, one Matroska MPEG-2 stream per chroma format from a deterministic syntax exerciser, since no available encoder writes field pictures, dual prime, 16x8 motion, concealment vectors, and 4:4:4 together; FFmpeg checks each stream |
 | `generate_jpeg2000_decoder_vectors.py` | Outside `bin/`: `wgpud/jpeg2000/vectors/`, one stream per output format from FFmpeg's native and OpenJPEG encoders, across both wavelets, tiles, quality layers, every progression order, and SOP and EPH markers, in QuickTime files and in Motion JPEG 2000 files it muxes itself |
 | `generate_av1_decoder_vectors.py` | Outside `bin/`: `wgpud/av1/vectors/`, one Matroska stream per output format from FFmpeg's libaom-av1 encoder, as [AV1 decoder vectors](#av1-decoder-vectors) describes |
-| `generate_decoder_package_vectors.py` | Outside `bin/`: each decoder project's `wgpud/<project>/<project>.vectors`, from the streams its `decoder.json` lists, demuxed with FFprobe and hashed from FFmpeg's decode, so a project's vectors are FFmpeg's known answers |
+| `generate_mpeg4_decoder_vectors.py` | Outside `bin/`: `wgpud/mpeg4/vectors/`, the `mpeg4` project's self-test stream from libxvid and a stream per codec and container its routes take from FFmpeg's encoders, as [MPEG-4 decoder media](#mpeg-4-decoder-media) describes |
+| `generate_decoder_package_vectors.py` | Outside `bin/`: each decoder project's `wgpud/<project>/<project>.vectors`, from the streams its `decoder.json` lists, demuxed with FFprobe and hashed from FFmpeg's decode, so a project's vectors are FFmpeg's known answers; a vector's codec private data is the stream's extradata, or with `codecPrivate` `bitmap-info-header` a BITMAPINFOHEADER of its size and FourCC before it |
 | `generate_dolby_vision_AV1_vectors.py` | `dolby-vision-av1/profile10.{0,1,2,4}.{mp4,mkv}` and `expectations.json`, from the RPU payloads in `src/capability/vectors/test/dolby-vision-rpu/` |
 | `generate_HDR10_plus_AV1_vectors.py` | `hdr10plus-av1/hdr10plus.{mp4,mkv}` and `expectations.json` |
 | `generate_HDR10_plus_VP9_vectors.py` | `hdr10plus-vp9/hdr10plus.{webm,mkv}` and `expectations.json` |
@@ -61,7 +62,7 @@ The `truehd` decoder project's tests import the TrueHD module as `#codec_vector_
 The generators work in one of three modes:
 
 - Deterministic generators rewrite their output, and with `--check` fail when a committed file differs from a fresh run: the TrueHD module, the 7.1 downmix reference, the MPEG-2 decoder streams, and the decoder projects' vectors files.
-- Encoder-dependent generators compare a fresh encode with the committed bytes: the JPEG 2000 and AV1 decoder streams and the TrueHD source streams under `--regenerate-sources`.
+- Encoder-dependent generators compare a fresh encode with the committed bytes: the JPEG 2000, AV1, and MPEG-4 decoder media and the TrueHD source streams under `--regenerate-sources`.
   Another encoder build writes different bytes, so a differing encode never replaces a committed asset, while a missing one is installed.
   With `--check`, a missing asset fails as well.
 - The HEVC range-extension, AV1 raw-format, AV1 Dolby Vision, HDR10+ AV1, and HDR10+ VP9 generators refuse any FFmpeg build but the pinned one.
@@ -231,6 +232,39 @@ libaom's test tables carry no lag 0 or 1, but they clip to the restricted range,
 
 The streams hold no super-resolution, reference scaling, dual filters, lossless frames, intra-only frames, or switch frames, so a self-test does not cover them.
 The pinned FFmpeg cannot ask its libaom for super-resolution or a frame size change, because that libaom takes no `superres-mode` or `resize-mode` key-value option, and libaom's speed features disable dual filters at every speed.
+
+## MPEG-4 decoder media
+
+These are the `mpeg4` decoder project's media: its self-test stream, and a stream of each codec in each container the engine routes it from, which the route tests play.
+`wgpud/mpeg4/decoder.json` lists the self-test stream with the decoder options `-threads 1 -flags +bitexact`, FFmpeg's C code in one thread, and with `codecPrivate` `bitmap-info-header`, the codec private data the engine passes the package.
+
+The self-test stream is 200x120 from libxvid, with global motion compensation, quarter-sample motion, and two B-VOPs between anchors.
+Its source is `testsrc2` at twice the size, turned and zoomed into its center a little more each frame, so libxvid codes S-VOPs among its P-VOPs.
+libxvid writes a raw stream, from which the generator drops the N-VOPs libxvid writes for its delayed frames, as a native Matroska muxer drops them.
+FFmpeg then remuxes it into Matroska with the presentation timestamps it generates, since FFmpeg's libxvid output in Matroska stamps each P-VOP before the B-VOPs shown ahead of it.
+
+| File | Stream |
+| --- | --- |
+| `mpeg4-gmc-qpel-b.mkv` | The self-test stream, `V_MPEG4/ISO/ASP` |
+| `mpeg4-b.mp4` | FFmpeg's MPEG-4 Part 2 with B-VOPs, `mp4v` |
+| `mpeg4-b-xvid.avi` | FFmpeg's MPEG-4 Part 2 with B-VOPs under `XVID`, its VOL in the first packet |
+| `mpeg4-b-vfw.mkv` | FFmpeg's MPEG-4 Part 2 with B-VOPs in a `V_MS/VFW/FOURCC` track of `XVID`, at decode-order timestamps |
+| `msmpeg4v3.avi` | MS-MPEG4 V3 under `DIV3` |
+| `msmpeg4v3.mkv` | MS-MPEG4 V3 in `V_MPEG4/MS/V3` |
+| `msmpeg4v2-vfw.mkv` | MS-MPEG4 V2 in a `V_MS/VFW/FOURCC` track of `MP42` |
+| `msmpeg4v2.avi` | MS-MPEG4 V2 under `MP42` |
+| `h263.3gp` | H.263 at sub-QCIF, `s263` |
+| `h263.avi` | H.263 at sub-QCIF under `H263` |
+| `h263p-vfw.mkv` | H.263+ at 200x120 with advanced intra coding, the deblocking filter, and unrestricted motion vectors, in a `V_MS/VFW/FOURCC` track of `H263` |
+
+The other streams are 16 frames with a key frame every 8, the MPEG-4 Part 2 and MS-MPEG4 ones at 176x144.
+Every encoder runs in one thread, since the MPEG-4 Part 2 encoder's slice threads change its bitstream with the thread count.
+FFmpeg's Matroska muxer writes MPEG-4 Part 2 only as a native track, so the generator rewrites its file into `mpeg4-b-vfw.mkv`.
+The rewrite sets the codec ID, a CodecPrivate of the BITMAPINFOHEADER FFmpeg's muxers write followed by the VOL, and block timestamps one frame apart in decode order, as an AVI stamps its frames.
+It drops the seek head and the cues, whose offsets it moves.
+
+Each medium must probe as its codec, FourCC, and size, show its picture types, and decode one frame per packet in the reference decode without an error.
+The self-test stream must also present its frames in the order of their timestamps.
 
 ## AV1 Dolby Vision vectors
 
