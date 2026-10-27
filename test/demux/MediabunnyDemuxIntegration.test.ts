@@ -4,12 +4,10 @@ import {
     ALL_FORMATS,
     BufferSource,
     Input,
-    PacketCursor,
-    type InputFormat
+    MP4,
+    PacketCursor
 } from 'mediabunny';
 import { describe, expect, it } from 'vitest';
-
-import { CUSTOM_DECODE_INPUT_FORMATS } from 'webgpu-player/demux/CustomDecodeInputFormats';
 
 import { concatenate } from '../helpers/byteArrays';
 import { createVideoTrackISOBaseMedia, createVisualSampleEntry, type SyntheticISOBaseMediaSample } from '../helpers/isoBaseMediaBoxes';
@@ -90,7 +88,6 @@ const JP2_SIGNATURE_BOX = Object.freeze([ 0x00, 0x00, 0x00, 0x0C, 0x6A, 0x50, 0x
 const MOTION_JPEG_2000_MAJOR_BRAND = 'mjp2';
 // The brand of a JP2 still image, which a playback never opens
 const JP2_STILL_IMAGE_MAJOR_BRAND = 'jp2 ';
-const MOTION_JPEG_2000_FORMAT_NAME = 'Motion JPEG 2000';
 const MOTION_JPEG_2000_SAMPLE_ENTRY_TYPE = 'mjp2';
 const MOTION_JPEG_2000_WIDTH = 64;
 const MOTION_JPEG_2000_HEIGHT = 48;
@@ -235,8 +232,8 @@ function prependStrippedHeader(frame: Uint8Array): Uint8Array {
 }
 
 /** Reads every packet of the file's only audio track. */
-async function readPacketData(formats: InputFormat[], matroska: Uint8Array): Promise<Uint8Array[]> {
-    const input = new Input({ formats, source: new BufferSource(matroska) });
+async function readPacketData(matroska: Uint8Array): Promise<Uint8Array[]> {
+    const input = new Input({ formats: ALL_FORMATS, source: new BufferSource(matroska) });
     try {
         const tracks = await input.getAudioTracks();
         expect(tracks).toHaveLength(1);
@@ -276,7 +273,8 @@ const FIXED_FRAMES = Array.from({ length: FIXED_FRAME_COUNT }, (_: unknown, fram
 const EBML_FRAMES = EBML_FRAME_BYTE_LENGTHS.map((byteLength: number, frameIndex: number): Uint8Array => createFrame(byteLength, 32 + frameIndex));
 const UNLACED_FRAME = createFrame(UNLACED_FRAME_BYTE_LENGTH, 48);
 
-describe('CUSTOM_DECODE_INPUT_FORMATS', () => {
+// The fork's demuxing that playback relies on, through the formats the worker opens files with
+describe('Mediabunny demuxing', () => {
     // The Mediabunny fork restores it per frame; Mediabunny 1.61.5 restored it ahead of the lace header
     it('restores the stripped header of every frame in a laced Matroska block', async () => {
         const matroska = createMatroska([ createAudioTrack(STRIPPED_TRACK_NUMBER, AC3_SYNC_WORD) ], [
@@ -286,7 +284,7 @@ describe('CUSTOM_DECODE_INPUT_FORMATS', () => {
             { frames: [ UNLACED_FRAME ], lacing: null, timestamp: UNLACED_BLOCK_TIMESTAMP, trackNumber: STRIPPED_TRACK_NUMBER }
         ]);
 
-        const packetData = await readPacketData(CUSTOM_DECODE_INPUT_FORMATS, matroska);
+        const packetData = await readPacketData(matroska);
 
         expect(packetData).toEqual([ ...XIPH_FRAMES, ...FIXED_FRAMES, ...EBML_FRAMES, UNLACED_FRAME ].map(prependStrippedHeader));
     });
@@ -297,21 +295,16 @@ describe('CUSTOM_DECODE_INPUT_FORMATS', () => {
             { frames: EBML_FRAMES, lacing: EBML_LACING, timestamp: EBML_BLOCK_TIMESTAMP, trackNumber: UNENCODED_TRACK_NUMBER }
         ]);
 
-        const packetData = await readPacketData(CUSTOM_DECODE_INPUT_FORMATS, matroska);
+        const packetData = await readPacketData(matroska);
 
         expect(packetData).toEqual([ ...FIXED_FRAMES, ...EBML_FRAMES ]);
     });
 
-    it('adds Motion JPEG 2000 ahead of Mediabunny\'s own formats', () => {
-        expect(CUSTOM_DECODE_INPUT_FORMATS).toHaveLength(ALL_FORMATS.length + 1);
-        expect(CUSTOM_DECODE_INPUT_FORMATS[0].name).toBe(MOTION_JPEG_2000_FORMAT_NAME);
-        expect(CUSTOM_DECODE_INPUT_FORMATS.slice(1)).toEqual(ALL_FORMATS);
-    });
-
+    // The fork's MP4 format takes the signature box; Mediabunny 1.61.5 required an ftyp first
     it('opens a Motion JPEG 2000 file, whose signature box precedes its ftyp', async () => {
-        const input = new Input({ formats: CUSTOM_DECODE_INPUT_FORMATS, source: new BufferSource(createMotionJPEG2000File(MOTION_JPEG_2000_MAJOR_BRAND)) });
+        const input = new Input({ formats: ALL_FORMATS, source: new BufferSource(createMotionJPEG2000File(MOTION_JPEG_2000_MAJOR_BRAND)) });
         try {
-            expect((await input.getFormat()).name).toBe(MOTION_JPEG_2000_FORMAT_NAME);
+            expect(await input.getFormat()).toBe(MP4);
             const track = await input.getPrimaryVideoTrack();
             expect(await track?.getInternalCodecId()).toBe(MOTION_JPEG_2000_SAMPLE_ENTRY_TYPE);
             const packetData: Uint8Array[] = [];
@@ -324,18 +317,8 @@ describe('CUSTOM_DECODE_INPUT_FORMATS', () => {
         }
     });
 
-    it('leaves a file with the signature box but another brand to the other formats', async () => {
-        const input = new Input({ formats: CUSTOM_DECODE_INPUT_FORMATS, source: new BufferSource(createMotionJPEG2000File(JP2_STILL_IMAGE_MAJOR_BRAND)) });
-        try {
-            await expect(input.getFormat()).rejects.toThrow();
-        } finally {
-            await input.dispose();
-        }
-    });
-
-    // When this fails, Mediabunny opens Motion JPEG 2000 itself and the added format can be removed
-    it('opens what the stock formats cannot', async () => {
-        const input = new Input({ formats: ALL_FORMATS, source: new BufferSource(createMotionJPEG2000File(MOTION_JPEG_2000_MAJOR_BRAND)) });
+    it('leaves a file with the signature box but another brand unopened', async () => {
+        const input = new Input({ formats: ALL_FORMATS, source: new BufferSource(createMotionJPEG2000File(JP2_STILL_IMAGE_MAJOR_BRAND)) });
         try {
             await expect(input.getFormat()).rejects.toThrow();
         } finally {

@@ -1,8 +1,10 @@
 /* eslint-disable no-restricted-globals */
 import {
+    ALL_FORMATS,
     AviInputFormat,
     BlobSource,
     Input,
+    MpegTsInputFormat,
     PacketReader,
     UrlSource,
     type AudioSample,
@@ -23,7 +25,6 @@ import { getTransportStreamVideoCodec, readTransportStreamVideoDecoderDescriptio
 import { isDolbyVisionDualLayerProfile } from '../demux/dolby-vision/DolbyVisionProfiles';
 import { getAudioSampleWindow } from '../audio/AudioSampleWindow';
 import { settleConcurrentDecodeStreams } from './ConcurrentDecodeStreams';
-import { CUSTOM_DECODE_INPUT_FORMATS } from '../demux/CustomDecodeInputFormats';
 import {
     recordTimingEvent,
     recordTimingWait,
@@ -184,7 +185,6 @@ import {
 import { readAV1CodecConfigurationRecord } from '../demux/av1/AV1CodecConfigurationRecord';
 import { assignAV1SequenceHeaderCodecString } from '../demux/av1/AV1DecoderConfiguration';
 import { readISOBaseMediaDolbyVisionTrackConfiguration } from '../demux/dolby-vision/ISOBaseMediaDolbyVisionConfiguration';
-import { assignISOBaseMediaDolbyVisionSampleEntryCodec } from '../demux/dolby-vision/ISOBaseMediaDolbyVisionSampleEntry';
 import {
     readMatroskaDolbyVisionTrackConfiguration
 } from '../demux/dolby-vision/MatroskaDolbyVisionHVCE';
@@ -828,6 +828,8 @@ type FocusedVideoTrackInput = Readonly<{
     displayWidth: number
     internalCodecID: unknown
     request: Extract<DecodeWorkerRequest, { type: 'start' }>
+    /** Whether the track is an MPEG-TS or M2TS track, whose codec Mediabunny names and which carries no codec private data */
+    transportStream: boolean
     videoTrack: InputVideoTrack
 }>;
 
@@ -900,7 +902,7 @@ async function readFocusedVideoTrackConfiguration(
     internalCodecID: string,
     input: FocusedVideoTrackInput
 ): Promise<Readonly<{ description: Uint8Array | null, videoTrack: InputVideoTrack }>> {
-    const transportStreamCodec = getTransportStreamVideoCodec(input.containerCodec);
+    const transportStreamCodec = input.transportStream ? getTransportStreamVideoCodec(input.containerCodec) : null;
     if (transportStreamCodec !== null) {
         const configuration = await readTransportStreamVideoDecoderDescription(transportStreamCodec, input.videoTrack);
         if (configuration.status === 'failed') {
@@ -918,7 +920,7 @@ async function readFocusedVideoTrackConfiguration(
             return { description: readMatroskaMPEGVideoDecoderDescription(input.videoTrack), videoTrack: input.videoTrack };
         case 'vc1':
         case 'wmv3': {
-            const configuration = readVC1TrackConfiguration(route.codec, input.videoTrack, internalCodecID, input.codedWidth, input.codedHeight);
+            const configuration = await readVC1TrackConfiguration(route.codec, input.videoTrack, internalCodecID, input.codedWidth, input.codedHeight);
             if (configuration.status === 'failed') {
                 throw new UnsupportedCustomDecodeSourceError(
                     `The selected ${route.errorName} track has no decoder configuration: ${configuration.failure}`
@@ -931,8 +933,8 @@ async function readFocusedVideoTrackConfiguration(
 
 /** Returns the check a track or its request fails for a focused route, as `code: detail`, or null when both match it. */
 function findFocusedVideoRouteMismatch(route: FocusedVideoRoute, input: FocusedVideoTrackInput): string | null {
-    // Mediabunny names the codecs of MPEG-TS and M2TS tracks, and leaves the other containers' tracks codec-less
-    if (input.containerCodec !== null) {
+    // A transport stream track matches by the codec Mediabunny names, the other containers' tracks by their codec IDs
+    if (input.transportStream) {
         if (getTransportStreamVideoCodec(input.containerCodec) !== route.codec) {
             return `container-codec: ${input.containerCodec}`;
         }
@@ -1158,7 +1160,6 @@ async function prepareVideoTrack(
     if (!videoTrack) {
         throw new UnsupportedCustomDecodeSourceError('The selected video track ordinal is unavailable');
     }
-    await assignISOBaseMediaDolbyVisionSampleEntryCodec(videoTrack);
     // canDecode() and the owned AV1 path use the corrected codec string
     await assignAV1SequenceHeaderCodecString(videoTrack);
 
@@ -1198,6 +1199,7 @@ async function prepareVideoTrack(
         displayWidth,
         internalCodecID,
         request,
+        transportStream: await input.getFormat() instanceof MpegTsInputFormat,
         videoTrack
     });
     if (focusedTrack) {
@@ -3711,7 +3713,7 @@ async function decodeMedia(run: DecodeRun, request: Extract<DecodeWorkerRequest,
             return;
         }
         const input = new Input({
-            formats: CUSTOM_DECODE_INPUT_FORMATS,
+            formats: ALL_FORMATS,
             source: openMediaSource(run, request.source)
         });
         run.input = input;

@@ -29,13 +29,13 @@ export const VC1_TRACK_INTERNAL_CODEC_IDS: Readonly<Record<VC1TrackCodec, readon
     wmv3: Object.freeze([ MATROSKA_VFW_CODEC_ID ])
 });
 
-function readDecoderDescription(
+async function readDecoderDescription(
     codec: VC1TrackCodec,
     track: InputVideoTrack,
     internalCodecID: string,
     codedWidth: number,
     codedHeight: number
-): VC1DecoderDescriptionResult {
+): Promise<VC1DecoderDescriptionResult> {
     if (codec === 'wmv3') {
         return readMatroskaWMV3DecoderDescription(track, codedWidth, codedHeight);
     }
@@ -56,17 +56,17 @@ function readPictureTypeSyntax(codec: VC1TrackCodec, description: Uint8Array): V
  * A Matroska VfW track stamps its packets in decode order, so its packets come through a track that restamps them in presentation order, as FFmpeg's decoder outputs them;
  * an ISO base media track stamps them in presentation order already.
  */
-export function readVC1TrackConfiguration(
+export async function readVC1TrackConfiguration(
     codec: VC1TrackCodec,
     track: InputVideoTrack,
     internalCodecID: string,
     codedWidth: number,
     codedHeight: number
-): VC1TrackConfiguration {
+): Promise<VC1TrackConfiguration> {
     if (!VC1_TRACK_INTERNAL_CODEC_IDS[codec].includes(internalCodecID)) {
         return { failure: `codec-id: ${internalCodecID}`, status: 'failed' };
     }
-    const description = readDecoderDescription(codec, track, internalCodecID, codedWidth, codedHeight);
+    const description = await readDecoderDescription(codec, track, internalCodecID, codedWidth, codedHeight);
     if (description.status === 'failed') {
         return description;
     }

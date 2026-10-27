@@ -1,6 +1,7 @@
 // @vitest-environment node
 
 import {
+    ALL_FORMATS,
     AiffInputFormat,
     AiffOutputFormat,
     AudioSample,
@@ -14,7 +15,6 @@ import {
 import { describe, expect, it } from 'vitest';
 
 import { isCustomPlaybackContainer } from 'webgpu-player/capability/CustomContainerCodecSupport';
-import { CUSTOM_DECODE_INPUT_FORMATS } from 'webgpu-player/demux/CustomDecodeInputFormats';
 
 const SAMPLE_RATE = 48_000;
 const CHANNEL_COUNT = 1;
@@ -53,7 +53,7 @@ async function createAIFF(): Promise<ArrayBuffer> {
 
 describe('AIFF through the fork', () => {
     it('opens with the decode worker\'s input formats and decodes its PCM with Mediabunny', async () => {
-        const input = new Input({ formats: CUSTOM_DECODE_INPUT_FORMATS, source: new BufferSource(await createAIFF()) });
+        const input = new Input({ formats: ALL_FORMATS, source: new BufferSource(await createAIFF()) });
         try {
             expect(await input.getFormat()).toBeInstanceOf(AiffInputFormat);
             const track = await input.getPrimaryAudioTrack();

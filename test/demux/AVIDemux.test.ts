@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import {
+    ALL_FORMATS,
     AviInputFormat,
     BufferSource,
     Input,
@@ -14,7 +15,6 @@ import {
 import { describe, expect, it } from 'vitest';
 
 import { hasIncompleteAVIIndex } from 'webgpu-player/demux/AVIIndexCoverage';
-import { CUSTOM_DECODE_INPUT_FORMATS } from 'webgpu-player/demux/CustomDecodeInputFormats';
 import { secondsToMicroseconds } from 'webgpu-player/MediaTime';
 
 import { CODEC_VECTOR_ASSETS_DIRECTORY } from '../helpers/enginePaths';
@@ -66,7 +66,7 @@ function readAVIVector(fileName: string): Uint8Array {
 }
 
 function openAVI(bytes: Uint8Array): Input {
-    return new Input({ formats: CUSTOM_DECODE_INPUT_FORMATS, source: new BufferSource(bytes) });
+    return new Input({ formats: ALL_FORMATS, source: new BufferSource(bytes) });
 }
 
 async function readPackets(track: InputTrack): Promise<EncodedPacket[]> {
