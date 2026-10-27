@@ -1142,7 +1142,7 @@ async function requireDemuxableVideoTrack(input: Input, videoTrack: InputVideoTr
         throw new UnsupportedCustomDecodeSourceError(`The selected video track has an edit list Mediabunny cannot honor: ${unsupportedVideoFeature}`);
     }
     if (await hasIncompleteAVIIndex(input, videoTrack)) {
-        throw new UnsupportedCustomDecodeSourceError('The selected AVI video track outruns its idx1 index: opendml-index-unread');
+        throw new UnsupportedCustomDecodeSourceError('The selected AVI video track outruns its index: avi-index-incomplete');
     }
 }
 

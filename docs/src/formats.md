@@ -27,7 +27,10 @@ PCM in AVI is 8-bit unsigned, little-endian 16, 24, or 32-bit integer or 32 or 6
 FLAC and Vorbis in AVI play when their `strf` extradata holds the STREAMINFO block or the three Xiph-laced Vorbis headers, as FFmpeg's muxer writes them.
 The rows come from `capability/CustomContainerCodecSupport.ts`.
 
-AVI plays only what its `idx1` index covers: a file whose video stream outruns the index, as an OpenDML file past about 1 GiB does, is refused, since Mediabunny reads no OpenDML index.
+AVI plays every packet its indexes list, read as FFmpeg reads them: a stream's OpenDML index when it has one (its `indx` super index and the `ix##` standard index that index locates in each RIFF list), else `idx1`, which covers only the first RIFF list.
+An OpenDML file past about 1 GiB, whose later `AVIX` RIFF lists only the OpenDML indexes cover, therefore plays to its end and seeks there.
+A video stream that still outruns its index, as in a truncated file or one whose OpenDML index cannot be read in full, is refused rather than stopped where the index ends.
+MPEG-4 Part 2 in the packed bitstream of DivX 5 and Xvid, which DivX user data ending in `p` marks, is unpacked to one VOP per packet as FFmpeg's `mpeg4_unpack_bframes` filter does; MPEG-4 Part 2 itself still has no route.
 AVI keeps no presentation times, only each chunk's slot in decode order, so the fork's AVI demuxer gives H.264 and HEVC packets their pictures' presentation times from the picture order counts in their slice headers, as FFmpeg does, and B-frames play in order on every browser.
 HEVC in AVI plays under the HEVC, H265, hvc1, and hev1 tags, and under the zero tag FFmpeg's AVI muxer writes unless told one, which the fork recognizes by the parameter sets of the first chunk; FFmpeg, and so Jellyfin, reads such a stream as uncompressed video.
 An AIFF file opens, but the pipeline plays only sources with video, so AIFF, like every audio-only file, falls back to the host.

@@ -26,7 +26,9 @@ const H264_FILE_NAME = 'h264-bframes-mp3-vbr.avi';
 const HEVC_FILE_NAME = 'hevc-ac3.avi';
 const UNTAGGED_HEVC_FILE_NAME = 'hevc-untagged-ac3.avi';
 const MPEG4_FILE_NAME = 'mpeg4-mp3.avi';
-const OPENDML_FILE_NAME = 'opendml-like.avi';
+// The VP9 encode in three RIFF lists, as FFmpeg writes a file past 1 GiB
+const OPENDML_FILE_NAME = 'vp9-aac-opendml.avi';
+const INCOMPLETE_INDEX_FILE_NAME = 'incomplete-index.avi';
 const VIDEO_FRAME_COUNT = 12;
 const VIDEO_FRAME_RATE = 24;
 const DROPPED_FRAME_SLOT_COUNT = 1;
@@ -37,9 +39,9 @@ const HEVC_CODEC_PREFIX = 'hev1.';
 // dwLength of the first stream header, after its fourcc and size, as AVIDemux.test.ts patches it
 const STREAM_HEADER_FOURCC = 'strh';
 const STREAM_HEADER_LENGTH_OFFSET = 8 + 32;
-const OPENDML_DECLARED_FRAME_COUNT = 10_000;
+const INCOMPLETE_INDEX_DECLARED_FRAME_COUNT = 10_000;
 const MPEG4_MESSAGE = 'The selected video codec has no decode route: mpeg4';
-const OPENDML_MESSAGE = 'The selected AVI video track outruns its idx1 index: opendml-index-unread';
+const INCOMPLETE_INDEX_MESSAGE = 'The selected AVI video track outruns its index: avi-index-incomplete';
 // Each packet's presentation time in frames, in decode order, as FFprobe's best-effort timestamps give the same pictures (AVIDemux.test.ts)
 const H264_PRESENTATION_FRAMES = [ 2, 6, 4, 3, 5, 7, 8, 12, 10, 9, 11, 13 ];
 const HEVC_PRESENTATION_FRAMES = [ 2, 5, 4, 3, 8, 7, 6, 11, 10, 9, 13, 12 ];
@@ -133,11 +135,14 @@ function readAVIVector(fileName: string): Uint8Array {
     return new Uint8Array(readFileSync(join(AVI_VECTOR_DIRECTORY, fileName)));
 }
 
-/** Declares far more frames in the first stream header than idx1 indexes, as the first RIFF list of an OpenDML file does. */
-function createOpenDMLLikeAVI(): Uint8Array {
+/**
+ * Declares far more frames in the first stream header than the index lists, as a truncated file does, or an OpenDML file whose indx and ix## indexes
+ * cannot be read, so that only its idx1 index, which covers the first RIFF list, lists any packets.
+ */
+function createIncompleteIndexAVI(): Uint8Array {
     const bytes = readAVIVector(VP9_FILE_NAME);
     const streamHeaderOffset = Buffer.from(bytes).indexOf(STREAM_HEADER_FOURCC);
-    new DataView(bytes.buffer, bytes.byteOffset).setUint32(streamHeaderOffset + STREAM_HEADER_LENGTH_OFFSET, OPENDML_DECLARED_FRAME_COUNT, true);
+    new DataView(bytes.buffer, bytes.byteOffset).setUint32(streamHeaderOffset + STREAM_HEADER_LENGTH_OFFSET, INCOMPLETE_INDEX_DECLARED_FRAME_COUNT, true);
     return bytes;
 }
 
@@ -147,7 +152,8 @@ const MEDIA_FILES = new Map<string, Uint8Array>([
     [ HEVC_FILE_NAME, readAVIVector(HEVC_FILE_NAME) ],
     [ UNTAGGED_HEVC_FILE_NAME, readAVIVector(UNTAGGED_HEVC_FILE_NAME) ],
     [ MPEG4_FILE_NAME, readAVIVector(MPEG4_FILE_NAME) ],
-    [ OPENDML_FILE_NAME, createOpenDMLLikeAVI() ]
+    [ OPENDML_FILE_NAME, readAVIVector(OPENDML_FILE_NAME) ],
+    [ INCOMPLETE_INDEX_FILE_NAME, createIncompleteIndexAVI() ]
 ]);
 
 beforeEach(() => {
@@ -159,10 +165,11 @@ afterEach(() => {
 });
 
 describe('the playback worker on AVI', () => {
-    it('decodes VP9 through the owned VP9 path, one packet per frame slot', async () => {
+    // The OpenDML file's packets past its first RIFF list only its OpenDML indexes cover
+    it.each([ VP9_FILE_NAME, OPENDML_FILE_NAME ])('decodes VP9 from %s through the owned VP9 path, one packet per frame slot', async (fileName: string) => {
         const workerScope = await startDecodeWorker(MEDIA_FILES);
 
-        const responses = await decodeToEnd(workerScope, createWorkerStartRequest(VP9_FILE_NAME));
+        const responses = await decodeToEnd(workerScope, createWorkerStartRequest(fileName));
 
         expect(getReadyResponse(responses).codec.startsWith(VP9_CODEC_PREFIX)).toBe(true);
         const frameTimes = getFrameResponses(responses).map(response => response.mediaTimeMicroseconds);
@@ -225,7 +232,7 @@ describe('the playback worker on AVI', () => {
 
     it.each([
         [ MPEG4_FILE_NAME, MPEG4_MESSAGE ],
-        [ OPENDML_FILE_NAME, OPENDML_MESSAGE ]
+        [ INCOMPLETE_INDEX_FILE_NAME, INCOMPLETE_INDEX_MESSAGE ]
     ])('refuses %s with the check that failed', async (fileName: string, message: string) => {
         const workerScope = await startDecodeWorker(MEDIA_FILES);
         const request = createWorkerStartRequest(fileName);
