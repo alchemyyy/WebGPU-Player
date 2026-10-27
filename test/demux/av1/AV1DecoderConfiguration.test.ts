@@ -16,7 +16,7 @@ import {
     PacketReader,
     type InputVideoTrack
 } from 'mediabunny';
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
 import { createAV1CodecParameterString } from 'webgpu-player/demux/av1/AV1CodecParameterString';
 import { assignAV1SequenceHeaderCodecString } from 'webgpu-player/demux/av1/AV1DecoderConfiguration';
@@ -24,7 +24,6 @@ import {
     findAV1SequenceHeader,
     type AV1SequenceHeader
 } from 'webgpu-player/demux/av1/AV1SequenceHeaderParser';
-import { assignISOBaseMediaDolbyVisionSampleEntryCodec } from 'webgpu-player/demux/dolby-vision/ISOBaseMediaDolbyVisionSampleEntry';
 import { createNativeVideoCapabilityVector } from 'webgpu-player/capability/vectors/NativeVideoCapabilityVectors';
 
 type VectorCodecStrings = {
@@ -82,18 +81,15 @@ const AV1_CONFIGURATION_RECORD_BOX_TYPE = [ 0x61, 0x76, 0x31, 0x43 ];
 const BOX_HEADER_BYTE_LENGTH = 8;
 const AV1_CONFIGURATION_RECORD_HEADER_BYTE_LENGTH = 4;
 
-/** Opens a video track as the worker does, with Dolby Vision sample entries mapped to their codec. */
+/** Opens a file's only video track. */
 async function withVideoTrack(
     data: Uint8Array,
     inspect: (track: InputVideoTrack) => Promise<void>
 ): Promise<void> {
-    // Mediabunny warns about the dav1 sample entry it leaves unmapped
-    vi.spyOn(console, 'warn').mockImplementation((): void => undefined);
     const input = new Input({ formats: ALL_FORMATS, source: new BufferSource(data) });
     try {
         const videoTracks = await input.getVideoTracks();
         expect(videoTracks).toHaveLength(1);
-        await assignISOBaseMediaDolbyVisionSampleEntryCodec(videoTracks[0]);
         await inspect(videoTracks[0]);
     } finally {
         input.dispose();
@@ -236,14 +232,15 @@ describe('AV1DecoderConfiguration', () => {
             expect(await track.getDecoderConfig()).toBe(decoderConfig);
         });
 
-        vi.spyOn(console, 'warn').mockImplementation((): void => undefined);
-        const unmappedInput = new Input({ formats: ALL_FORMATS, source: new BufferSource(readVector('profile10.0.mp4')) });
+        const vp9Input = new Input({
+            formats: ALL_FORMATS,
+            source: new BufferSource(readFileSync(resolve(CODEC_VECTOR_ASSETS_DIRECTORY, 'hdr10plus-vp9', 'hdr10plus.webm')))
+        });
         try {
-            const [ unmappedTrack ] = await unmappedInput.getVideoTracks();
-            // Without the Dolby Vision sample entry mapping, Mediabunny gives a dav1 track no codec
-            expect(await assignAV1SequenceHeaderCodecString(unmappedTrack)).toBe(false);
+            const [ vp9Track ] = await vp9Input.getVideoTracks();
+            expect(await assignAV1SequenceHeaderCodecString(vp9Track)).toBe(false);
         } finally {
-            unmappedInput.dispose();
+            vp9Input.dispose();
         }
 
         await withVideoTrack(readVector('profile10.0.mkv'), async (track: InputVideoTrack): Promise<void> => {

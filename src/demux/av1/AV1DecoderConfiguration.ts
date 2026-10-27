@@ -50,7 +50,6 @@ async function readFirstPacketSequenceHeader(track: InputVideoTrack): Promise<AV
  * Replaces the codec string Mediabunny derives for an AV1 track with the one its bitstream declares, keeping every other decoder configuration field.
  * Mediabunny 1.61 reads bit depth, monochrome, and chroma format from the sequence header correctly, but when the header declares no color description it still writes the optional fields, with BT.709 code points that the stream never declared.
  * This string leaves them out instead, as the AV1 ISOBMFF binding's short form does (1.52.2 also misread the operating points and color_config).
- * The fix is contained here, as ISOBaseMediaDolbyVisionSampleEntry.ts contains its own.
  * Call it before the track's first getDecoderConfig() or canDecode().
  * A track whose first packet has no sequence header, or whose internal shape differs, is left untouched.
  * Returns whether the codec string was replaced.

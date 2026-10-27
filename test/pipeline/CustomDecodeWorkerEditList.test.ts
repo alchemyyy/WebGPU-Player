@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import {
+    ALL_FORMATS,
     BufferSource,
     BufferTarget,
     EncodedPacket,
@@ -15,7 +16,6 @@ import {
 } from 'mediabunny';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { CUSTOM_DECODE_INPUT_FORMATS } from 'webgpu-player/demux/CustomDecodeInputFormats';
 import { findUnsupportedTrackFeature } from 'webgpu-player/demux/UnsupportedTrackFeatures';
 
 import { CODEC_VECTOR_ASSETS_DIRECTORY } from '../helpers/enginePaths';
@@ -83,7 +83,7 @@ function insertEditList(bytes: Uint8Array, edits: readonly Edit[]): Uint8Array {
 
 /** One VP9 key frame from the HDR10+ vector, in an MP4 with the given edit list. */
 async function createEditedMP4(edits: readonly Edit[]): Promise<Uint8Array> {
-    const sourceInput = new Input({ formats: CUSTOM_DECODE_INPUT_FORMATS, source: new BufferSource(readFileSync(SOURCE_VECTOR_PATH)) });
+    const sourceInput = new Input({ formats: ALL_FORMATS, source: new BufferSource(readFileSync(SOURCE_VECTOR_PATH)) });
     try {
         const [ sourceTrack ] = await sourceInput.getVideoTracks();
         const firstPacket = await new PacketReader(sourceTrack).getFirst();
@@ -132,7 +132,7 @@ describe('edit lists Mediabunny cannot honor', () => {
         [ EMPTY_THEN_MEDIA_FILE_NAME, null ]
     ])('reports %s as %s', async (fileName: string, feature: string | null) => {
         vi.spyOn(console, 'warn').mockImplementation((): void => undefined);
-        const input = new Input({ formats: CUSTOM_DECODE_INPUT_FORMATS, source: new BufferSource(mediaFiles.get(fileName) as Uint8Array) });
+        const input = new Input({ formats: ALL_FORMATS, source: new BufferSource(mediaFiles.get(fileName) as Uint8Array) });
         try {
             const [ videoTrack ] = await input.getVideoTracks();
             expect(await findUnsupportedTrackFeature(videoTrack)).toBe(feature);

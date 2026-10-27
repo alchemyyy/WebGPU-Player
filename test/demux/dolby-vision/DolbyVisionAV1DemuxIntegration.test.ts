@@ -14,11 +14,10 @@ import {
     PacketReader,
     type EncodedPacket
 } from 'mediabunny';
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
 import { splitDolbyVisionAV1TemporalUnit } from 'webgpu-player/demux/dolby-vision/DolbyVisionAV1Splitter';
 import { DolbyVisionAV1EncodedMetadataQueue } from 'webgpu-player/demux/dolby-vision/DolbyVisionEncodedMetadata';
-import { assignISOBaseMediaDolbyVisionSampleEntryCodec } from 'webgpu-player/demux/dolby-vision/ISOBaseMediaDolbyVisionSampleEntry';
 import DolbyVisionRPUParser, {
     decodeDolbyVisionRPUSnapshot
 } from 'webgpu-player/demux/dolby-vision/DolbyVisionRPUParser';
@@ -72,7 +71,6 @@ const OWNED_AV1_PACKET_OPTIONS = {
 // The crate infers the RPU profile: 10.0 RPUs code like Profile 5, every other sub-profile like Profile 8
 const PROFILE_10_0_RPU_PROFILE = 5;
 const PROFILE_10_RPU_PROFILE = 8;
-const DOLBY_VISION_AV1_SAMPLE_ENTRY_TYPE = 'dav1';
 const MATROSKA_AV1_CODEC_ID = 'V_AV1';
 // OBU syntax from the AV1 specification
 const OBU_TYPE_SEQUENCE_HEADER = 1;
@@ -143,8 +141,6 @@ async function parseAV1ITUTT35InFreshParser(payload: Uint8Array): Promise<Uint8A
 }
 
 async function readVectorPackets(vector: DolbyVisionAV1Vector): Promise<EncodedPacket[]> {
-    // Mediabunny warns about the dav1 sample entry it leaves unmapped
-    vi.spyOn(console, 'warn').mockImplementation((): void => undefined);
     const input = new Input({
         formats: ALL_FORMATS,
         source: new BufferSource(new Uint8Array(readFileSync(resolve(VECTOR_DIRECTORY, vector.fileName))))
@@ -153,10 +149,6 @@ async function readVectorPackets(vector: DolbyVisionAV1Vector): Promise<EncodedP
         const videoTracks = await input.getVideoTracks();
         expect(videoTracks).toHaveLength(1);
         const videoTrack = videoTracks[0];
-        // As the worker does, so an MP4 dav1 sample entry reads as AV1; av01 and V_AV1 already map to it
-        expect(await assignISOBaseMediaDolbyVisionSampleEntryCodec(videoTrack)).toBe(
-            vector.sampleEntry === DOLBY_VISION_AV1_SAMPLE_ENTRY_TYPE
-        );
         expect(await videoTrack.getInternalCodecId()).toBe(vector.sampleEntry ?? MATROSKA_AV1_CODEC_ID);
         expect(await videoTrack.getCodec()).toBe('av1');
         expect([ await videoTrack.getCodedWidth(), await videoTrack.getCodedHeight() ]).toEqual([

@@ -88,7 +88,7 @@ async function startWorker(fileName: string, media: Uint8Array): Promise<Awaited
 
 beforeEach(() => {
     vi.resetModules();
-    // Mediabunny warns that it maps no codec to a vc-1 sample entry, which only a decoder package decodes
+    // Mediabunny warns that it maps no codec to a Video for Windows track, which only a decoder package decodes
     vi.spyOn(console, 'warn').mockImplementation((): void => undefined);
 });
 

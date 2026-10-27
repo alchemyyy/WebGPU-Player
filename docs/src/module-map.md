@@ -118,7 +118,6 @@ All worker code unless marked.
 - `MediaFetchPolicy.ts`: retries only transport errors and 408, 429, and 5xx.
 - `HTTPRangeResponse.ts`: validates Range responses, a cross-origin 206 that hides `Content-Range` included, from the paths the source's pattern names.
 - `URLSourceRetention.ts`: keeps the last run's URL source for the next run over the same media, released only by the run that took it last, and sizes its read-ahead and cache by the media's bitrate.
-- `CustomDecodeInputFormats.ts`: Mediabunny's input formats with Motion JPEG 2000 added, whose JP2 signature box precedes its ftyp.
 - `MatroskaBlockAdditions.ts`: reads a packet's Matroska or WebM BlockAdditionals but alpha, such as VP9 HDR10+, from the fork's packet side data.
 - `ContainerVideoScan.ts`: a video track's scan as its container declares it: Matroska's FlagInterlaced and FieldOrder, which the fork's Matroska demuxer reports as the track's field order, or an ISO base media sample entry's `fiel` box.
 - `CustomDecodeTrackSelection.ts`: track lookup by ordinal within one media type.
@@ -129,7 +128,7 @@ All worker code unless marked.
 - `NALUnitFraming.ts`: splits H.264 and HEVC data into NAL units at Annex B start codes or at an avcC's or hvcC's length prefixes, without copying them.
 - `AudioStartPacket.ts`: the packet an audio attempt starts from, without Mediabunny's proof scans when the track starts late.
 - `TrackIteration.ts`: a track's packets in decode order, read about a second ahead, and its decoded video or audio samples from a start time, as iterators that end at once on `return()`.
-- `ISOBaseMediaSampleEntryChildBox.ts`: reads a child box of an ISO base media track's first sample entry, such as `dvc1` or `av1C`, from the `moov` bytes Mediabunny keeps.
+- `ISOBaseMediaSampleEntryChildBox.ts`: reads a child box of an ISO base media track's first sample entry, such as `fiel` or `av1C`, from the `moov` bytes Mediabunny keeps.
 
 ### demux/av1/
 
@@ -147,7 +146,6 @@ All worker code unless marked.
 - `DolbyVisionEncodedPacketPairer.ts`: BL and EL packet pairing, within the tolerance of `DolbyVisionProfiles.ts`.
 - `DolbyVisionRPUParser.ts`, `DolbyVisionRPUParserSession.ts`, `DolbyVisionRPUDataLayout.ts`: the libdovi WASM parser with its HEVC and AV1 T.35 entry points, one instance per worker with a context for each parser, its per-run session, and the packed 3232-byte snapshot layout (schema 2: a mapping method per segment).
 - `WorkerWASMInstanceCache.ts`: the one instance of a WebAssembly module that a worker's users share, one cache per kit with the source it loads from as its version, discarded after its code traps; the libdovi parser uses it.
-- `ISOBaseMediaDolbyVisionSampleEntry.ts`: gives Mediabunny's unmapped `dvh1`, `dvhe`, `dva1`, `dvav`, and `dav1` tracks their wrapped codec.
 - `MatroskaDolbyVisionHVCE.ts`, `ISOBaseMediaDolbyVisionConfiguration.ts`, `MPEGTransportStreamDolbyVisionConfiguration.ts`: find a P4 or P7 EL configuration in Matroska; in MP4, as a separate EL track or as `hvcE` beside the BL `hvcC` of one interleaved track; or in MPEG-TS and M2TS (any descriptor version).
 
 ### demux/hdr/
@@ -170,7 +168,7 @@ All worker code unless marked.
 ### demux/vc1/
 
 - `MatroskaVFWVideoConfiguration.ts`: reads a Matroska Video for Windows track's extradata as FFmpeg does: VC-1's after a `WVC1` or `WMVA` header, and WMV3's STRUCT_C behind a new header of the track's coded size, since STRUCT_C holds no frame size.
-- `ISOBaseMediaVC1Configuration.ts`: reads a `vc-1` sample entry's `dvc1` box, Advanced profile only, through `ISOBaseMediaSampleEntryChildBox.ts`.
+- `ISOBaseMediaVC1Configuration.ts`: a `vc-1` sample entry's `dvc1` sequence header and entry point, Advanced profile only, which the fork hands on as the track's description.
 - `VC1TrackConfiguration.ts`: the codec private data and packet track of a VC-1 or WMV3 track, per codec and container.
 - `VC1PresentationOrder.ts`: restamps a Matroska VC-1 or WMV3 track, whose blocks carry decode-order times, into presentation order by FFmpeg's rule: an I or P picture takes the next I or P picture's time, and a B picture keeps its own.
 

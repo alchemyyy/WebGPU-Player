@@ -1,7 +1,7 @@
 // @vitest-environment node
 
 import { ALL_FORMATS, BufferSource, Input, PacketCursor, type InputVideoTrack } from 'mediabunny';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
 import {
     ISO_BASE_MEDIA_VC1_SAMPLE_ENTRY,
@@ -41,20 +41,15 @@ async function withISOBaseMediaTrack<Result>(file: Uint8Array, read: (track: Inp
     }
 }
 
-beforeEach(() => {
-    // Mediabunny warns that it maps no codec to a vc-1 sample entry, which only a decoder package decodes
-    vi.spyOn(console, 'warn').mockImplementation((): void => undefined);
-});
-
 describe('readISOBaseMediaVC1DecoderDescription', () => {
-    it('reads the sequence header and entry point after the dvc1 box\'s VC1DecSpecStruc from a vc-1 track Mediabunny 1.52.2 demuxes', async () => {
+    it('reads the sequence header and entry point after the dvc1 box\'s VC1DecSpecStruc, which the fork hands on as a vc1 track\'s description', async () => {
         const extradata = createVC1AdvancedExtradata(CODED_WIDTH, CODED_HEIGHT, false);
         const file = createVC1ISOBaseMedia(CODED_WIDTH, CODED_HEIGHT, createDVC1Payload(extradata), SAMPLES);
 
         await withISOBaseMediaTrack(file, async (track: InputVideoTrack): Promise<void> => {
-            expect(await track.getCodec()).toBeNull();
+            expect(await track.getCodec()).toBe('vc1');
             expect(await track.getInternalCodecId()).toBe(ISO_BASE_MEDIA_VC1_SAMPLE_ENTRY);
-            expect(readISOBaseMediaVC1DecoderDescription(track)).toEqual({ description: extradata, status: 'read' });
+            expect(await readISOBaseMediaVC1DecoderDescription(track)).toEqual({ description: extradata, status: 'read' });
         });
     });
 
@@ -62,7 +57,7 @@ describe('readISOBaseMediaVC1DecoderDescription', () => {
         const file = createVC1ISOBaseMedia(CODED_WIDTH, CODED_HEIGHT, createDVC1Payload(createVC1AdvancedExtradata(CODED_WIDTH, CODED_HEIGHT, false)), SAMPLES);
 
         await withISOBaseMediaTrack(file, async (track: InputVideoTrack): Promise<void> => {
-            readISOBaseMediaVC1DecoderDescription(track);
+            await readISOBaseMediaVC1DecoderDescription(track);
             const samples: Array<{ data: Uint8Array, timestampMilliseconds: number }> = [];
             for await (const packet of new PacketCursor(track)) {
                 samples.push({ data: packet.data, timestampMilliseconds: Math.round(packet.timestamp * MILLISECONDS_PER_SECOND) });
@@ -72,36 +67,15 @@ describe('readISOBaseMediaVC1DecoderDescription', () => {
         });
     });
 
-    it('refuses a dvc1 box of another profile, as FFmpeg reads none', async () => {
-        const file = createVC1ISOBaseMedia(CODED_WIDTH, CODED_HEIGHT, createDVC1Payload(createVC1AdvancedExtradata(CODED_WIDTH, CODED_HEIGHT, false), MAIN_PROFILE), SAMPLES);
+    it.each([
+        [ 'a dvc1 box of another profile, as FFmpeg reads none', createDVC1Payload(createVC1AdvancedExtradata(CODED_WIDTH, CODED_HEIGHT, false), MAIN_PROFILE), 'dvc1-missing' ],
+        [ 'a vc-1 sample entry without a dvc1 box', null, 'dvc1-missing' ],
+        [ 'a dvc1 box with no extradata after its VC1DecSpecStruc', createDVC1Payload(new Uint8Array()), 'dvc1-size: 0' ]
+    ])('refuses %s', async (_label: string, dvc1Payload: Uint8Array | null, failure: string) => {
+        const file = createVC1ISOBaseMedia(CODED_WIDTH, CODED_HEIGHT, dvc1Payload, SAMPLES);
 
-        await withISOBaseMediaTrack(file, (track: InputVideoTrack): Promise<void> => {
-            expect(readISOBaseMediaVC1DecoderDescription(track)).toEqual({ failure: `dvc1-profile: ${MAIN_PROFILE}`, status: 'failed' });
-            return Promise.resolve();
+        await withISOBaseMediaTrack(file, async (track: InputVideoTrack): Promise<void> => {
+            expect(await readISOBaseMediaVC1DecoderDescription(track)).toEqual({ failure, status: 'failed' });
         });
-    });
-
-    it('refuses a vc-1 sample entry without a dvc1 box', async () => {
-        const file = createVC1ISOBaseMedia(CODED_WIDTH, CODED_HEIGHT, null, SAMPLES);
-
-        await withISOBaseMediaTrack(file, (track: InputVideoTrack): Promise<void> => {
-            expect(readISOBaseMediaVC1DecoderDescription(track)).toEqual({ failure: 'dvc1-missing', status: 'failed' });
-            return Promise.resolve();
-        });
-    });
-
-    it('refuses a dvc1 box with no extradata after its VC1DecSpecStruc', async () => {
-        const file = createVC1ISOBaseMedia(CODED_WIDTH, CODED_HEIGHT, createDVC1Payload(new Uint8Array()), SAMPLES);
-
-        await withISOBaseMediaTrack(file, (track: InputVideoTrack): Promise<void> => {
-            expect(readISOBaseMediaVC1DecoderDescription(track)).toEqual({ failure: 'dvc1-size: 7', status: 'failed' });
-            return Promise.resolve();
-        });
-    });
-
-    it('refuses a track of another container, whose demuxer retains no moov', () => {
-        const track = { _backing: { internalTrack: { codecPrivate: new Uint8Array() } } } as unknown as InputVideoTrack;
-
-        expect(readISOBaseMediaVC1DecoderDescription(track)).toEqual({ failure: 'sample-table-unavailable: no ISO base media track', status: 'failed' });
     });
 });

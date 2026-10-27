@@ -3,10 +3,9 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { BufferSource, Input } from 'mediabunny';
+import { ALL_FORMATS, BufferSource, Input } from 'mediabunny';
 import { describe, expect, it } from 'vitest';
 
-import { CUSTOM_DECODE_INPUT_FORMATS } from 'webgpu-player/demux/CustomDecodeInputFormats';
 import {
     findTransportStreamExtradataByteLength,
     getTransportStreamVideoCodec,
@@ -106,7 +105,7 @@ describe('the video configuration of MPEG-TS and M2TS tracks', () => {
 
     it.each(TRANSPORT_STREAM_VECTORS)('reads the decoder description of $fileName from its first sequence header', async (vector: TransportStreamVectorExpectation) => {
         const input = new Input({
-            formats: CUSTOM_DECODE_INPUT_FORMATS,
+            formats: ALL_FORMATS,
             source: new BufferSource(readFileSync(join(TRANSPORT_STREAM_VECTOR_DIRECTORY, vector.fileName)))
         });
         const track = await input.getPrimaryVideoTrack();

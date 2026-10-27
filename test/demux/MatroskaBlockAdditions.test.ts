@@ -18,7 +18,6 @@ import {
 } from 'mediabunny';
 import { describe, expect, it } from 'vitest';
 
-import { CUSTOM_DECODE_INPUT_FORMATS } from 'webgpu-player/demux/CustomDecodeInputFormats';
 import { readMatroskaBlockAdditions, type MatroskaBlockAddition } from 'webgpu-player/demux/MatroskaBlockAdditions';
 
 import { concatenate, createBytesFromHex } from '../helpers/byteArrays';
@@ -234,18 +233,6 @@ describe('readMatroskaBlockAdditions', () => {
                         expect(describePacketAdditions(keyPacket)).toEqual(getExpectedAdditions(frames[SECOND_KEY_FRAME_INDEX]));
                         expect(describePacketAdditions(nextPacket)).toEqual(getExpectedAdditions(frames[SECOND_KEY_FRAME_INDEX + 1]));
                         expect(describePacketAdditions(firstPacket)).toEqual(getExpectedAdditions(frames[0]));
-                    }
-                );
-            });
-
-            it('reads them through the worker\'s input formats', async () => {
-                await withVideoTrack(
-                    readVP9HDR10PlusVector(vector.fileName),
-                    CUSTOM_DECODE_INPUT_FORMATS,
-                    async (track: InputVideoTrack): Promise<void> => {
-                        const packets = await readPackets(track);
-
-                        expect(packets.map(describePacketAdditions)).toEqual(VP9_HDR10_PLUS_EXPECTATIONS.frames.map(getExpectedAdditions));
                     }
                 );
             });

@@ -177,6 +177,7 @@ These were settled on stock Chrome on Windows, with a Chromium 153 source audit.
   Mediabunny 1.52.2 parses `dvh1`, `dvhe`, `dva1`, `dvav`, and `dav1` but gives them no codec.
   `ISOBaseMediaDolbyVisionSampleEntry.ts` writes the wrapped codec into the track's internal info, contained the way `MatroskaVFWVideoConfiguration.ts` is, so Mediabunny itself stays unmodified.
   Mediabunny 1.61.5 still gives them no codec (10-15).
+  The fork reads `dvh1` and `dvhe` as HEVC, `dva1` and `dvav` as AVC (`avc1` and `avc3`), and `dav1` as AV1 (branch `v2-isobmff-dolby-vision-sample-entries`), so `ISOBaseMediaDolbyVisionSampleEntry.ts` left, and every track's decoder configuration is the one the engine assigned (10-27).
 - AV1 codec strings come from the bitstream (10-08).
   Without an `av1C` record, as in every Matroska track, Mediabunny 1.52.2 reads the first packet's sequence header, but it reads `decoder_model_info_present_flag` without timing info and the initial display delay flag once per operating point.
   Its `color_config` also skips the color description and range, and takes the Professional profile below 12 bits as 4:2:0.
@@ -201,7 +202,7 @@ These were settled on stock Chrome on Windows, with a Chromium 153 source audit.
   `CustomDecodeInputFormats.ts` gives the worker a Matroska format whose demuxer splits such a block as stored and then restores each frame's bytes, contained as `MatroskaBlockAdditions.ts` is, which wraps it in turn.
   When the internals differ, demuxing proceeds untouched with one console warning, and `test/demux/CustomDecodeInputFormats.test.ts` fails.
   Its last case fails once Mediabunny itself reads such blocks correctly, and the replacement can then go.
-  The fork splits a laced block as stored and restores each frame's bytes itself (branch `fix-matroska-laced-header-stripping`), so the replacement format and its last case left; `test/demux/CustomDecodeInputFormats.test.ts` still reads every lacing through the worker's formats (10-16).
+  The fork splits a laced block as stored and restores each frame's bytes itself (branch `fix-matroska-laced-header-stripping`), so the replacement format and its last case left; `test/demux/CustomDecodeInputFormats.test.ts` still reads every lacing through the worker's formats (10-16), and is `test/demux/MediabunnyDemuxIntegration.test.ts` since those are Mediabunny's own (10-27).
 - A custom decoder's failure is reported once (10-09).
   After a Mediabunny custom decoder rejects, Mediabunny 1.52.2 queues the decoder's `close()` behind the failed call without a handler, so the same error resurfaces as an unhandled rejection and the decoder is never closed.
   The worker marks every failure it catches (`HandledDecodeFailures.ts`) and prevents the unhandled-rejection report of a marked error only, so any other unhandled rejection is still reported.
@@ -463,6 +464,8 @@ These were settled on stock Chrome on Windows, with a Chromium 153 source audit.
   Mediabunny 1.52.2 lists a `vc-1` track and its samples but skips the `dvc1` box, so `ISOBaseMediaVC1Configuration.ts` reads it from the `moov` bytes Mediabunny keeps (`moovSlice`, `sampleTableByteOffset`), and the worker builds its packet track with the `InputVideoTrack` constructor.
   Each internal is checked, and a change fails the track with a named check; only the Advanced profile's `dvc1` is read, as FFmpeg reads it.
   Mediabunny 1.61.5 still skips `dvc1` (10-15).
+  The fork reads a `vc-1` sample entry as codec `vc1`, with the `dvc1` box's sequence header and entry point as its description for the Advanced profile only, as FFmpeg reads it (branch `v2-isobmff-vc1-dvc1`), so `ISOBaseMediaVC1Configuration.ts` takes the description from the track's decoder configuration, without internals, and fails as `dvc1-missing` without one (10-27).
+  The worker takes the transport stream rule only for an MPEG-TS or M2TS track, by its input format, since a `vc1` track no longer means a transport stream.
 - AV1's codec private data reads through Mediabunny's internals too (10-14).
   Mediabunny 1.52.2 reads an `av1C` box only for its codec string and keeps a Matroska `V_AV1` CodecPrivate without handing it on, so an AV1 package's parser saw no sequence header before the first temporal unit and could declare no maximum frame size.
   On the frame-pool route `AV1CodecConfigurationRecord.ts` reads the CodecPrivate from the internal track, or the `av1C` box of an `av01` or `dav1` sample entry through the `moov` reader the `dvc1` path now shares (`ISOBaseMediaSampleEntryChildBox.ts`), and copies the record unchecked, as FFmpeg's demuxers do.
@@ -504,6 +507,7 @@ These were settled on stock Chrome on Windows, with a Chromium 153 source audit.
   `CustomDecodeInputFormats.ts` adds a format ahead of Mediabunny's own that takes the signature box and an `ftyp` of brand `mjp2`, and hands the file to Mediabunny's MP4 demuxer, which skips the signature box.
   It reads the file's first bytes through Mediabunny's internal reader, contained the way the Matroska fix is: when the reader differs, it warns once and opens nothing.
   Mediabunny 1.61.5 still requires an `ftyp` first (10-15).
+  The fork's MP4 format takes a JP2 signature box followed by an `ftyp` of brand `mjp2` or `mj2s`, and still leaves a JP2 still image unopened (branch `v2-isobmff-mj2-signature`), so `CustomDecodeInputFormats.ts` left and the worker opens files with Mediabunny's own formats (10-27).
 - The WGSL JPEG 2000 decoder follows FFmpeg's bitexact 9/7 path (10-13).
   FFmpeg's default irreversible 9/7 transform runs in floating point, whose rounding follows the CPU's SIMD, which WGSL's `f32` cannot reproduce.
   Its integer path, the one `-flags bitexact` selects, lifts in fixed point with defined rounding, so the decoder implements that, and the 9/7 vectors pin `-flags bitexact`.
