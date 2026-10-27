@@ -619,6 +619,20 @@ export function encodeSDROutput(
     });
 }
 
+/**
+ * Converts display-encoded SDR RGB in a primaries set to display-encoded BT.709, as the raw routes present identity SDR outside BT.709 primaries:
+ * the BT.709 curve decodes each component, the primaries' linear matrix converts it, the result clips to [0, 1], and the same curve encodes it again.
+ * BT.709 primaries return the input unchanged.
+ */
+export function convertSDRGamutToBT709(encodedRGB: ColorTriplet, primaries: ColorPrimaries): ColorTriplet {
+    const toBT709Matrix = getGamutToBT709Matrix(primaries);
+    if (!toBT709Matrix) {
+        return [ encodedRGB[0], encodedRGB[1], encodedRGB[2] ];
+    }
+    const linearBT709RGB = multiplyColorMatrix(toBT709Matrix, mapTriplet(encodedRGB, (component: number): number => applySDREOTF(component, 1)));
+    return encodeSDROutput(linearBT709RGB, 1, 'bt709');
+}
+
 /** Applies the reference color pipeline to an already converted nonlinear RGB sample. */
 export function processEncodedRGB(
     encodedRGB: ColorTriplet,
@@ -628,7 +642,10 @@ export function processEncodedRGB(
     assertValidInputColorMetadata(metadata);
     assertValidRenderSettings(settings);
     if (settings.mode === 'identity-sdr') {
-        return [ encodedRGB[0], encodedRGB[1], encodedRGB[2] ];
+        // Identity SDR presents its encoded values, converted to BT.709 when its primaries differ
+        return metadata.transfer === 'sdr' ?
+            convertSDRGamutToBT709(encodedRGB, metadata.primaries) :
+            [ encodedRGB[0], encodedRGB[1], encodedRGB[2] ];
     }
 
     const decodedRGB = decodeEncodedRGBToNits(encodedRGB, metadata);

@@ -23,6 +23,7 @@ import {
     getDolbyVisionReconstructionRawFrameFormat,
     getGPUVideoDecodeTarget,
     getPlaybackAudioCodec,
+    getRawVideoPresentationRouteKey,
     hasEligibleCustomVideoRoute,
     hasPotentialCustomPlaybackVideoRoute,
     presentsInterlacedVideo,
@@ -35,6 +36,12 @@ import {
     type HEVCRangeExtensionCapability,
     type HEVCRangeExtensionVariant
 } from 'webgpu-player/capability/HEVCRangeExtensionCapabilities';
+import {
+    AV1_RAW_FORMAT_PROBE_DEFINITIONS,
+    AV1_RAW_FORMAT_VARIANTS,
+    type AV1RawFormatCapability,
+    type AV1RawFormatVariant
+} from 'webgpu-player/capability/AV1RawFormatCapabilities';
 import type { CustomPlaybackRuntimeAvailability } from 'webgpu-player/capability/CustomPlaybackRuntime';
 import type {
     NativeMediaAudioCapabilities,
@@ -292,6 +299,29 @@ function createCapabilitiesWithoutNativeHEVC(): CustomDecodeCapabilities {
         ...capabilities.video,
         hevc: createCapability('hevc', false)
     };
+    return capabilities;
+}
+
+/** Returns capabilities whose AV1 raw format variants all qualified. */
+function createAV1RawFormatCapabilities(): CustomDecodeCapabilities {
+    const capabilities = createCapabilities();
+    const av1RawFormats = {} as Record<AV1RawFormatVariant, AV1RawFormatCapability>;
+    for (const variant of AV1_RAW_FORMAT_VARIANTS) {
+        const definition = AV1_RAW_FORMAT_PROBE_DEFINITIONS[variant];
+        av1RawFormats[variant] = {
+            bitDepth: definition.bitDepth,
+            chromaFormat: definition.chromaFormat,
+            codec: 'av1',
+            codecString: definition.config.codec,
+            format: definition.format,
+            jellyfinProfile: definition.jellyfinProfile,
+            pixelFormat: definition.pixelFormat,
+            reason: 'output-copy-supported',
+            status: 'supported',
+            variant
+        };
+    }
+    capabilities.av1RawFormats = av1RawFormats;
     return capabilities;
 }
 
@@ -559,32 +589,14 @@ describe('CustomPlaybackEligibility', () => {
     });
 
     it.each([
-        // The raw SDR keys are BT.709 only, and 10-bit AV1 and VP9 have no other route
-        [ '10-bit BT.601 SDR AV1', {
-            AverageFrameRate: 24,
-            BitDepth: 10,
-            Codec: 'AV1',
-            ColorPrimaries: 'smpte170m',
-            ColorSpace: 'smpte170m',
-            ColorTransfer: 'smpte170m',
-            Height: 1_632,
-            Profile: 'Main',
-            Width: 3_840
-        } ],
-        [ '10-bit BT.2020 SDR VP9', {
-            BitDepth: 10,
-            Codec: 'VP9',
-            ColorPrimaries: 'bt2020',
-            ColorSpace: 'bt2020nc',
-            ColorTransfer: 'bt2020-10',
-            Profile: 'Profile 2'
-        } ],
+        // 10-bit AV1 and VP9 have only the raw I420P10 route, which Profile 0 cannot take
         [ '10-bit SDR VP9 Profile 0', {
             BitDepth: 10,
             Codec: 'VP9',
             Profile: 'Profile 0'
         } ],
-        [ '8-bit Dolby Vision 10.0 AV1', {
+        // 8-bit Main reconstructs only from its exact raw format, which its PixelFormat names
+        [ '8-bit Dolby Vision 10.0 AV1 without a PixelFormat', {
             BitDepth: 8,
             BlPresentFlag: true,
             Codec: 'AV1',
@@ -616,6 +628,9 @@ describe('CustomPlaybackEligibility', () => {
         [ 'AV1 Main', { Codec: 'AV1', Profile: 'Main' } ],
         [ 'VP9 Profile 2', { Codec: 'VP9', Profile: 'Profile 2' } ],
         [ 'full-range AV1 Main', { Codec: 'AV1', ColorRange: 'pc', Profile: 'Main' } ],
+        // Each matrix and primaries set has its own raw SDR key
+        [ 'BT.601 AV1 Main', { Codec: 'AV1', ColorPrimaries: 'smpte170m', ColorSpace: 'smpte170m', ColorTransfer: 'smpte170m', Profile: 'Main' } ],
+        [ 'BT.2020 VP9 Profile 2', { Codec: 'VP9', ColorPrimaries: 'bt2020', ColorSpace: 'bt2020nc', ColorTransfer: 'bt2020-10', Profile: 'Profile 2' } ],
         // HEVC Main 10 SDR also decodes natively, which presents BT.601 color
         [ 'BT.601 HEVC Main 10', {
             Codec: 'HEVC',
@@ -4931,10 +4946,13 @@ describe('Dolby Vision routes beyond the standard Profile 5, 7, and 8 shapes', (
         [ { BitDepth: 8, DvProfile: 7, ElPresentFlag: true, Profile: 'Main' }, 'I420' ],
         [ { Codec: 'av1', DvProfile: 10, Profile: 'Main' }, 'I420P10' ],
         [ { Codec: 'av1', DvBlSignalCompatibilityId: 1, DvProfile: 10, Profile: 'Main' }, 'I420P10' ],
-        // AV1 carries no EL, and its RPU route is 10-bit Main only
+        // AV1 carries no EL; its RPU route takes Main at 10 bits, or the exact raw format its PixelFormat names
         [ { Codec: 'av1', DvProfile: 7, ElPresentFlag: true, Profile: 'Main' }, null ],
         [ { BitDepth: 8, Codec: 'av1', DvProfile: 10, Profile: 'Main' }, null ],
+        [ { BitDepth: 8, Codec: 'av1', DvProfile: 10, PixelFormat: 'yuv420p', Profile: 'Main' }, 'I420' ],
+        [ { BitDepth: 10, Codec: 'av1', DvProfile: 10, PixelFormat: 'yuv444p10le', Profile: 'High' }, 'I444P10' ],
         [ { BitDepth: 12, Codec: 'av1', DvProfile: 10, Profile: 'Professional' }, null ],
+        [ { BitDepth: 12, Codec: 'av1', DvProfile: 10, PixelFormat: 'yuv422p12le', Profile: 'Professional' }, 'I422P12' ],
         [ { BitDepth: 8, Codec: 'h264', DvProfile: 9, Profile: 'High' }, null ],
         [ { Codec: 'vp9', DvProfile: 8, Profile: 'Profile 2' }, null ],
         [ { BitDepth: 10, Profile: 'Main' }, null ],
@@ -5209,7 +5227,7 @@ describe('Dolby Vision routes beyond the standard Profile 5, 7, and 8 shapes', (
             )).toEqual({ eligible: false, reason: 'hdr-codec-unsupported' });
         });
 
-        it('presents an 8-bit 10.2 base through the native AV1 route, since the RPU route is 10-bit', () => {
+        it('presents an 8-bit 10.2 base through the native AV1 route when no qualified raw format holds its RPU route', () => {
             expect(getCustomPlaybackEligibility(
                 createProfile10Options(2, {
                     ...SDR_BASE_COLORS,
@@ -5230,6 +5248,54 @@ describe('Dolby Vision routes beyond the standard Profile 5, 7, and 8 shapes', (
                 videoDecoderBackend: 'native',
                 videoOutputMode: 'video-frame'
             });
+        });
+
+        it.each([
+            { colors: {}, compatibilityID: 0, format: 'I420', reconstructionProfile: 5, videoStream: { BitDepth: 8, PixelFormat: 'yuv420p' } },
+            {
+                colors: SDR_BASE_COLORS,
+                compatibilityID: 2,
+                format: 'I420',
+                reconstructionProfile: 8,
+                videoStream: { BitDepth: 8, PixelFormat: 'yuv420p' }
+            },
+            {
+                colors: PQ_BASE_COLORS,
+                compatibilityID: 1,
+                format: 'I444P10',
+                reconstructionProfile: 8,
+                videoStream: { BitDepth: 10, PixelFormat: 'yuv444p10le', Profile: 'High' }
+            },
+            {
+                colors: {},
+                compatibilityID: 0,
+                format: 'I422',
+                reconstructionProfile: 5,
+                videoStream: { BitDepth: 8, PixelFormat: 'yuv422p', Profile: 'Professional' }
+            }
+        ] as const)('reconstructs $format Profile 10 with ID $compatibilityID from its qualified exact raw format', ({
+            colors,
+            compatibilityID,
+            format,
+            reconstructionProfile,
+            videoStream
+        }) => {
+            const options = createProfile10Options(compatibilityID, { ...colors, ...videoStream });
+            const eligibilityOptions = { allowDolbyVision: true, allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME };
+
+            expect(hasPotentialCustomPlaybackVideoRoute({ MediaSources: [ (options as { mediaSource: unknown }).mediaSource ] })).toBe(true);
+            expect(getDolbyVisionReconstructionRawFrameFormat(options)).toBe(format);
+            expect(getCustomPlaybackEligibility(options, createAV1RawFormatCapabilities(), eligibilityOptions)).toMatchObject({
+                dolbyVisionProfile: reconstructionProfile,
+                eligible: true,
+                hdr: true,
+                rawVideoFrameFormat: format,
+                videoDecoderBackend: 'native',
+                videoOutputMode: 'raw-planes'
+            });
+            // Without the format's qualification the RPU route is ineligible, and only a declared base can play
+            const unqualified = getCustomPlaybackEligibility(options, createCapabilities(), eligibilityOptions);
+            expect(unqualified).not.toMatchObject({ dolbyVisionProfile: reconstructionProfile });
         });
     });
 
@@ -5694,17 +5760,24 @@ describe('10-bit raw SDR route', () => {
         )).toEqual({ eligible: false, reason: 'codec-unsupported' });
     });
 
-    // The raw SDR keys are BT.709 only, so BT.601 and BT.2020 SDR never reach the raw shaders
+    // Each matrix, primaries set, and range has its own raw SDR key, which authorizes on first use outside BT.709
     it.each([
         {
             colors: { ColorPrimaries: 'smpte170m', ColorSpace: 'smpte170m', ColorTransfer: 'smpte170m' },
-            label: 'BT.601'
+            label: 'BT.601',
+            routeKey: 'I420P10:smpte170m:smpte170m:limited:sdr'
+        },
+        {
+            colors: { ColorPrimaries: 'bt470bg', ColorRange: 'pc', ColorSpace: 'bt470bg', ColorTransfer: 'bt709' },
+            label: 'full-range 625-line BT.601',
+            routeKey: 'I420P10:bt470bg:bt470bg:full:sdr'
         },
         {
             colors: { ColorPrimaries: 'bt2020', ColorSpace: 'bt2020nc', ColorTransfer: 'bt2020-10' },
-            label: 'BT.2020'
+            label: 'BT.2020',
+            routeKey: 'I420P10:bt2020-ncl:bt2020:limited:sdr'
         }
-    ])('rejects $label 10-bit SDR on AV1 and VP9', ({ colors }) => {
+    ] as const)('presents $label 10-bit SDR on AV1 and VP9 through its own raw SDR key', ({ colors, routeKey }) => {
         for (const codecProfile of [
             { Codec: 'av1', Profile: 'Main' },
             { Codec: 'vp9', Profile: 'Profile 2' }
@@ -5713,12 +5786,19 @@ describe('10-bit raw SDR route', () => {
 
             expect(hasPotentialCustomPlaybackVideoRoute({
                 MediaSources: [ (options as { mediaSource: unknown }).mediaSource ]
-            })).toBe(false);
+            })).toBe(true);
+            expect(getRawVideoPresentationRouteKey(options)).toBe(routeKey);
+            // The prewarmed BT.709 keys never stand in for another color's
             expect(getCustomPlaybackEligibility(
                 options,
                 createCapabilities(),
                 RAW_SDR_AUTHORIZATION
             )).toEqual({ eligible: false, reason: 'codec-unsupported' });
+            expect(getCustomPlaybackEligibility(
+                options,
+                createCapabilities(),
+                { ...RAW_SDR_AUTHORIZATION, authorizedRawHDRRouteKeys: [ ...RAW_SDR_AUTHORIZATION.authorizedRawHDRRouteKeys, routeKey ] }
+            )).toMatchObject({ ...RAW_SDR_ROUTE, videoDecoderBackend: 'native' });
         }
     });
 
@@ -6467,7 +6547,7 @@ describe('AV1 on a decoder package', () => {
         { format: 'I422P12', subject: 'Professional 12-bit 4:2:2', videoStream: { BitDepth: 12, PixelFormat: 'yuv422p12le', Profile: 'Professional' } },
         { format: 'I420P12', subject: 'Professional 12-bit 4:2:0', videoStream: { BitDepth: 12, PixelFormat: 'yuv420p12le', Profile: 'Professional' } }
     ] as const;
-    // Main at 10 bits outside the raw SDR keys, which are BT.709 only: no native route takes it, while the browser's own player does
+    // Main at 10 bits without its raw SDR key, which authorizes on first use outside BT.709: no native route takes it until the key settles
     const UNROUTED_MAIN_STREAM = { format: 'I420P10', subject: 'Main 10-bit BT.601 SDR', videoStream: { ...BT601_SDR_STREAM, BitDepth: 10, Profile: 'Main' } } as const;
 
     function createAV1Options(videoStream: Record<string, unknown>): Record<string, unknown> {
@@ -6518,8 +6598,80 @@ describe('AV1 on a decoder package', () => {
         expect(hasPotentialCustomPlaybackVideoRoute(createPlaybackSelectionItem({ ...videoStream, Codec: 'AV1' }))).toBe(true);
     });
 
-    it('leaves AV1 Main at 10 bits outside the raw SDR keys to the HTML player, which decodes Main', () => {
-        expect(hasPotentialCustomPlaybackVideoRoute(createPlaybackSelectionItem({ ...UNROUTED_MAIN_STREAM.videoStream, Codec: 'AV1' }))).toBe(false);
+    it('keeps AV1 Main at 10 bits in BT.601 potential, since its own raw SDR key may authorize', () => {
+        expect(hasPotentialCustomPlaybackVideoRoute(createPlaybackSelectionItem({ ...UNROUTED_MAIN_STREAM.videoStream, Codec: 'AV1' }))).toBe(true);
+    });
+
+    it.each(PACKAGE_ONLY_STREAMS)('presents AV1 $subject from its qualified exact raw format ahead of the package', ({ format, videoStream }) => {
+        const options = createAV1Options(videoStream);
+        const routeKey = `${format}:bt709:bt709:limited:sdr` as const;
+        const eligibilityOptions = {
+            ...createAV1EligibilityOptions(),
+            allowRawSDR: true,
+            authorizedRawHDRRouteKeys: [ routeKey ]
+        };
+
+        expect(getRawVideoPresentationRouteKey(options)).toBe(routeKey);
+        expect(getCustomPlaybackEligibility(options, createAV1RawFormatCapabilities(), eligibilityOptions)).toMatchObject({
+            eligible: true,
+            hdr: false,
+            maximumCodedHeight: 1_080,
+            maximumCodedWidth: 1_920,
+            rawVideoFrameFormat: format,
+            videoDecoderBackend: 'native',
+            videoOutputMode: 'raw-planes'
+        });
+        // Without its raw key, or its format's qualification, the package takes it, and without either nothing does
+        expect(getCustomPlaybackEligibility(options, createAV1RawFormatCapabilities(), createAV1EligibilityOptions()))
+            .toMatchObject({ ...AV1_PACKAGE_ROUTE, rawVideoFrameFormat: format });
+        expect(getCustomPlaybackEligibility(options, createCapabilities(), eligibilityOptions))
+            .toMatchObject({ ...AV1_PACKAGE_ROUTE, rawVideoFrameFormat: format });
+        expect(getCustomPlaybackEligibility(options, createCapabilities(), { ...eligibilityOptions, gpuVideoDecoders: [] }))
+            .toEqual({ eligible: false, reason: 'codec-unsupported' });
+    });
+
+    it('presents AV1 High 4:4:4 in BT.2020 SDR only through its own first-use raw key', () => {
+        const options = createAV1Options({
+            ColorPrimaries: 'bt2020',
+            ColorSpace: 'bt2020nc',
+            ColorTransfer: 'bt2020-10',
+            PixelFormat: 'yuv444p',
+            Profile: 'High'
+        });
+        const eligibilityOptions = { allowRawHDR: false, allowRawSDR: true, runtimeAvailability: AVAILABLE_RUNTIME };
+
+        expect(getRawVideoPresentationRouteKey(options)).toBe('I444:bt2020-ncl:bt2020:limited:sdr');
+        expect(getCustomPlaybackEligibility(options, createAV1RawFormatCapabilities(), {
+            ...eligibilityOptions,
+            authorizedRawHDRRouteKeys: [ 'I444:bt709:bt709:limited:sdr' ]
+        })).toEqual({ eligible: false, reason: 'codec-unsupported' });
+        expect(getCustomPlaybackEligibility(options, createAV1RawFormatCapabilities(), {
+            ...eligibilityOptions,
+            authorizedRawHDRRouteKeys: [ 'I444:bt2020-ncl:bt2020:limited:sdr' ]
+        })).toMatchObject({ eligible: true, rawVideoFrameFormat: 'I444', videoOutputMode: 'raw-planes' });
+    });
+
+    it('presents AV1 High 10-bit HDR10 from raw I444P10 through its raw HDR key', () => {
+        const options = createAV1Options({ ...HDR10_STREAM, BitDepth: 10, PixelFormat: 'yuv444p10le', Profile: 'High' });
+
+        expect(getCustomPlaybackEligibility(options, createAV1RawFormatCapabilities(), {
+            allowRawHDR: true,
+            authorizedRawHDRRouteKeys: [ 'I444P10:bt2020-ncl:bt2020:limited:pq' ],
+            runtimeAvailability: AVAILABLE_RUNTIME
+        })).toMatchObject({ eligible: true, hdr: true, rawVideoFrameFormat: 'I444P10', videoOutputMode: 'raw-planes' });
+        expect(getCustomPlaybackEligibility(options, createAV1RawFormatCapabilities(), {
+            allowRawHDR: true,
+            authorizedRawHDRRouteKeys: [ 'I420P10:bt2020-ncl:bt2020:limited:pq' ],
+            runtimeAvailability: AVAILABLE_RUNTIME
+        })).toEqual({ eligible: false, reason: 'hdr-presentation-unavailable' });
+    });
+
+    it('keeps 8-bit AV1 Main SDR on its native route whatever its I420 raw format qualification', () => {
+        expect(getCustomPlaybackEligibility(
+            createAV1Options({ PixelFormat: 'yuv420p' }),
+            createAV1RawFormatCapabilities(),
+            { allowRawHDR: false, allowRawSDR: true, authorizedRawHDRRouteKeys: [ 'I420:bt709:bt709:limited:sdr' ], runtimeAvailability: AVAILABLE_RUNTIME }
+        )).toMatchObject({ eligible: true, rawVideoFrameFormat: null, videoOutputMode: 'video-frame' });
     });
 
     it('decodes 10-bit AV1 HDR10 on the package when raw HDR is unavailable and the host tone-maps frame-pool HDR', () => {

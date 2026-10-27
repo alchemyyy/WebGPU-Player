@@ -17,6 +17,8 @@ const TONE_MAP_NAME = 'builtin.tone-map';
 const OUTPUT_ENCODE_NAME = 'builtin.output-encode';
 const DISPLAY_CONTROLS_NAME = 'builtin.display-controls';
 const DITHER_NAME = 'builtin.dither';
+// Identity SDR outside BT.709 primaries, which no user pass replaces
+const SDR_GAMUT_NAME = 'builtin.sdr-gamut';
 
 /** The built-in color function names in color-track order, which a user color pass's `replaces` may name. */
 export const BUILTIN_COLOR_FUNCTION_NAMES: readonly string[] = Object.freeze([
@@ -32,6 +34,7 @@ const TONE_MAP_ENTRY_POINT = 'applyBuiltinToneMap';
 const OUTPUT_ENCODE_ENTRY_POINT = 'applyBuiltinOutputEncode';
 const DISPLAY_CONTROLS_ENTRY_POINT = 'applyBuiltinDisplayControls';
 const DITHER_ENTRY_POINT = 'applyBuiltinDither';
+const SDR_GAMUT_ENTRY_POINT = 'applyBuiltinSDRGamut';
 
 const NO_RESOURCES: readonly EngineResource[] = Object.freeze([]);
 const RENDER_SETTINGS_RESOURCES: readonly EngineResource[] = Object.freeze([ 'render-settings' ]);
@@ -815,6 +818,57 @@ function createToneMapColorFunction(metadata: InputColorMetadata): BuiltinColorF
         outputState: 'display-linear',
         pinnedToOutput: false,
         resources: RENDER_SETTINGS_RESOURCES
+    };
+}
+
+/**
+ * Returns identity SDR's gamut conversion, from display-encoded RGB in the metadata's primaries to display-encoded BT.709, or null for BT.709 primaries
+ * and for HDR: the BT.709 curve decodes each component, the primaries' linear matrix converts it, the result clips to [0, 1], and the curve encodes it again.
+ */
+export function createSDRGamutColorFunction(metadata: InputColorMetadata): BuiltinColorFunction | null {
+    assertValidInputColorMetadata(metadata);
+    const toBT709Matrix = metadata.transfer === 'sdr' ? getGamutToBT709Matrix(metadata.primaries) : null;
+    if (!toBT709Matrix) {
+        return null;
+    }
+    const code = `
+fn decodeSDRGamutComponent(encodedValue: f32) -> f32 {
+    if (encodedValue < 0.081) {
+        return encodedValue / 4.5;
+    }
+    return pow((encodedValue + 0.099) / 1.099, 1.0 / 0.45);
+}
+
+fn encodeSDRGamutComponent(linearValue: f32) -> f32 {
+    if (linearValue < 0.018) {
+        return linearValue * 4.5;
+    }
+    return 1.099 * pow(linearValue, 0.45) - 0.099;
+}
+
+fn ${SDR_GAMUT_ENTRY_POINT}(color: vec4f, position: vec2f) -> vec4f {
+    let linearRGB = vec3f(
+        decodeSDRGamutComponent(color.r),
+        decodeSDRGamutComponent(color.g),
+        decodeSDRGamutComponent(color.b)
+    );
+    let linearBT709RGB = clamp(${createColorMatrixProductWGSL(toBT709Matrix, 'linearRGB')}, vec3f(0.0), vec3f(1.0));
+    return vec4f(
+        encodeSDRGamutComponent(linearBT709RGB.r),
+        encodeSDRGamutComponent(linearBT709RGB.g),
+        encodeSDRGamutComponent(linearBT709RGB.b),
+        color.a
+    );
+}`;
+    return {
+        code,
+        entryPoint: SDR_GAMUT_ENTRY_POINT,
+        inputState: 'source',
+        name: SDR_GAMUT_NAME,
+        outputState: 'display',
+        pinnedToOutput: false,
+        // The matrix comes from the metadata, so the conversion reads no binding
+        resources: NO_RESOURCES
     };
 }
 

@@ -1542,8 +1542,11 @@ export default class WebGPUPresenter {
         }
     }
 
-    /** Starts exact raw SDR GPU-output probes independently from HDR settings. */
-    async prewarmRawSDRPresentationAuthorization(): Promise<void> {
+    /**
+     * Starts exact raw SDR GPU-output probes independently from HDR settings: the prewarmed BT.709 keys, and a stream's own raw key when given,
+     * since every other SDR key authorizes on first use.
+     */
+    async prewarmRawSDRPresentationAuthorization(routeKey: RawHDRAuthorizationRouteKey | null = null): Promise<void> {
         if (!await this.ensureDevice()) {
             return;
         }
@@ -1551,6 +1554,9 @@ export default class WebGPUPresenter {
         const targetFormat = this.canvasFormat;
         if (device && targetFormat) {
             this.rawHDRAuthorization.prewarmSDR(device, targetFormat);
+            if (routeKey !== null) {
+                void this.rawHDRAuthorization.authorize(device, targetFormat, routeKey);
+            }
         }
     }
 
@@ -3979,10 +3985,10 @@ export default class WebGPUPresenter {
         void waitForGPUCompletion(device, device.queue.onSubmittedWorkDone()).then((): void => notify(true), (): void => notify(false));
     }
 
-    /** Waits the bounded raw SDR prewarm used for Rext negotiation. */
-    async waitForRawSDRAuthorizationPrewarm(): Promise<void> {
+    /** Waits the bounded raw SDR prewarm used for negotiation, with a stream's own raw key when given, which authorizes on first use. */
+    async waitForRawSDRAuthorizationPrewarm(routeKey: RawHDRAuthorizationRouteKey | null = null): Promise<void> {
         await waitForRawHDRNegotiationProbe(
-            this.prewarmRawSDRPresentationAuthorization().then((): Promise<void> => {
+            this.prewarmRawSDRPresentationAuthorization(routeKey).then((): Promise<void> => {
                 const device = this.device;
                 const targetFormat = this.canvasFormat;
                 return device && targetFormat ?

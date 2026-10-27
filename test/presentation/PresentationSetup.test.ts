@@ -9,6 +9,7 @@ import {
     createGPUVideoDecodeSessionFactory,
     EMPTY_PRESENTATION_INPUT,
     getCustomPresentationEligibilityOptions,
+    getFirstUseRawSDRRouteKey,
     getStaticHDRRenderSettings,
     isWebGPUPresentationInput,
     readPresentationInput,
@@ -415,6 +416,56 @@ describe('PresentationSetup', () => {
             });
             expect(presenter.waitForDolbyVisionAuthorizationPrewarm).toHaveBeenCalledWith({ profile: 8, rawFrameFormat: 'I420P10' });
             expect(presenter.isRawDolbyVisionPresentationAuthorized).toHaveBeenCalledWith('I420P10');
+        });
+
+        it('waits for the first-use raw SDR key of a stream outside BT.709, and for no key of a BT.709 or native-only stream', async () => {
+            const firstUseRouteKey = 'I420P10:bt2020-ncl:bt2020:limited:sdr';
+            const bt2020Stream = {
+                ...SDR_STREAM,
+                BitDepth: 10,
+                Codec: 'av1',
+                ColorPrimaries: 'bt2020',
+                ColorSpace: 'bt2020nc',
+                ColorTransfer: 'bt2020-10',
+                Profile: 'Main'
+            };
+            const presenter = createPresenter();
+            presenter.getAuthorizedRawHDRRouteKeys.mockReturnValue([ RAW_SDR_ROUTE_KEY, firstUseRouteKey ]);
+
+            await expect(getCustomPresentationEligibilityOptions(asPresenter(presenter), createAuthorizationRequest(bt2020Stream))).resolves.toMatchObject({
+                allowRawSDR: true,
+                authorizedRawHDRRouteKeys: [ RAW_SDR_ROUTE_KEY, firstUseRouteKey ]
+            });
+            expect(getFirstUseRawSDRRouteKey(createOptions(bt2020Stream))).toBe(firstUseRouteKey);
+            expect(presenter.waitForRawSDRAuthorizationPrewarm).toHaveBeenCalledWith(firstUseRouteKey);
+
+            // The BT.709 keys are prewarmed, and 8-bit H.264 has no raw-plane route whatever its color
+            expect(getFirstUseRawSDRRouteKey(createOptions({ ...bt2020Stream, ColorPrimaries: 'bt709', ColorSpace: 'bt709', ColorTransfer: 'bt709' }))).toBeNull();
+            expect(getFirstUseRawSDRRouteKey(createOptions({ ...SDR_STREAM, ColorPrimaries: 'smpte170m', ColorSpace: 'smpte170m' }))).toBeNull();
+            expect(getFirstUseRawSDRRouteKey(createOptions(AV1_HDR10_STREAM))).toBeNull();
+        });
+
+        it('waits for the RPU route of an 8-bit Profile 10 stream in its I420 raw format', async () => {
+            const presenter = createPresenter();
+            const profile10Stream = {
+                BitDepth: 8,
+                BlPresentFlag: 1,
+                Codec: 'av1',
+                DvBlSignalCompatibilityId: 0,
+                DvProfile: 10,
+                IsInterlaced: false,
+                PixelFormat: 'yuv420p',
+                Profile: 'Main',
+                RpuPresentFlag: 1,
+                Type: 'Video',
+                VideoRange: 'HDR',
+                VideoRangeType: 'DOVI'
+            };
+
+            await getCustomPresentationEligibilityOptions(asPresenter(presenter), createAuthorizationRequest(profile10Stream));
+
+            expect(presenter.waitForDolbyVisionAuthorizationPrewarm).toHaveBeenCalledWith({ profile: 5, rawFrameFormat: 'I420' });
+            expect(presenter.isRawDolbyVisionPresentationAuthorized).toHaveBeenCalledWith('I420');
         });
 
         it('resolves null once the playback is no longer current', async () => {

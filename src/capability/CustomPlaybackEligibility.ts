@@ -71,6 +71,7 @@ import type {
 import { isCustomDecodeMediaSource, type CustomDecodeMediaSource } from '../demux/CustomDecodeMediaSource';
 import { requireMicroseconds } from '../TimeMath';
 import {
+    getRawFormatBitDepth,
     hasRawVideoFrameCopyLayout,
     RAW_VIDEO_DOLBY_VISION_FRAME_LAYER_COUNT,
     RAW_VIDEO_SINGLE_LAYER_FRAME_COUNT,
@@ -80,6 +81,10 @@ import {
     getHEVCRangeExtensionStreamDefinitionFromMetadata,
     type HEVCRangeExtensionProbeDefinition
 } from './HEVCRangeExtensionCapabilities';
+import {
+    getAV1RawFormatStreamDefinitionFromMetadata,
+    type AV1RawFormatProbeDefinition
+} from './AV1RawFormatCapabilities';
 import {
     getGPUDecoderFormatFacts,
     getGPUDecoderPixelFormatHolding,
@@ -138,6 +143,8 @@ const VC1_METADATA_PROFILES: Readonly<Record<'vc1' | 'wmv3', readonly string[]>>
 });
 // The frame pool formats of the AV1 streams native routes decode: Main at 4:2:0, 8 or 10 bits
 const NATIVE_AV1_OUTPUT_FORMATS: ReadonlySet<GPUDecoderOutputFormat> = new Set<GPUDecoderOutputFormat>([ 'I420', 'I420P10' ]);
+// The AV1 profile whose 4:2:0 streams take the ordinary routes; High and Professional raw planes keep their exact format
+const AV1_MAIN_PROFILE_NAME = 'Main';
 
 const AUDIO_CODEC_ALIASES = new Map<string, CustomAudioCodec>([
     [ 'AAC', 'aac' ],
@@ -929,7 +936,7 @@ function createRawVideoOutputSelection(
 /**
  * Selects raw planes for SDR that no VideoFrame route decodes: 10-bit 4:2:0 SDR in I420P10.
  * AV1 and VP9 decode it only this way, and HEVC Main 10 needs it without native decode.
- * The raw SDR keys are BT.709 only, so BT.601 and BT.2020 SDR have no raw route.
+ * Each matrix, primaries set, and range has its own raw SDR key.
  */
 function selectRawSDRVideoOutput(
     capabilities: CustomDecodeCapabilities,
@@ -1112,6 +1119,61 @@ function selectHEVCRangeExtensionVideoOutput(
     };
 }
 
+/** Returns whether an AV1 raw format's exact variant capability passed for its format, bit depth, and chroma. */
+function hasSupportedAV1RawFormatVariant(
+    capabilities: CustomDecodeCapabilities,
+    definition: AV1RawFormatProbeDefinition
+): boolean {
+    const capability = capabilities.av1RawFormats?.[definition.variant];
+    return capability?.status === 'supported'
+        && capability.format === definition.format
+        && capability.bitDepth === definition.bitDepth
+        && capability.chromaFormat === definition.chromaFormat;
+}
+
+/** Returns the AV1 raw format variant of a stream outside Main: High 4:4:4, or Professional 4:2:2 or 12 bits. */
+function getAV1RawFormatVariantDefinition(videoCodec: CustomVideoCodec, stream: MediaStream): AV1RawFormatProbeDefinition | null {
+    if (videoCodec !== 'av1') {
+        return null;
+    }
+    const definition = getAV1RawFormatStreamDefinitionFromMetadata(stream);
+    return definition !== null && definition.jellyfinProfile !== AV1_MAIN_PROFILE_NAME ? definition : null;
+}
+
+/**
+ * Selects raw planes in the exact format of AV1 outside Main, which no VideoFrame route decodes.
+ * Such a stream never falls through to the Main routes, so without its variant capability or raw key a GPU decoder package may still take it.
+ */
+function selectAV1RawFormatVideoOutput(
+    capabilities: CustomDecodeCapabilities,
+    eligibilityOptions: CustomPlaybackEligibilityOptions,
+    videoCodec: CustomVideoCodec,
+    stream: MediaStream,
+    colorMetadata: InputColorMetadata
+): VideoOutputSelection | null {
+    const definition = getAV1RawFormatVariantDefinition(videoCodec, stream);
+    if (!definition) {
+        return null;
+    }
+    const exactColorMetadata: InputColorMetadata = { ...colorMetadata, bitDepth: definition.bitDepth };
+    const hdr = exactColorMetadata.transfer !== 'sdr';
+    if (!hasSupportedAV1RawFormatVariant(capabilities, definition) || !hasStreamRawVideoFrameCopyLayout(
+        stream,
+        definition.format,
+        RAW_VIDEO_SINGLE_LAYER_FRAME_COUNT
+    )) {
+        return { reason: hdr ? 'hdr-codec-unsupported' : 'codec-unsupported', status: 'invalid' };
+    }
+    const presentationAllowed = hdr ?
+        eligibilityOptions.allowRawHDR === true :
+        eligibilityOptions.allowRawSDR === true;
+    const routeKey = getRawHDRAuthorizationRouteKey(definition.format, exactColorMetadata);
+    if (!presentationAllowed || !routeKey || !(eligibilityOptions.authorizedRawHDRRouteKeys ?? []).includes(routeKey)) {
+        return { reason: hdr ? 'hdr-presentation-unavailable' : 'codec-unsupported', status: 'invalid' };
+    }
+    return createRawVideoOutputSelection(stream, definition.format, hdr);
+}
+
 /** Selects an independently authorized native Dolby Vision compatible base route. */
 function selectNativeDolbyVisionBaseOutput(
     options: unknown,
@@ -1171,9 +1233,33 @@ function getHEVCDolbyVisionReconstructionFrameFormat(stream: MediaStream): Custo
     }
 }
 
+/** Returns an AV1 base layer's raw format: I420P10 for Main at 10 bits, else its raw format variant's, such as I420 for Main at 8 bits or I444 for High. */
+function getAV1DolbyVisionReconstructionFrameFormat(stream: MediaStream): CustomDecodeRawVideoFrameFormat | null {
+    if (stream.BitDepth === 10 && hasSupportedRawVideoProfile('av1', stream)) {
+        return 'I420P10';
+    }
+    return getAV1RawFormatStreamDefinitionFromMetadata(stream)?.format ?? null;
+}
+
+/** Returns whether a native raw route decodes an AV1 or VP9 stream's planes in a format: its raw format variant's capability, else the raw HDR capability. */
+function supportsNativeRawVideoDecode(
+    capabilities: CustomDecodeCapabilities,
+    videoCodec: CustomVideoCodec,
+    stream: MediaStream,
+    format: CustomDecodeRawVideoFrameFormat
+): boolean {
+    const definition = videoCodec === 'av1' ? getAV1RawFormatStreamDefinitionFromMetadata(stream) : null;
+    if (definition) {
+        return definition.format === format
+            && hasSupportedAV1RawFormatVariant(capabilities, definition)
+            && hasStreamRawVideoFrameCopyLayout(stream, format, RAW_VIDEO_SINGLE_LAYER_FRAME_COUNT);
+    }
+    return supportsRawHDRVideo(capabilities, videoCodec, stream, format);
+}
+
 /**
  * Returns the raw frame format that RPU reconstruction decodes a Dolby Vision base layer into.
- * An HEVC base layer keeps its own format, and AV1 Main at 10 bits decodes to I420P10.
+ * An HEVC base layer keeps its own format, and so does an AV1 one: I420P10 for Main at 10 bits, or its raw format variant's.
  * AV1 carries a single-layer RPU only, so a dual-layer profile never reconstructs over AV1.
  */
 function getDolbyVisionReconstructionFrameFormat(
@@ -1185,9 +1271,7 @@ function getDolbyVisionReconstructionFrameFormat(
         case 'hevc':
             return getHEVCDolbyVisionReconstructionFrameFormat(stream);
         case 'av1':
-            return !dualLayer && stream.BitDepth === 10 && hasSupportedRawVideoProfile(videoCodec, stream) ?
-                'I420P10' :
-                null;
+            return dualLayer ? null : getAV1DolbyVisionReconstructionFrameFormat(stream);
         case 'h264':
         case 'jpeg2000':
         case 'mpeg1video':
@@ -1229,6 +1313,44 @@ export function getDolbyVisionReconstructionRawFrameFormat(options: unknown): Cu
 }
 
 /**
+ * Returns the raw format a stream's raw-plane route decodes into, before capability checks: a range extension's or an AV1 raw format's exact variant,
+ * else I420P10 or I420P12 for the profiles the raw HDR probes cover.
+ */
+function getRawVideoStreamFormat(codec: CustomVideoCodec, stream: MediaStream): CustomDecodeRawVideoFrameFormat | null {
+    const exactDefinition = codec === 'hevc' ?
+        getHEVCRangeExtensionStreamDefinitionFromMetadata(stream) :
+        getAV1RawFormatVariantDefinition(codec, stream);
+    if (exactDefinition) {
+        return exactDefinition.format;
+    }
+    return hasSupportedRawVideoProfile(codec, stream) && typeof stream.BitDepth === 'number' ?
+        getRawVideoFrameFormat(stream.BitDepth) :
+        null;
+}
+
+/**
+ * Returns the raw key the presented stream's raw-plane route needs, before capability checks, or null when the stream has no raw-plane route.
+ * The stream's color, or a Dolby Vision stream's declared base, at the depth of its raw format names the key, so a host can wait for a key that
+ * authorizes on first use before eligibility.
+ */
+export function getRawVideoPresentationRouteKey(options: unknown): RawHDRAuthorizationRouteKey | null {
+    const mediaSource = options && typeof options === 'object' ? (options as PlaybackOptions).mediaSource : undefined;
+    if (!mediaSource || typeof mediaSource !== 'object') {
+        return null;
+    }
+    const selection = selectVideoStream(options, getStreams(mediaSource));
+    if (selection.status !== 'selected') {
+        return null;
+    }
+    const codec: CustomVideoCodec | undefined = VIDEO_CODEC_ALIASES[normalizeMetadataValue(selection.stream.Codec) ?? ''];
+    const format = codec ? getRawVideoStreamFormat(codec, selection.stream) : null;
+    const colorMetadata = getPresentationInputColorMetadata(options) ?? getDolbyVisionBaseColorMetadata(options);
+    return format !== null && colorMetadata !== null ?
+        getRawHDRAuthorizationRouteKey(format, { ...colorMetadata, bitDepth: getRawFormatBitDepth(format) }) :
+        null;
+}
+
+/**
  * Returns whether a native raw route decodes an HEVC base layer's planes.
  * A range extension takes its exact variant capability, and Main 10 takes the raw HDR capability.
  * Main, the only I420 outside the range extensions, has no qualified native raw route.
@@ -1264,7 +1386,7 @@ function getDolbyVisionReconstructionSourceFormat(
     const frameLayerCount = dualLayer ? RAW_VIDEO_DOLBY_VISION_FRAME_LAYER_COUNT : RAW_VIDEO_SINGLE_LAYER_FRAME_COUNT;
     const supported = videoCodec === 'hevc' ?
         supportsHEVCDolbyVisionReconstruction(capabilities, stream, format, frameLayerCount) :
-        supportsRawHDRVideo(capabilities, videoCodec, stream, format);
+        supportsNativeRawVideoDecode(capabilities, videoCodec, stream, format);
     return supported ? format : null;
 }
 
@@ -1583,7 +1705,10 @@ function selectVideoOutput(
         ?? nativeSelection;
 }
 
-/** Selects the engine's own route for a stream's color: a range extension's exact variant, then the SDR routes, then the HDR routes. */
+/**
+ * Selects the engine's own route for a stream's color: a range extension's or AV1 raw format's exact variant, then the SDR routes, then the HDR
+ * routes.
+ */
 function selectColorVideoOutput(
     capabilities: CustomDecodeCapabilities,
     eligibilityOptions: CustomPlaybackEligibilityOptions,
@@ -1598,8 +1723,15 @@ function selectColorVideoOutput(
         videoStream,
         colorMetadata
     );
-    if (rangeExtensionSelection) {
-        return rangeExtensionSelection;
+    const exactRawSelection = rangeExtensionSelection ?? selectAV1RawFormatVideoOutput(
+        capabilities,
+        eligibilityOptions,
+        videoCodec,
+        videoStream,
+        colorMetadata
+    );
+    if (exactRawSelection) {
+        return exactRawSelection;
     }
     const hdr = colorMetadata.transfer !== 'sdr';
     if (!hdr) {
@@ -1804,9 +1936,10 @@ function hasPotentialPackageVideoRoute(codec: CustomPackageVideoCodec, stream: M
 }
 
 /**
- * Returns whether a stream of a codec with native routes is a variant only a decoder package decodes, in the frame pool format given:
- * AV1 outside Main 4:2:0 at 8 or 10 bits, such as High 4:4:4, Professional 4:2:2, or 12-bit, and 4:0:0 HEVC, which neither its native nor its range extension routes take.
- * The prefilter keeps such a stream potential, so the host's packages decide at eligibility.
+ * Returns whether a stream of a codec with native routes is a variant outside their ordinary routes, in the frame pool format given:
+ * AV1 outside Main 4:2:0 at 8 or 10 bits, such as High 4:4:4, Professional 4:2:2, or 12-bit, which only its exact raw format or a decoder package
+ * decodes, and 4:0:0 HEVC, which neither its native nor its range extension routes take.
+ * The prefilter keeps such a stream potential, so the probes and the host's packages decide at eligibility.
  */
 function isPackageOnlyVideoVariant(codec: CustomVideoCodec, stream: MediaStream, format: GPUDecoderOutputFormat): boolean {
     switch (codec) {
@@ -1824,11 +1957,9 @@ function hasPotentialSDRVideoRoute(
     stream: MediaStream,
     colorMetadata: InputColorMetadata
 ): boolean {
-    // 10-bit 4:2:0 SDR has a raw I420P10 route, whose keys are BT.709 only; HEVC Main 10 also decodes natively
+    // 10-bit 4:2:0 SDR has a raw I420P10 route, with a key for every matrix and primaries set; HEVC Main 10 also decodes natively
     if (colorMetadata.bitDepth === 10) {
-        return hasSupportedRawVideoProfile(codec, stream)
-            && hasPotentialCustomVideoDimensions(stream)
-            && (codec === 'hevc' || getRawHDRAuthorizationRouteKey('I420P10', colorMetadata) !== null);
+        return hasSupportedRawVideoProfile(codec, stream) && hasPotentialCustomVideoDimensions(stream);
     }
     if (colorMetadata.bitDepth !== CUSTOM_NATIVE_VIDEO_BIT_DEPTH) {
         return false;

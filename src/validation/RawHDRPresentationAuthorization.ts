@@ -9,7 +9,10 @@ import {
     createHLGColorMetadata,
     createPQColorMetadata,
     createSDRColorMetadata,
-    type InputColorMetadata
+    type ColorPrimaries,
+    type ColorRange,
+    type InputColorMetadata,
+    type YUVMatrix
 } from '../color/ColorMetadata';
 import {
     processEncodedYUV,
@@ -50,6 +53,9 @@ export const RAW_HDR_AUTHORIZATION_TIMEOUT_MICROSECONDS = GPU_AUTHORIZATION_TIME
 
 export const RAW_HDR_AUTHORIZATION_VECTOR_HEIGHT = 8;
 export const RAW_HDR_AUTHORIZATION_VECTOR_WIDTH = 16;
+// The vector's 8-bit chroma codes: neutral rows, then two blocks this far either side of the center
+const VECTOR_CHROMA_CENTER_CODE = 128;
+const VECTOR_CHROMA_EXCURSION = 25;
 
 /** The denominator 8-bit readbacks are compared in, so a detail reads as code steps of the target. */
 export const READBACK_CODE_SCALE = 255;
@@ -80,7 +86,7 @@ type RawVideoBitDepth = 8 | 10 | 12;
 
 export type RawHDRAuthorizationRouteKey =
     | `${AuthorizedRawHDRFormat}:bt2020-ncl:bt2020:limited:${'hlg' | 'pq'}`
-    | `${AuthorizedRawSDRFormat}:bt709:bt709:${'full' | 'limited'}:sdr`;
+    | `${AuthorizedRawSDRFormat}:${YUVMatrix}:${ColorPrimaries}:${ColorRange}:sdr`;
 
 const AUTHORIZED_RAW_SDR_FORMATS: readonly AuthorizedRawSDRFormat[] = [
     'I420',
@@ -101,6 +107,16 @@ const AUTHORIZED_RAW_HDR_FORMATS: readonly AuthorizedRawHDRFormat[] = [
     'I444P10',
     'I444P12'
 ];
+type RawSDRColor = `${YUVMatrix}:${ColorPrimaries}`;
+
+const PREWARMED_RAW_SDR_COLOR: RawSDRColor = 'bt709:bt709';
+// Every matrix and primaries pair the metadata names has an SDR key, so a mismatched pair presents as tagged; only BT.709 is prewarmed
+const FIRST_USE_RAW_SDR_COLORS: readonly RawSDRColor[] = ([ 'bt709', 'bt470bg', 'smpte170m', 'bt2020-ncl' ] as const).flatMap(
+    (matrix: YUVMatrix): RawSDRColor[] => ([ 'bt709', 'bt470bg', 'smpte170m', 'bt2020' ] as const).map(
+        (primaries: ColorPrimaries): RawSDRColor => `${matrix}:${primaries}`
+    )
+).filter((color: RawSDRColor): boolean => color !== PREWARMED_RAW_SDR_COLOR);
+const RAW_ROUTE_KEY_SEPARATOR = ':';
 
 function createRawAuthorizationRouteKeys(): readonly RawHDRAuthorizationRouteKey[] {
     const routeKeys: RawHDRAuthorizationRouteKey[] = [];
@@ -112,7 +128,23 @@ function createRawAuthorizationRouteKeys(): readonly RawHDRAuthorizationRouteKey
         routeKeys.push(`${format}:bt2020-ncl:bt2020:limited:pq`);
         routeKeys.push(`${format}:bt2020-ncl:bt2020:limited:hlg`);
     }
+    // The SDR keys outside BT.709 authorize on first use, after the prewarmed ones
+    for (const format of AUTHORIZED_RAW_SDR_FORMATS) {
+        for (const color of FIRST_USE_RAW_SDR_COLORS) {
+            routeKeys.push(`${format}:${color}:limited:sdr`);
+            routeKeys.push(`${format}:${color}:full:sdr`);
+        }
+    }
     return Object.freeze(routeKeys);
+}
+
+/**
+ * Returns whether a raw key is prewarmed: an HDR key, or an SDR key in BT.709 matrix and primaries.
+ * The other SDR keys authorize on first use, so a host waits for the stream's own key before it advertises or starts it.
+ */
+export function isPrewarmedRawAuthorizationRouteKey(routeKey: RawHDRAuthorizationRouteKey): boolean {
+    const [ , matrix, primaries, , transfer ] = routeKey.split(RAW_ROUTE_KEY_SEPARATOR);
+    return transfer !== 'sdr' || `${matrix}:${primaries}` === PREWARMED_RAW_SDR_COLOR;
 }
 
 export const RAW_HDR_AUTHORIZATION_ROUTE_KEYS = createRawAuthorizationRouteKeys();
@@ -332,9 +364,12 @@ function createMetadata(routeKey: RawHDRAuthorizationRouteKey): InputColorMetada
     const format = getRouteFormat(routeKey);
     const bitDepth = getRawFormatBitDepth(format);
     if (routeKey.endsWith(':sdr')) {
+        const [ , matrix, primaries, range ] = routeKey.split(RAW_ROUTE_KEY_SEPARATOR);
         return createSDRColorMetadata({
             bitDepth,
-            range: routeKey.includes(':full:') ? 'full' : 'limited'
+            matrix: matrix as YUVMatrix,
+            primaries: primaries as ColorPrimaries,
+            range: range as ColorRange
         });
     }
     return routeKey.endsWith(':hlg') ?
@@ -374,10 +409,7 @@ export function getRawHDRAuthorizationRouteKey(
             routeKey = `${format}:bt2020-ncl:bt2020:limited:${metadata.transfer}`;
             break;
         case 'sdr':
-            if (metadata.matrix !== 'bt709' || metadata.primaries !== 'bt709') {
-                return null;
-            }
-            routeKey = `${format}:bt709:bt709:${metadata.range}:sdr`;
+            routeKey = `${format}:${metadata.matrix}:${metadata.primaries}:${metadata.range}:sdr`;
             break;
     }
     return RAW_AUTHORIZATION_ROUTE_KEY_SET.has(routeKey as RawHDRAuthorizationRouteKey) ?
@@ -573,26 +605,30 @@ function populateVectorLuma(
 function getVectorChromaCodes(
     x: number,
     y: number,
-    bitDepth: RawVideoBitDepth
+    bitDepth: RawVideoBitDepth,
+    chromaExcursion: number
 ): readonly [number, number] {
     const codeScale = 2 ** (bitDepth - 8);
     if (y < RAW_HDR_AUTHORIZATION_VECTOR_HEIGHT / 4) {
-        return [ 128 * codeScale, 128 * codeScale ];
+        return [ VECTOR_CHROMA_CENTER_CODE * codeScale, VECTOR_CHROMA_CENTER_CODE * codeScale ];
     }
+    const highCode = (VECTOR_CHROMA_CENTER_CODE + chromaExcursion) * codeScale;
+    const lowCode = (VECTOR_CHROMA_CENTER_CODE - chromaExcursion) * codeScale;
     return x < RAW_HDR_AUTHORIZATION_VECTOR_WIDTH / 4 ?
-        [ 153 * codeScale, 103 * codeScale ] :
-        [ 103 * codeScale, 153 * codeScale ];
+        [ highCode, lowCode ] :
+        [ lowCode, highCode ];
 }
 
 function populateVectorChroma(
     data: ArrayBuffer,
     chromaUPlane: RawVideoPlaneDescriptor,
     chromaVPlane: RawVideoPlaneDescriptor,
-    bitDepth: RawVideoBitDepth
+    bitDepth: RawVideoBitDepth,
+    chromaExcursion: number
 ): void {
     for (let y = 0; y < chromaUPlane.height; y += 1) {
         for (let x = 0; x < chromaUPlane.width; x += 1) {
-            const [ chromaUCode, chromaVCode ] = getVectorChromaCodes(x, y, bitDepth);
+            const [ chromaUCode, chromaVCode ] = getVectorChromaCodes(x, y, bitDepth, chromaExcursion);
             setPlaneCode(data, chromaUPlane, x, y, chromaUCode);
             setPlaneCode(data, chromaVPlane, x, y, chromaVCode);
         }
@@ -631,7 +667,10 @@ export function createRawHDRAuthorizationVector(routeKey: RawHDRAuthorizationRou
     );
     const data = new ArrayBuffer(lumaPlane.byteLength + chromaUPlane.byteLength + chromaVPlane.byteLength);
     populateVectorLuma(data, lumaPlane, metadata.bitDepth as RawVideoBitDepth);
-    populateVectorChroma(data, chromaUPlane, chromaVPlane, metadata.bitDepth as RawVideoBitDepth);
+    // The first-use SDR keys double the chroma excursion, so their gamut conversion moves the samples of every primaries set, BT.470 BG's included,
+    // beyond the tolerance
+    const chromaExcursion = isPrewarmedRawAuthorizationRouteKey(routeKey) ? VECTOR_CHROMA_EXCURSION : VECTOR_CHROMA_EXCURSION * 2;
+    populateVectorChroma(data, chromaUPlane, chromaVPlane, metadata.bitDepth as RawVideoBitDepth, chromaExcursion);
 
     return {
         bitDepth: metadata.bitDepth as RawVideoBitDepth,
@@ -1053,10 +1092,10 @@ export class RawHDRPresentationAuthorizationRegistry {
         }
     }
 
-    /** Starts the SDR raw YUV route probes, independent of the HDR setting. */
+    /** Starts the prewarmed SDR raw YUV route probes, the BT.709 ones, independent of the HDR setting. */
     public prewarmSDR(device: GPUDevice, targetFormat: GPUTextureFormat): void {
         for (const routeKey of RAW_HDR_AUTHORIZATION_ROUTE_KEYS) {
-            if (routeKey.endsWith(':sdr')) {
+            if (routeKey.endsWith(':sdr') && isPrewarmedRawAuthorizationRouteKey(routeKey)) {
                 void this.authorize(device, targetFormat, routeKey);
             }
         }

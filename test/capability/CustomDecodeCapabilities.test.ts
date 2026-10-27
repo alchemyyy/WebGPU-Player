@@ -2408,6 +2408,36 @@ describe('item-scoped capability probe selection', () => {
         expect(videoProbes).not.toContain('raw:hevc');
     });
 
+    it.each([
+        { probe: 'av1-raw-format:high444-8', stream: { BitDepth: 8, Codec: 'av1', PixelFormat: 'yuv444p', Profile: 'High', Type: 'Video', VideoRange: 'SDR', VideoRangeType: 'SDR' } },
+        {
+            probe: 'av1-raw-format:professional422-10',
+            stream: { BitDepth: 10, Codec: 'av1', PixelFormat: 'yuv422p10le', Profile: 'Professional', Type: 'Video', VideoRange: 'SDR', VideoRangeType: 'SDR' }
+        },
+        // 8-bit Main presents natively, so only Dolby Vision, whose range is not SDR, needs its I420 planes
+        {
+            probe: 'av1-raw-format:main420-8',
+            stream: { BitDepth: 8, Codec: 'av1', DvProfile: 10, PixelFormat: 'yuv420p', Profile: 'Main', Type: 'Video', VideoRangeType: 'DOVI' }
+        }
+    ])('selects the AV1 raw format probe $probe for its stream alone', ({ probe, stream }) => {
+        const rawFormatProbes = [ ...getSelectedVideoProbes(createItem([ stream ])) ].filter((selected: string): boolean => (
+            selected.startsWith('av1-raw-format:')
+        ));
+
+        expect(rawFormatProbes).toEqual([ probe ]);
+    });
+
+    it('selects no AV1 raw format probe for 8-bit SDR Main or Main at 10 bits', () => {
+        for (const stream of [
+            { BitDepth: 8, Codec: 'av1', PixelFormat: 'yuv420p', Profile: 'Main', Type: 'Video', VideoRange: 'SDR', VideoRangeType: 'SDR' },
+            { BitDepth: 10, Codec: 'av1', PixelFormat: 'yuv420p10le', Profile: 'Main', Type: 'Video', VideoRange: 'SDR', VideoRangeType: 'SDR' }
+        ]) {
+            expect([ ...getSelectedVideoProbes(createItem([ stream ])) ].some((selected: string): boolean => (
+                selected.startsWith('av1-raw-format:')
+            ))).toBe(false);
+        }
+    });
+
     it('unions the video streams of every source of an item', () => {
         const videoProbes = getSelectedVideoProbes(createItem([ SDR_H264_STREAM ], [ SDR_HEVC_STREAM ]));
 
