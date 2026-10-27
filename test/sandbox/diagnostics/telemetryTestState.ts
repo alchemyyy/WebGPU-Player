@@ -1,7 +1,6 @@
 // Builders of the engine telemetry and media descriptions the playback info tests describe, idle unless overridden.
 import type { AudioWorkletTelemetry } from 'webgpu-player/audio/output/AudioWorkletProtocol';
 import type { CustomDecodeAudioBridgeTelemetry } from 'webgpu-player/audio/output/CustomDecodeAudioBridge';
-import { EXTERNAL_HDR_AUTHORIZATION_VECTOR_VERSION } from 'webgpu-player/capability/vectors/ExternalHDRAuthorizationVector';
 import type { Microseconds } from 'webgpu-player/MediaTime';
 import type { CustomDecodeSessionTelemetry } from 'webgpu-player/pipeline/CustomDecodeSession';
 import type { CustomPlaybackTelemetry } from 'webgpu-player/pipeline/CustomPlaybackControllerTypes';
@@ -240,7 +239,6 @@ export function createExternalHDRAuthorization(overrides: Partial<ExternalHDRAut
         sampleCounts: {},
         status: 'unavailable',
         targetFormat: null,
-        vectorVersion: EXTERNAL_HDR_AUTHORIZATION_VECTOR_VERSION,
         ...overrides
     };
 }

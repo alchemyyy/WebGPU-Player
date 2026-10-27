@@ -167,6 +167,12 @@ import NativeMediaAudioFMP4Remuxer, {
 } from '../audio/native/NativeMediaAudioFMP4Remuxer';
 import OwnedNativeHEVCVideoDecoder from '../decode/video/native/OwnedNativeHEVCVideoDecoder';
 import OwnedNativeVideoDecoder from '../decode/video/native/OwnedNativeVideoDecoder';
+import {
+    NativeHDRAV1TemporalUnitNeutralizer,
+    neutralizeNativeHDRAV1DecoderConfig,
+    type AV1HDRTransfer,
+    type NeutralizedNativeHDRAV1DecoderConfig
+} from '../decode/video/native/NativeHDRAV1ColorNeutralizer';
 import { runOwnedAV1VideoStream } from '../decode/video/native/OwnedAV1VideoStream';
 import { runOwnedVP9VideoStream } from '../decode/video/native/OwnedVP9VideoStream';
 import {
@@ -1042,7 +1048,7 @@ async function readHEVCStaticHDRMetadata(
 
 /**
  * Scans the MDCV and CLL metadata OBUs of an AV1 track that presents PQ without an RPU.
- * AV1 has no native PQ route, so the request names no transfer, and the first temporal unit's sequence header decides instead.
+ * The raw route's request names no transfer, so the first temporal unit's sequence header decides instead, on the native external route too.
  */
 async function readAV1StaticHDRMetadata(
     videoTrack: InputVideoTrack,
@@ -1113,15 +1119,15 @@ function omitAV1ConfigurationRecord(decoderConfig: VideoDecoderConfig): VideoDec
     return browserDecoderConfig;
 }
 
-/** Requires the codec its route's decoder takes: the GPU decoder's codec family, and HEVC for color neutralization. */
+/** Requires the codec its route's decoder takes: the GPU decoder's codec family, and HEVC or AV1 for color neutralization. */
 function requireRouteVideoCodec(codec: VideoCodec, request: Extract<DecodeWorkerRequest, { type: 'start' }>): void {
     if (request.videoOutputMode === 'frame-pool' && codec !== request.gpuVideoCodec) {
         throw new UnsupportedCustomDecodeSourceError(
             `The selected ${codec} video track does not match the negotiated ${request.gpuVideoCodec ?? 'GPU'} decoder`
         );
     }
-    if (request.neutralizeHDRColorMetadata && codec !== 'hevc') {
-        throw new UnsupportedCustomDecodeSourceError('HDR color neutralization requires an HEVC video track');
+    if (request.neutralizeHDRColorMetadata && codec !== 'hevc' && codec !== 'av1') {
+        throw new UnsupportedCustomDecodeSourceError('HDR color neutralization requires an HEVC or AV1 video track');
     }
 }
 
@@ -2631,9 +2637,27 @@ async function streamOwnedNativeFrames(
     }
 }
 
+/** An AV1 track's configuration on the native external HDR route: neutralized, with the transfer its sequence headers must prove. */
+type NeutralizedOwnedAV1Configuration = NeutralizedNativeHDRAV1DecoderConfig & {
+    transfer: AV1HDRTransfer
+};
+
+/** Neutralizes an AV1 track's decoder configuration when the route asks, or returns null on any other route. */
+function neutralizeOwnedAV1DecoderConfig(run: DecodeRun, decoderConfig: VideoDecoderConfig): NeutralizedOwnedAV1Configuration | null {
+    if (!run.neutralizeHDRColorMetadata) {
+        return null;
+    }
+    const transfer = run.nativeHDRTransfer;
+    if (transfer !== 'hlg' && transfer !== 'pq') {
+        throw new UnsupportedCustomDecodeSourceError('Native HDR color neutralization requires an exact HDR transfer');
+    }
+    return { ...neutralizeNativeHDRAV1DecoderConfig(decoderConfig, transfer), transfer };
+}
+
 /**
  * Decodes an AV1 track in the engine's own decoder, because Mediabunny's sample sink hides the metadata OBUs that carry Dolby Vision RPUs and HDR10+ metadata.
  * Only a Dolby Vision route loads the RPU parser; any other route strips the RPUs unparsed.
+ * The native external HDR route neutralizes the decoder configuration and every sequence header to limited BT.709.
  */
 async function streamOwnedAV1Frames(
     run: DecodeRun,
@@ -2646,7 +2670,9 @@ async function streamOwnedAV1Frames(
         );
     }
 
-    await streamOwnedNativeFrames(run, request, preparedVideoTrack, 'AV1', async (
+    const neutralization = neutralizeOwnedAV1DecoderConfig(run, preparedVideoTrack.decoderConfig);
+    const decodedVideoTrack = neutralization ? { ...preparedVideoTrack, decoderConfig: neutralization.configuration } : preparedVideoTrack;
+    await streamOwnedNativeFrames(run, request, decodedVideoTrack, 'AV1', async (
         stream: OwnedVideoStreamRun,
         packetIterator: OwnedVideoPacketIterator,
         createDecoder: (callbacks: OwnedVideoDecoderCallbacks) => OwnedVideoDecoderPort,
@@ -2662,7 +2688,11 @@ async function streamOwnedAV1Frames(
                 rpuParser,
                 createDecoder,
                 request.startTimeMicroseconds,
-                keyPacketMediaTimeMicroseconds
+                keyPacketMediaTimeMicroseconds,
+                // Each attempt starts at a key packet, whose sequence header proves the route again
+                neutralization ?
+                    new NativeHDRAV1TemporalUnitNeutralizer(neutralization.transfer, neutralization.decoderDescriptionValidated) :
+                    null
             );
         } finally {
             rpuParser?.close();

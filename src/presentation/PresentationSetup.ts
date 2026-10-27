@@ -20,7 +20,11 @@ import {
     isRawDolbyVisionVideoFrameFormat,
     type RawDolbyVisionVideoFrameFormat
 } from '../decode/video/RawVideoFrameCopy';
-import { getExternalHDRAuthorizationRouteKey, type ExternalHDRAuthorizationRouteKey } from '../validation/ExternalHDRPresentationAuthorization';
+import {
+    getExternalHDRAuthorizationRouteKey,
+    type ExternalHDRAuthorizationRouteKey,
+    type ExternalHDRVideoCodec
+} from '../validation/ExternalHDRPresentationAuthorization';
 import { isPrewarmedRawAuthorizationRouteKey, type RawHDRAuthorizationRouteKey } from '../validation/RawHDRPresentationAuthorization';
 import {
     getDolbyVisionBaseColorMetadata,
@@ -164,8 +168,9 @@ export const UNAUTHORIZED_PRESENTATION_ELIGIBILITY_OPTIONS: CustomPresentationEl
     authorizedRawHDRRouteKeys: []
 });
 
-// AV1 and VP9 present HDR only through raw planes, since the native external HDR route decodes HEVC Main 10 alone
+// AV1 and VP9 have raw HDR routes whatever the external result: AV1 beside its native external route, VP9 alone
 const RAW_ONLY_HDR_VIDEO_CODECS = new Set<string>([ 'AV1', 'VP9' ]);
+const AV1_VIDEO_CODEC = 'AV1';
 const HEVC_VIDEO_CODECS: readonly string[] = [ 'H265', 'HEVC' ];
 const VIDEO_STREAM_TYPE = 'VIDEO';
 /** The raw format Dolby Vision reconstruction falls back to when the stream does not name its own. */
@@ -208,22 +213,19 @@ export function alignPresentationInputBitDepth(input: PresentationInput, rawVide
     };
 }
 
-/**
- * Returns whether the presented stream's HDR presents only through raw planes.
- * AV1, VP9, and HEVC range extensions have no native external route, so an external authorization never covers them.
- */
-export function isRawOnlyHDRPresentation(options: unknown): boolean {
+/** Returns the presented video stream and its upper-case codec name, or null when the options name no such stream. */
+function getPresentationVideoCodec(options: unknown): { codec: string, stream: unknown } | null {
     if (!options || typeof options !== 'object') {
-        return false;
+        return null;
     }
     const mediaSource = (options as { mediaSource?: unknown }).mediaSource;
     if (!mediaSource || typeof mediaSource !== 'object') {
-        return false;
+        return null;
     }
     const mediaStreams = (mediaSource as { MediaStreams?: unknown }).MediaStreams;
     const videoTrackOrdinal = getPresentationVideoTrackOrdinal(options);
     if (!Array.isArray(mediaStreams) || videoTrackOrdinal === null) {
-        return false;
+        return null;
     }
     const videoStreams = mediaStreams.filter((stream: unknown): boolean => (
         stream !== null
@@ -232,11 +234,27 @@ export function isRawOnlyHDRPresentation(options: unknown): boolean {
     ));
     const videoStream: unknown = videoStreams[videoTrackOrdinal];
     if (!videoStream) {
+        return null;
+    }
+    return { codec: String((videoStream as { Codec?: unknown }).Codec ?? '').trim().toUpperCase(), stream: videoStream };
+}
+
+/**
+ * Returns whether the presented stream's HDR has a raw route whatever the external result, so its raw HDR probes settle first.
+ * AV1, VP9, and HEVC range extensions are such streams: AV1 also has its own native external route, which authorizes on first use, and the others have none.
+ */
+export function isRawOnlyHDRPresentation(options: unknown): boolean {
+    const presented = getPresentationVideoCodec(options);
+    if (!presented) {
         return false;
     }
-    const codec = String((videoStream as { Codec?: unknown }).Codec ?? '').trim().toUpperCase();
-    return RAW_ONLY_HDR_VIDEO_CODECS.has(codec)
-        || (HEVC_VIDEO_CODECS.includes(codec) && getHEVCRangeExtensionStreamDefinitionFromMetadata(videoStream) !== null);
+    return RAW_ONLY_HDR_VIDEO_CODECS.has(presented.codec)
+        || (HEVC_VIDEO_CODECS.includes(presented.codec) && getHEVCRangeExtensionStreamDefinitionFromMetadata(presented.stream) !== null);
+}
+
+/** Returns the codec of the native external HDR route that would present the stream: AV1 for an AV1 stream, else HEVC. */
+export function getExternalHDRPresentationCodec(options: unknown): ExternalHDRVideoCodec {
+    return getPresentationVideoCodec(options)?.codec === AV1_VIDEO_CODEC ? 'av1' : 'hevc';
 }
 
 /** Returns the RPU route a Dolby Vision presentation authorizes, when the stream has one. */
@@ -275,9 +293,9 @@ export function isRawSDRRouteKey(routeKey: RawHDRAuthorizationRouteKey): boolean
     return routeKey.endsWith(RAW_SDR_ROUTE_KEY_SUFFIX);
 }
 
-/** Returns whether the external HDR route of a Dolby Vision base's declared color is authorized. */
+/** Returns whether the external HDR route of a Dolby Vision base's declared color is authorized; native bases decode as HEVC. */
 export function hasAuthorizedDolbyVisionBaseRoute(metadata: InputColorMetadata, routeKeys: readonly ExternalHDRAuthorizationRouteKey[]): boolean {
-    const routeKey = getExternalHDRAuthorizationRouteKey(metadata);
+    const routeKey = getExternalHDRAuthorizationRouteKey('hevc', metadata);
     return routeKey !== null && routeKeys.includes(routeKey);
 }
 
@@ -359,9 +377,20 @@ function createSDRPresentationOptions(
     };
 }
 
-/** AV1, VP9, and HEVC range extensions present HDR only through raw planes, so their raw HDR probes settle first whatever the external result. */
+/** AV1, VP9, and HEVC range extensions have raw HDR routes whatever the external result, so their raw HDR probes settle first. */
 function waitForRawOnlyHDRAuthorization(presenter: WebGPUPresenter, options: unknown, rawHDRRequested: boolean): Promise<void> {
     return rawHDRRequested && isRawOnlyHDRPresentation(options) ? presenter.waitForRawHDRAuthorizationPrewarm() : Promise.resolve();
+}
+
+/** The native external AV1 route authorizes on first use, so an AV1 HDR stream waits for its key; a settled probe resolves at once. */
+function waitForNativeAV1HDRAuthorization(
+    presenter: WebGPUPresenter,
+    options: unknown,
+    metadata: InputColorMetadata | null
+): Promise<void> {
+    return metadata !== null && getExternalHDRPresentationCodec(options) === 'av1' ?
+        presenter.waitForExternalHDRRouteAuthorization('av1', metadata) :
+        Promise.resolve();
 }
 
 /** Most RPU keys authorize on first use, and a prewarmed key probes again on a recreated GPU device; a settled probe resolves at once. */
@@ -417,6 +446,7 @@ export async function getCustomPresentationEligibilityOptions(
         getRawDolbyVisionRouteFlags(presenter, input.dolbyVisionDescriptor, reconstructionTarget).allowDolbyVision === true;
     await Promise.all([
         waitForRawOnlyHDRAuthorization(presenter, options, rawHDRRequested && !singleLayerReconstructionAuthorized),
+        waitForNativeAV1HDRAuthorization(presenter, options, rawHDRRequested ? metadata : null),
         waitForDolbyVisionReconstructionAuthorization(presenter, reconstructionTarget)
     ]);
     if (!request.isCurrent()) {
@@ -566,6 +596,7 @@ function configureColorMetadataPipeline(
     if (videoOutputMode === 'video-frame' && rawVideoFrameFormat === null) {
         return presenter.configureColorPipeline({
             ...request.createHDRRenderConfiguration(metadata.nominalPeakNits),
+            codec: getExternalHDRPresentationCodec(request.options),
             inputMode: 'external-hdr',
             metadata
         }, generation);
@@ -615,6 +646,7 @@ function configureDolbyVisionBaseColorPipeline(
         }
         return presenter.configureColorPipeline({
             ...request.createHDRRenderConfiguration(colorMetadata.nominalPeakNits),
+            codec: 'hevc',
             inputMode: 'external-hdr',
             metadata: colorMetadata
         }, generation);

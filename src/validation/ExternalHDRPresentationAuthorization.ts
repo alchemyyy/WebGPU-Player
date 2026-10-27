@@ -14,11 +14,23 @@ import {
     type ColorTriplet
 } from '../color/ColorPipeline';
 import { rewriteHEVCAccessUnitColorDescriptionToBT709 } from '../demux/dolby-vision/DolbyVisionHEVCSplitter';
+import { rewriteAV1TemporalUnitColorToBT709 } from '../decode/video/native/NativeHDRAV1ColorNeutralizer';
 import { waitForGPUCompletion } from '../GPUCompletion';
 import { createBuiltinChain } from '../presentation/passes/builtin/BuiltinChains';
 import type { BuiltinChain, BuiltinChainConfiguration } from '../presentation/passes/PassTypes';
 import type { PresentationExecutor } from '../presentation/passes/PresentationExecutor';
 import { VALIDATION_ERROR_FILTER } from '../presentation/WebGPUConstants';
+import {
+    createExternalAV1HDRAuthorizationTemporalUnit,
+    EXTERNAL_AV1_HDR_AUTHORIZATION_CODEC,
+    EXTERNAL_AV1_HDR_AUTHORIZATION_CODED_HEIGHT,
+    EXTERNAL_AV1_HDR_AUTHORIZATION_CODED_WIDTH,
+    EXTERNAL_AV1_HDR_AUTHORIZATION_DISPLAY_HEIGHT,
+    EXTERNAL_AV1_HDR_AUTHORIZATION_DISPLAY_WIDTH,
+    EXTERNAL_AV1_HDR_AUTHORIZATION_VECTOR_SAMPLES,
+    EXTERNAL_AV1_HDR_AUTHORIZATION_VECTOR_SHA256,
+    EXTERNAL_AV1_HDR_AUTHORIZATION_VECTOR_VERSION
+} from '../capability/vectors/ExternalAV1HDRAuthorizationVector';
 import {
     createExternalHDRAuthorizationAccessUnit,
     EXTERNAL_HDR_AUTHORIZATION_CODED_HEIGHT,
@@ -27,7 +39,8 @@ import {
     EXTERNAL_HDR_AUTHORIZATION_DISPLAY_WIDTH,
     EXTERNAL_HDR_AUTHORIZATION_VECTOR_SAMPLES,
     EXTERNAL_HDR_AUTHORIZATION_VECTOR_SHA256,
-    EXTERNAL_HDR_AUTHORIZATION_VECTOR_VERSION
+    EXTERNAL_HDR_AUTHORIZATION_VECTOR_VERSION,
+    type ExternalHDRAuthorizationVectorSample
 } from '../capability/vectors/ExternalHDRAuthorizationVector';
 import GPUAuthorizationDeadline from './GPUAuthorizationDeadline';
 import { GPUCanvasPixelReader } from './GPUCanvasReadback';
@@ -49,20 +62,74 @@ import {
     type RawHDRVectorObservation
 } from './RawHDRPresentationAuthorization';
 
-const EXTERNAL_HDR_CODEC = 'hvc1.2.4.L120.B0';
 const EXTERNAL_HDR_AUTHORIZATION_TOLERANCE = 10 / READBACK_CODE_SCALE;
 const MAXIMUM_10_BIT_CODE = 1_023;
 const PROBE_KEY_SEPARATOR = '\u0000';
 
+/** The codecs whose hardware frames the external HDR route presents, each with its own color neutralization and vector. */
+export type ExternalHDRVideoCodec = 'av1' | 'hevc';
+
 export type ExternalHDRAuthorizationRouteKey =
+    | 'external-av1-main10-bt709-limited:hlg-v1'
+    | 'external-av1-main10-bt709-limited:pq-v1'
     | 'external-hevc-main10-bt709-limited:hlg-v1'
     | 'external-hevc-main10-bt709-limited:pq-v1';
 
 export const EXTERNAL_HDR_AUTHORIZATION_ROUTE_KEYS:
 readonly ExternalHDRAuthorizationRouteKey[] = [
     'external-hevc-main10-bt709-limited:pq-v1',
+    'external-hevc-main10-bt709-limited:hlg-v1',
+    'external-av1-main10-bt709-limited:pq-v1',
+    'external-av1-main10-bt709-limited:hlg-v1'
+];
+
+// The HEVC keys shape a host's HEVC transcode ranges, so they start with the device; the AV1 keys authorize on first use
+const PREWARMED_ROUTE_KEYS: readonly ExternalHDRAuthorizationRouteKey[] = [
+    'external-hevc-main10-bt709-limited:pq-v1',
     'external-hevc-main10-bt709-limited:hlg-v1'
 ];
+
+/** One codec's authorization vector: the decoder configuration, the frame it must output, and the samples its render is checked at. */
+type ExternalHDRAuthorizationVector = Readonly<{
+    codedHeight: number
+    codedWidth: number
+    /** Returns the vector's access unit with its color neutralized to limited BT.709, or null when it carries nothing to rewrite */
+    createNeutralizedAccessUnit: () => Uint8Array | null
+    decoderCodec: string
+    displayHeight: number
+    displayWidth: number
+    samples: readonly ExternalHDRAuthorizationVectorSample[]
+    sha256: string
+    version: number
+}>;
+
+const EXTERNAL_HDR_AUTHORIZATION_VECTORS: Readonly<Record<ExternalHDRVideoCodec, ExternalHDRAuthorizationVector>> = {
+    av1: {
+        codedHeight: EXTERNAL_AV1_HDR_AUTHORIZATION_CODED_HEIGHT,
+        codedWidth: EXTERNAL_AV1_HDR_AUTHORIZATION_CODED_WIDTH,
+        createNeutralizedAccessUnit: (): Uint8Array | null => rewriteAV1TemporalUnitColorToBT709(createExternalAV1HDRAuthorizationTemporalUnit()),
+        decoderCodec: EXTERNAL_AV1_HDR_AUTHORIZATION_CODEC,
+        displayHeight: EXTERNAL_AV1_HDR_AUTHORIZATION_DISPLAY_HEIGHT,
+        displayWidth: EXTERNAL_AV1_HDR_AUTHORIZATION_DISPLAY_WIDTH,
+        samples: EXTERNAL_AV1_HDR_AUTHORIZATION_VECTOR_SAMPLES,
+        sha256: EXTERNAL_AV1_HDR_AUTHORIZATION_VECTOR_SHA256,
+        version: EXTERNAL_AV1_HDR_AUTHORIZATION_VECTOR_VERSION
+    },
+    hevc: {
+        codedHeight: EXTERNAL_HDR_AUTHORIZATION_CODED_HEIGHT,
+        codedWidth: EXTERNAL_HDR_AUTHORIZATION_CODED_WIDTH,
+        createNeutralizedAccessUnit: (): Uint8Array | null => rewriteHEVCAccessUnitColorDescriptionToBT709(
+            createExternalHDRAuthorizationAccessUnit(),
+            { kind: 'annex-b' }
+        ),
+        decoderCodec: 'hvc1.2.4.L120.B0',
+        displayHeight: EXTERNAL_HDR_AUTHORIZATION_DISPLAY_HEIGHT,
+        displayWidth: EXTERNAL_HDR_AUTHORIZATION_DISPLAY_WIDTH,
+        samples: EXTERNAL_HDR_AUTHORIZATION_VECTOR_SAMPLES,
+        sha256: EXTERNAL_HDR_AUTHORIZATION_VECTOR_SHA256,
+        version: EXTERNAL_HDR_AUTHORIZATION_VECTOR_VERSION
+    }
+};
 
 export type ExternalHDRAuthorizationFailureReason =
     | 'decode-failed'
@@ -86,7 +153,8 @@ export type ExternalHDRRouteAuthorizationDecision = {
     /** The failing value of a rejection, such as `14/255 > 10/255 at (3, 7)`; null when authorized */
     failureDetail: string | null
     failureReason: ExternalHDRAuthorizationFailureReason | null
-    vectorVersion: typeof EXTERNAL_HDR_AUTHORIZATION_VECTOR_VERSION
+    /** The version of the route's codec vector */
+    vectorVersion: number
     maximumChannelError: number | null
     renderSettingsVersion: typeof RENDER_SETTINGS_VERSION
     routeKey: ExternalHDRAuthorizationRouteKey
@@ -103,7 +171,6 @@ export type ExternalHDRAuthorizationTelemetry = {
         ExternalHDRAuthorizationRouteKey,
         ExternalHDRAuthorizationFailureReason
     >>>
-    vectorVersion: typeof EXTERNAL_HDR_AUTHORIZATION_VECTOR_VERSION
     maximumChannelErrors: Readonly<Partial<Record<
         ExternalHDRAuthorizationRouteKey,
         number
@@ -116,7 +183,8 @@ export type ExternalHDRAuthorizationTelemetry = {
     targetFormat: GPUTextureFormat | null
 };
 
-export type ExternalHDRAuthorizationFrameFactory = (signal: AbortSignal) => Promise<VideoFrame>;
+/** Decodes the codec's neutralized vector and returns its one frame. */
+export type ExternalHDRAuthorizationFrameFactory = (codec: ExternalHDRVideoCodec, signal: AbortSignal) => Promise<VideoFrame>;
 
 type CachedRouteProbe = {
     decision: ExternalHDRRouteAuthorizationDecision | null
@@ -158,10 +226,27 @@ function getErrorMessage(error: unknown): string {
     return error instanceof Error ? error.message : String(error);
 }
 
+function getRouteVideoCodec(routeKey: ExternalHDRAuthorizationRouteKey): ExternalHDRVideoCodec {
+    switch (routeKey) {
+        case 'external-av1-main10-bt709-limited:hlg-v1':
+        case 'external-av1-main10-bt709-limited:pq-v1':
+            return 'av1';
+        case 'external-hevc-main10-bt709-limited:hlg-v1':
+        case 'external-hevc-main10-bt709-limited:pq-v1':
+            return 'hevc';
+    }
+}
+
+function getRouteVector(routeKey: ExternalHDRAuthorizationRouteKey): ExternalHDRAuthorizationVector {
+    return EXTERNAL_HDR_AUTHORIZATION_VECTORS[getRouteVideoCodec(routeKey)];
+}
+
 function createMetadata(routeKey: ExternalHDRAuthorizationRouteKey): InputColorMetadata {
     switch (routeKey) {
+        case 'external-av1-main10-bt709-limited:hlg-v1':
         case 'external-hevc-main10-bt709-limited:hlg-v1':
             return createHLGColorMetadata();
+        case 'external-av1-main10-bt709-limited:pq-v1':
         case 'external-hevc-main10-bt709-limited:pq-v1':
             return createPQColorMetadata();
     }
@@ -173,8 +258,11 @@ function createSettings(metadata: InputColorMetadata): HDRToSDRRenderSettings {
     });
 }
 
-/** Returns the exact Main10 HDR metadata routes covered by the native-frame probe. */
-export function getExternalHDRAuthorizationRouteKey(metadata: InputColorMetadata): ExternalHDRAuthorizationRouteKey | null {
+/** Returns the exact 10-bit HDR metadata route of a codec's native frames, covered by that codec's native-frame probe. */
+export function getExternalHDRAuthorizationRouteKey(
+    codec: ExternalHDRVideoCodec,
+    metadata: InputColorMetadata
+): ExternalHDRAuthorizationRouteKey | null {
     if (
         metadata.bitDepth !== 10
         || metadata.matrix !== 'bt2020-ncl'
@@ -185,9 +273,9 @@ export function getExternalHDRAuthorizationRouteKey(metadata: InputColorMetadata
     }
     switch (metadata.transfer) {
         case 'hlg':
-            return 'external-hevc-main10-bt709-limited:hlg-v1';
+            return codec === 'av1' ? 'external-av1-main10-bt709-limited:hlg-v1' : 'external-hevc-main10-bt709-limited:hlg-v1';
         case 'pq':
-            return 'external-hevc-main10-bt709-limited:pq-v1';
+            return codec === 'av1' ? 'external-av1-main10-bt709-limited:pq-v1' : 'external-hevc-main10-bt709-limited:pq-v1';
         case 'sdr':
             return null;
     }
@@ -199,6 +287,7 @@ function createExternalHDRReferencePlan(
     routeKey: ExternalHDRAuthorizationRouteKey
 ): AuthorizationReferencePlan {
     const metadata = createMetadata(routeKey);
+    const vector = getRouteVector(routeKey);
     const configuration: BuiltinChainConfiguration = {
         hdrOutput: false,
         metadata,
@@ -208,8 +297,8 @@ function createExternalHDRReferencePlan(
     return createAuthorizationReferencePlan(device, (): BuiltinChain => createBuiltinChain(configuration), {
         format: targetFormat,
         hdrSource: true,
-        height: EXTERNAL_HDR_AUTHORIZATION_DISPLAY_HEIGHT,
-        width: EXTERNAL_HDR_AUTHORIZATION_DISPLAY_WIDTH
+        height: vector.displayHeight,
+        width: vector.displayWidth
     });
 }
 
@@ -223,12 +312,13 @@ export function createExternalHDRShaderSignature(
     routeKey: ExternalHDRAuthorizationRouteKey,
     shaderCode: string
 ): string {
+    const vector = getRouteVector(routeKey);
     const signatureInput = [
-        `vector=${EXTERNAL_HDR_AUTHORIZATION_VECTOR_VERSION}`,
-        `vector-sha256=${EXTERNAL_HDR_AUTHORIZATION_VECTOR_SHA256}`,
+        `vector=${vector.version}`,
+        `vector-sha256=${vector.sha256}`,
         `uniform=${RENDER_SETTINGS_VERSION}`,
         `route=${routeKey}`,
-        `codec=${EXTERNAL_HDR_CODEC}`,
+        `codec=${vector.decoderCodec}`,
         'frame=opaque:bt709:bt709:bt709:limited',
         `tolerance=${EXTERNAL_HDR_AUTHORIZATION_TOLERANCE}`,
         `target=${targetFormat}`,
@@ -242,19 +332,19 @@ export function createExternalHDRShaderSignature(
     return `fnv1a32-${hash.toString(16).padStart(8, '0')}`;
 }
 
-function frameMatchesAuthorizationContract(frame: VideoFrame): boolean {
+function frameMatchesAuthorizationContract(frame: VideoFrame, vector: ExternalHDRAuthorizationVector): boolean {
     const visibleRectangle = frame.visibleRect;
     return frame.format === null
-        && frame.codedWidth === EXTERNAL_HDR_AUTHORIZATION_CODED_WIDTH
-        && frame.codedHeight === EXTERNAL_HDR_AUTHORIZATION_CODED_HEIGHT
-        && frame.displayWidth === EXTERNAL_HDR_AUTHORIZATION_DISPLAY_WIDTH
-        && frame.displayHeight === EXTERNAL_HDR_AUTHORIZATION_DISPLAY_HEIGHT
+        && frame.codedWidth === vector.codedWidth
+        && frame.codedHeight === vector.codedHeight
+        && frame.displayWidth === vector.displayWidth
+        && frame.displayHeight === vector.displayHeight
         && frame.timestamp === 0
         && visibleRectangle !== null
         && visibleRectangle.x === 0
         && visibleRectangle.y === 0
-        && visibleRectangle.width === EXTERNAL_HDR_AUTHORIZATION_DISPLAY_WIDTH
-        && visibleRectangle.height === EXTERNAL_HDR_AUTHORIZATION_DISPLAY_HEIGHT
+        && visibleRectangle.width === vector.displayWidth
+        && visibleRectangle.height === vector.displayHeight
         && frame.colorSpace.fullRange === false
         && frame.colorSpace.matrix === 'bt709'
         && frame.colorSpace.primaries === 'bt709'
@@ -286,8 +376,8 @@ async function flushVideoDecoderUntilAbort(decoder: VideoDecoder, signal?: Abort
     }
 }
 
-/** Decodes one neutralized Main10 vector and requires Chromium's opaque hardware output. */
-export async function createExternalHDRAuthorizationFrame(signal?: AbortSignal): Promise<VideoFrame> {
+/** Decodes one codec's neutralized 10-bit vector and requires Chromium's opaque hardware output. */
+export async function createExternalHDRAuthorizationFrame(codec: ExternalHDRVideoCodec, signal?: AbortSignal): Promise<VideoFrame> {
     if (
         typeof VideoDecoder === 'undefined'
         || typeof EncodedVideoChunk === 'undefined'
@@ -299,18 +389,15 @@ export async function createExternalHDRAuthorizationFrame(signal?: AbortSignal):
         throw new DOMException('External HDR authorization decode was aborted', 'AbortError');
     }
 
-    const sourceAccessUnit = createExternalHDRAuthorizationAccessUnit();
-    const neutralizedAccessUnit = rewriteHEVCAccessUnitColorDescriptionToBT709(
-        sourceAccessUnit,
-        { kind: 'annex-b' }
-    );
+    const vector = EXTERNAL_HDR_AUTHORIZATION_VECTORS[codec];
+    const neutralizedAccessUnit = vector.createNeutralizedAccessUnit();
     if (!neutralizedAccessUnit) {
         throw new Error('decoder-output-mismatch');
     }
     const configuration: VideoDecoderConfig = {
-        codec: EXTERNAL_HDR_CODEC,
-        codedHeight: EXTERNAL_HDR_AUTHORIZATION_CODED_HEIGHT,
-        codedWidth: EXTERNAL_HDR_AUTHORIZATION_CODED_WIDTH,
+        codec: vector.decoderCodec,
+        codedHeight: vector.codedHeight,
+        codedWidth: vector.codedWidth,
         colorSpace: {
             fullRange: false,
             matrix: 'bt709',
@@ -368,7 +455,7 @@ export async function createExternalHDRAuthorizationFrame(signal?: AbortSignal):
         if (!decodedFrame || decodeState.outputCount !== 1) {
             throw new Error('decode-failed');
         }
-        if (!frameMatchesAuthorizationContract(decodedFrame)) {
+        if (!frameMatchesAuthorizationContract(decodedFrame, vector)) {
             throw new Error('decoder-output-mismatch');
         }
         const authorizedFrame = decodedFrame;
@@ -389,7 +476,7 @@ export function createExpectedExternalHDRAuthorizationObservations(
     settings: HDRToSDRRenderSettings
 ): readonly RawHDRVectorObservation[] {
     const metadata = createMetadata(routeKey);
-    return EXTERNAL_HDR_AUTHORIZATION_VECTOR_SAMPLES.map(sample => {
+    return getRouteVector(routeKey).samples.map(sample => {
         const encodedYUV: ColorTriplet = [
             sample.rawYUVCode[0] / MAXIMUM_10_BIT_CODE,
             sample.rawYUVCode[1] / MAXIMUM_10_BIT_CODE,
@@ -450,7 +537,7 @@ function createRejectedDecision(
         device: probe.device,
         failureDetail,
         failureReason,
-        vectorVersion: EXTERNAL_HDR_AUTHORIZATION_VECTOR_VERSION,
+        vectorVersion: getRouteVector(probe.routeKey).version,
         maximumChannelError,
         renderSettingsVersion: RENDER_SETTINGS_VERSION,
         routeKey: probe.routeKey,
@@ -515,7 +602,7 @@ export class ExternalHDRPresentationAuthorizationRunner {
             // eslint-disable-next-line compat/compat -- WebGPU custom decode targets modern Chromium
             frameAbortController = new AbortController();
             const activeFrameAbortController = frameAbortController;
-            const framePromise = this.createFrame(activeFrameAbortController.signal);
+            const framePromise = this.createFrame(getRouteVideoCodec(routeKey), activeFrameAbortController.signal);
             void framePromise.then((resolvedFrame: VideoFrame): void => {
                 if (activeFrameAbortController.signal.aborted) {
                     resolvedFrame.close();
@@ -556,29 +643,25 @@ export class ExternalHDRPresentationAuthorizationRunner {
             }
 
             step = 'readback';
+            const samples = getRouteVector(routeKey).samples;
             pixelReader = new GPUCanvasPixelReader({
                 device,
                 format: targetFormat,
-                maximumReadbacks: EXTERNAL_HDR_AUTHORIZATION_VECTOR_SAMPLES.length
+                maximumReadbacks: samples.length
             });
             const readback = await deadline.wait(
-                pixelReader.readPixels(EXTERNAL_HDR_AUTHORIZATION_VECTOR_SAMPLES, targetTexture),
+                pixelReader.readPixels(samples, targetTexture),
                 (): void => pixelReader?.destroy()
             );
             if (readback.failure || !readback.linearRGB) {
                 return createRejectedDecision(probe, 'readback-failed', describeReadbackFailure(readback.failure));
             }
-            const actualObservations: RawHDRVectorObservation[] = [];
-            for (let sampleIndex = 0;
-                sampleIndex < EXTERNAL_HDR_AUTHORIZATION_VECTOR_SAMPLES.length;
-                sampleIndex += 1) {
-                const sample = EXTERNAL_HDR_AUTHORIZATION_VECTOR_SAMPLES[sampleIndex];
-                actualObservations.push({
-                    linearRGB: readback.linearRGB[sampleIndex],
-                    sampleX: sample.sampleX,
-                    sampleY: sample.sampleY
-                });
-            }
+            const linearRGB = readback.linearRGB;
+            const actualObservations: RawHDRVectorObservation[] = samples.map((sample, sampleIndex): RawHDRVectorObservation => ({
+                linearRGB: linearRGB[sampleIndex],
+                sampleX: sample.sampleX,
+                sampleY: sample.sampleY
+            }));
             const expectedObservations = createExpectedExternalHDRAuthorizationObservations(routeKey, settings);
             const comparison = evaluateRawHDRVectorObservations(
                 expectedObservations,
@@ -599,7 +682,7 @@ export class ExternalHDRPresentationAuthorizationRunner {
                 device,
                 failureDetail: null,
                 failureReason: null,
-                vectorVersion: EXTERNAL_HDR_AUTHORIZATION_VECTOR_VERSION,
+                vectorVersion: getRouteVector(routeKey).version,
                 maximumChannelError: comparison.maximumChannelError,
                 renderSettingsVersion: RENDER_SETTINGS_VERSION,
                 routeKey,
@@ -662,9 +745,9 @@ export class ExternalHDRPresentationAuthorizationRegistry {
 
     public constructor(private readonly runner = new ExternalHDRPresentationAuthorizationRunner()) {}
 
-    /** Starts both exact shader probes without delaying ordinary playback. */
+    /** Starts the HEVC shader probes without delaying ordinary playback; the AV1 probes start on first use. */
     public prewarm(device: GPUDevice, targetFormat: GPUTextureFormat): void {
-        for (const routeKey of EXTERNAL_HDR_AUTHORIZATION_ROUTE_KEYS) {
+        for (const routeKey of PREWARMED_ROUTE_KEYS) {
             void this.authorize(device, targetFormat, routeKey);
         }
     }
@@ -728,21 +811,23 @@ export class ExternalHDRPresentationAuthorizationRegistry {
     public isAuthorized(
         device: GPUDevice,
         targetFormat: GPUTextureFormat,
+        codec: ExternalHDRVideoCodec,
         metadata: InputColorMetadata
     ): boolean {
-        return this.getAuthorizationFailure(device, targetFormat, metadata) === null;
+        return this.getAuthorizationFailure(device, targetFormat, codec, metadata) === null;
     }
 
     /**
-     * Returns why this device, target format, and metadata's route are not authorized, as `<state>: <route key>` with the failing value, or null when they are.
+     * Returns why this device, target format, and codec's route for the metadata are not authorized, as `<state>: <route key>` with the failing value, or null when they are.
      * Metadata no probe covers reports `route-unsupported` with its bit depth and color description.
      */
     public getAuthorizationFailure(
         device: GPUDevice,
         targetFormat: GPUTextureFormat,
+        codec: ExternalHDRVideoCodec,
         metadata: InputColorMetadata
     ): string | null {
-        const routeKey = getExternalHDRAuthorizationRouteKey(metadata);
+        const routeKey = getExternalHDRAuthorizationRouteKey(codec, metadata);
         if (!routeKey) {
             return `route-unsupported: ${metadata.bitDepth}-bit ${metadata.matrix}:${metadata.primaries}:${metadata.range}:${metadata.transfer}`;
         }
@@ -779,7 +864,6 @@ export class ExternalHDRPresentationAuthorizationRegistry {
         if (!device || !targetFormat) {
             return {
                 ...accumulator,
-                vectorVersion: EXTERNAL_HDR_AUTHORIZATION_VECTOR_VERSION,
                 renderSettingsVersion: RENDER_SETTINGS_VERSION,
                 status: 'unavailable',
                 targetFormat
@@ -799,7 +883,6 @@ export class ExternalHDRPresentationAuthorizationRegistry {
         }
         return {
             ...accumulator,
-            vectorVersion: EXTERNAL_HDR_AUTHORIZATION_VECTOR_VERSION,
             renderSettingsVersion: RENDER_SETTINGS_VERSION,
             status: getAuthorizationTelemetryStatus(accumulator),
             targetFormat

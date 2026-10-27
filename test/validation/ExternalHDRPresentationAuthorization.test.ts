@@ -18,9 +18,16 @@ import {
 import { createHLGColorMetadata, createPQColorMetadata, createSDRColorMetadata } from 'webgpu-player/color/ColorMetadata';
 import type { ColorTriplet } from 'webgpu-player/color/ColorPipeline';
 import {
+    EXTERNAL_AV1_HDR_AUTHORIZATION_DISPLAY_HEIGHT,
+    EXTERNAL_AV1_HDR_AUTHORIZATION_DISPLAY_WIDTH,
+    EXTERNAL_AV1_HDR_AUTHORIZATION_VECTOR_SAMPLES,
+    EXTERNAL_AV1_HDR_AUTHORIZATION_VECTOR_VERSION
+} from 'webgpu-player/capability/vectors/ExternalAV1HDRAuthorizationVector';
+import {
     EXTERNAL_HDR_AUTHORIZATION_DISPLAY_HEIGHT,
     EXTERNAL_HDR_AUTHORIZATION_DISPLAY_WIDTH
 } from 'webgpu-player/capability/vectors/ExternalHDRAuthorizationVector';
+import { findAV1SequenceHeader } from 'webgpu-player/demux/av1/AV1SequenceHeaderParser';
 import { createBuiltinChain } from 'webgpu-player/presentation/passes/builtin/BuiltinChains';
 import { PresentationExecutor } from 'webgpu-player/presentation/passes/PresentationExecutor';
 import { planPresentation } from 'webgpu-player/presentation/passes/PresentationPlanner';
@@ -49,6 +56,8 @@ type MockFunction = Mock;
 
 const PQ_ROUTE_KEY: ExternalHDRAuthorizationRouteKey = 'external-hevc-main10-bt709-limited:pq-v1';
 const HLG_ROUTE_KEY: ExternalHDRAuthorizationRouteKey = 'external-hevc-main10-bt709-limited:hlg-v1';
+const AV1_PQ_ROUTE_KEY: ExternalHDRAuthorizationRouteKey = 'external-av1-main10-bt709-limited:pq-v1';
+const AV1_HLG_ROUTE_KEY: ExternalHDRAuthorizationRouteKey = 'external-av1-main10-bt709-limited:hlg-v1';
 const TARGET_FORMAT: GPUTextureFormat = 'bgra8unorm';
 const UNREADABLE_TARGET_FORMAT: GPUTextureFormat = 'rgba16float';
 const AUTHORIZATION_TIMEOUT_MILLISECONDS = 5_000;
@@ -76,11 +85,11 @@ function createExpectedObservations(routeKey: ExternalHDRAuthorizationRouteKey):
     return createExpectedExternalHDRAuthorizationObservations(routeKey, createSettings());
 }
 
-function createFrame(close: MockFunction): VideoFrame {
+function createFrame(close: MockFunction, displayWidth = EXTERNAL_HDR_AUTHORIZATION_DISPLAY_WIDTH, displayHeight = EXTERNAL_HDR_AUTHORIZATION_DISPLAY_HEIGHT): VideoFrame {
     return {
         close,
-        displayHeight: EXTERNAL_HDR_AUTHORIZATION_DISPLAY_HEIGHT,
-        displayWidth: EXTERNAL_HDR_AUTHORIZATION_DISPLAY_WIDTH
+        displayHeight,
+        displayWidth
     } as unknown as VideoFrame;
 }
 
@@ -212,6 +221,53 @@ describe('External HDR presentation authorization', () => {
         }
     );
 
+    it.each([
+        [ AV1_PQ_ROUTE_KEY, createPQColorMetadata() ],
+        [ AV1_HLG_ROUTE_KEY, createHLGColorMetadata() ]
+    ])('authorizes %s from a decoded AV1 vector, read at the AV1 vector\'s own samples', async (routeKey, metadata) => {
+        const expectedObservations = createExpectedObservations(routeKey);
+        const harness = createDeviceHarness(expectedObservations);
+        const close = vi.fn();
+        const createFrameFactory = vi.fn(async (): Promise<VideoFrame> => createFrame(
+            close,
+            EXTERNAL_AV1_HDR_AUTHORIZATION_DISPLAY_WIDTH,
+            EXTERNAL_AV1_HDR_AUTHORIZATION_DISPLAY_HEIGHT
+        ));
+        const runner = new ExternalHDRPresentationAuthorizationRunner(createFrameFactory);
+
+        const decision = await runner.validate(harness.device, TARGET_FORMAT, routeKey);
+
+        expect(decision).toMatchObject({
+            authorizedRouteKeys: [ routeKey ],
+            routeKey,
+            sampleCount: EXTERNAL_AV1_HDR_AUTHORIZATION_VECTOR_SAMPLES.length,
+            status: 'authorized',
+            vectorVersion: EXTERNAL_AV1_HDR_AUTHORIZATION_VECTOR_VERSION
+        });
+        expect(createFrameFactory).toHaveBeenCalledWith('av1', expect.any(AbortSignal));
+        expect(createBuiltinChain).toHaveBeenCalledWith(expect.objectContaining({ metadata, route: 'external-hdr' }));
+        expect(expectedObservations.map(({ sampleX, sampleY }) => [ sampleX, sampleY ])).toEqual(
+            EXTERNAL_AV1_HDR_AUTHORIZATION_VECTOR_SAMPLES.map(({ sampleX, sampleY }) => [ sampleX, sampleY ])
+        );
+        expect(close).toHaveBeenCalledOnce();
+        expectEveryResourceDestroyed(harness);
+    });
+
+    it('keeps each codec\'s route keys apart and prewarms only HEVC\'s', async () => {
+        const harness = createDeviceHarness(createExpectedObservations(PQ_ROUTE_KEY));
+        const runner = new ExternalHDRPresentationAuthorizationRunner(async (): Promise<VideoFrame> => createFrame(vi.fn()));
+        const validate = vi.spyOn(runner, 'validate');
+        const registry = new ExternalHDRPresentationAuthorizationRegistry(runner);
+
+        registry.prewarm(harness.device, TARGET_FORMAT);
+        await registry.waitForPending(harness.device, TARGET_FORMAT);
+
+        expect(validate.mock.calls.map(call => call[2])).toEqual([ PQ_ROUTE_KEY, HLG_ROUTE_KEY ]);
+        expect(registry.isAuthorized(harness.device, TARGET_FORMAT, 'hevc', createPQColorMetadata())).toBe(true);
+        expect(registry.getAuthorizationFailure(harness.device, TARGET_FORMAT, 'av1', createPQColorMetadata())).toBe(`unprobed: ${AV1_PQ_ROUTE_KEY}`);
+        expect(registry.getAuthorizationFailure(harness.device, TARGET_FORMAT, 'av1', createSDRColorMetadata())).toBe(SDR_ROUTE_UNSUPPORTED_FAILURE);
+    });
+
     it('rejects a bounded pixel mismatch and still closes the frame', async () => {
         const harness = createDeviceHarness(mutateFirstObservation(createExpectedObservations(PQ_ROUTE_KEY)));
         const close = vi.fn();
@@ -286,15 +342,15 @@ describe('External HDR presentation authorization', () => {
         const secondDecision = registry.authorize(harness.device, TARGET_FORMAT, PQ_ROUTE_KEY);
         expect(secondDecision).toBe(firstDecision);
         expect(registry.getTelemetry(harness.device, TARGET_FORMAT).status).toBe('pending');
-        expect(registry.getAuthorizationFailure(harness.device, TARGET_FORMAT, createPQColorMetadata())).toBe(`pending: ${PQ_ROUTE_KEY}`);
+        expect(registry.getAuthorizationFailure(harness.device, TARGET_FORMAT, 'hevc', createPQColorMetadata())).toBe(`pending: ${PQ_ROUTE_KEY}`);
 
         const decision: ExternalHDRRouteAuthorizationDecision = await firstDecision;
         expect(decision.status).toBe('authorized');
         expect(validate).toHaveBeenCalledOnce();
-        expect(registry.isAuthorized(harness.device, TARGET_FORMAT, createPQColorMetadata())).toBe(true);
-        expect(registry.isAuthorized(harness.device, TARGET_FORMAT, createHLGColorMetadata())).toBe(false);
-        expect(registry.getAuthorizationFailure(harness.device, TARGET_FORMAT, createHLGColorMetadata())).toBe(`unprobed: ${HLG_ROUTE_KEY}`);
-        expect(registry.getAuthorizationFailure(harness.device, TARGET_FORMAT, createSDRColorMetadata())).toBe(SDR_ROUTE_UNSUPPORTED_FAILURE);
+        expect(registry.isAuthorized(harness.device, TARGET_FORMAT, 'hevc', createPQColorMetadata())).toBe(true);
+        expect(registry.isAuthorized(harness.device, TARGET_FORMAT, 'hevc', createHLGColorMetadata())).toBe(false);
+        expect(registry.getAuthorizationFailure(harness.device, TARGET_FORMAT, 'hevc', createHLGColorMetadata())).toBe(`unprobed: ${HLG_ROUTE_KEY}`);
+        expect(registry.getAuthorizationFailure(harness.device, TARGET_FORMAT, 'hevc', createSDRColorMetadata())).toBe(SDR_ROUTE_UNSUPPORTED_FAILURE);
         expect(registry.getTelemetry(harness.device, TARGET_FORMAT)).toMatchObject({
             authorizedRouteKeys: [ PQ_ROUTE_KEY ],
             failureDetails: {},
@@ -310,7 +366,7 @@ describe('External HDR presentation authorization', () => {
 
         const decision = await registry.authorize(harness.device, TARGET_FORMAT, PQ_ROUTE_KEY);
 
-        expect(registry.getAuthorizationFailure(harness.device, TARGET_FORMAT, createPQColorMetadata()))
+        expect(registry.getAuthorizationFailure(harness.device, TARGET_FORMAT, 'hevc', createPQColorMetadata()))
             .toBe(`pixel-mismatch: ${PQ_ROUTE_KEY} ${decision.failureDetail}`);
         expect(registry.getTelemetry(harness.device, TARGET_FORMAT).failureDetails).toEqual({ [PQ_ROUTE_KEY]: decision.failureDetail });
     });
@@ -323,11 +379,11 @@ describe('External HDR presentation authorization', () => {
         const registry = new ExternalHDRPresentationAuthorizationRegistry(runner);
 
         await registry.authorize(firstHarness.device, TARGET_FORMAT, PQ_ROUTE_KEY);
-        expect(registry.isAuthorized(secondHarness.device, TARGET_FORMAT, createPQColorMetadata())).toBe(false);
+        expect(registry.isAuthorized(secondHarness.device, TARGET_FORMAT, 'hevc', createPQColorMetadata())).toBe(false);
         await registry.authorize(secondHarness.device, TARGET_FORMAT, PQ_ROUTE_KEY);
 
         expect(validate).toHaveBeenCalledTimes(2);
-        expect(registry.isAuthorized(secondHarness.device, TARGET_FORMAT, createPQColorMetadata())).toBe(true);
+        expect(registry.isAuthorized(secondHarness.device, TARGET_FORMAT, 'hevc', createPQColorMetadata())).toBe(true);
     });
 
     it('rejects unsupported targets before constructing a frame', async () => {
@@ -414,7 +470,7 @@ describe('External HDR presentation authorization', () => {
         vi.stubGlobal('EncodedVideoChunk', FakeEncodedVideoChunk);
         vi.stubGlobal('VideoDecoder', FakeVideoDecoder);
 
-        const frame = await createExternalHDRAuthorizationFrame();
+        const frame = await createExternalHDRAuthorizationFrame('hevc');
 
         expect(frame).toBe(outputFrame);
         expect(configured).toHaveBeenCalledWith(expect.objectContaining({
@@ -442,6 +498,121 @@ describe('External HDR presentation authorization', () => {
         expect(close).toHaveBeenCalledOnce();
     });
 
+    it('decodes the AV1 vector with every sequence header neutralized, as AV1 Main 10 in hardware', async () => {
+        const configured = vi.fn();
+        let decodedTemporalUnit: Uint8Array | null = null;
+        const outputFrame = {
+            close: vi.fn(),
+            codedHeight: 1_080,
+            codedWidth: 1_920,
+            colorSpace: { fullRange: false, matrix: 'bt709', primaries: 'bt709', transfer: 'bt709' },
+            displayHeight: 1_080,
+            displayWidth: 1_920,
+            format: null,
+            timestamp: 0,
+            visibleRect: { height: 1_080, width: 1_920, x: 0, y: 0 }
+        } as unknown as VideoFrame;
+        let decoderInit: VideoDecoderInit | null = null;
+        class FakeEncodedVideoChunk {
+            public constructor(init: EncodedVideoChunkInit) {
+                const source = init.data;
+                decodedTemporalUnit = ArrayBuffer.isView(source) ?
+                    new Uint8Array(source.buffer, source.byteOffset, source.byteLength).slice() :
+                    new Uint8Array(source).slice();
+            }
+        }
+        class FakeVideoDecoder {
+            public static readonly isConfigSupported = vi.fn(
+                async (config: VideoDecoderConfig): Promise<VideoDecoderSupport> => ({ config, supported: true })
+            );
+
+            public constructor(init: VideoDecoderInit) {
+                decoderInit = init;
+            }
+
+            public close(): void {
+                return undefined;
+            }
+
+            public configure(config: VideoDecoderConfig): void {
+                configured(config);
+            }
+
+            public decode(): void {
+                decoderInit?.output(outputFrame);
+            }
+
+            public async flush(): Promise<void> {
+                return undefined;
+            }
+        }
+        vi.stubGlobal('EncodedVideoChunk', FakeEncodedVideoChunk);
+        vi.stubGlobal('VideoDecoder', FakeVideoDecoder);
+
+        await expect(createExternalHDRAuthorizationFrame('av1')).resolves.toBe(outputFrame);
+
+        expect(configured).toHaveBeenCalledWith(expect.objectContaining({
+            codec: 'av01.0.08M.10',
+            codedHeight: 1_080,
+            codedWidth: 1_920,
+            hardwareAcceleration: 'prefer-hardware'
+        }));
+        expect(findAV1SequenceHeader(decodedTemporalUnit as unknown as Uint8Array)?.colorConfig).toMatchObject({
+            bitDepth: 10,
+            colorDescriptionPresent: true,
+            colorPrimaries: 1,
+            fullRange: false,
+            matrixCoefficients: 1,
+            transferCharacteristics: 1
+        });
+    });
+
+    it('rejects a decoded AV1 frame of the HEVC vector\'s coded size', async () => {
+        let decoderInit: VideoDecoderInit | null = null;
+        const close = vi.fn();
+        class FakeEncodedVideoChunk {}
+        class FakeVideoDecoder {
+            public static readonly isConfigSupported = vi.fn(
+                async (config: VideoDecoderConfig): Promise<VideoDecoderSupport> => ({ config, supported: true })
+            );
+
+            public constructor(init: VideoDecoderInit) {
+                decoderInit = init;
+            }
+
+            public close(): void {
+                return undefined;
+            }
+
+            public configure(): void {
+                return undefined;
+            }
+
+            public decode(): void {
+                decoderInit?.output({
+                    close,
+                    codedHeight: 1_088,
+                    codedWidth: 1_920,
+                    colorSpace: { fullRange: false, matrix: 'bt709', primaries: 'bt709', transfer: 'bt709' },
+                    displayHeight: 1_080,
+                    displayWidth: 1_920,
+                    format: null,
+                    timestamp: 0,
+                    visibleRect: { height: 1_080, width: 1_920, x: 0, y: 0 }
+                } as unknown as VideoFrame);
+            }
+
+            public async flush(): Promise<void> {
+                return undefined;
+            }
+        }
+        vi.stubGlobal('EncodedVideoChunk', FakeEncodedVideoChunk);
+        vi.stubGlobal('VideoDecoder', FakeVideoDecoder);
+
+        await expect(createExternalHDRAuthorizationFrame('av1')).rejects.toThrow('decoder-output-mismatch');
+        expect(close).toHaveBeenCalledOnce();
+    });
+
     it('rejects an unsupported decoder configuration before constructing a decoder', async () => {
         const constructed = vi.fn();
         class FakeEncodedVideoChunk {}
@@ -460,7 +631,7 @@ describe('External HDR presentation authorization', () => {
         vi.stubGlobal('EncodedVideoChunk', FakeEncodedVideoChunk);
         vi.stubGlobal('VideoDecoder', FakeVideoDecoder);
 
-        await expect(createExternalHDRAuthorizationFrame()).rejects.toThrow('decoder-config-unsupported');
+        await expect(createExternalHDRAuthorizationFrame('hevc')).rejects.toThrow('decoder-config-unsupported');
         expect(constructed).not.toHaveBeenCalled();
     });
 
@@ -499,7 +670,7 @@ describe('External HDR presentation authorization', () => {
         vi.stubGlobal('EncodedVideoChunk', FakeEncodedVideoChunk);
         vi.stubGlobal('VideoDecoder', FakeVideoDecoder);
 
-        await expect(createExternalHDRAuthorizationFrame()).rejects.toThrow('vector decode failed');
+        await expect(createExternalHDRAuthorizationFrame('hevc')).rejects.toThrow('vector decode failed');
         expect(closed).toHaveBeenCalledOnce();
     });
 
@@ -536,7 +707,7 @@ describe('External HDR presentation authorization', () => {
         // eslint-disable-next-line compat/compat -- WebGPU custom decode targets modern Chromium
         const abortController = new AbortController();
 
-        const framePromise = createExternalHDRAuthorizationFrame(abortController.signal);
+        const framePromise = createExternalHDRAuthorizationFrame('hevc', abortController.signal);
         await vi.waitFor(() => expect(flush).toHaveBeenCalledOnce());
         abortController.abort();
 

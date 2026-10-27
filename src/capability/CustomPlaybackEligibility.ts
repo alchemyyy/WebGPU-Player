@@ -55,7 +55,8 @@ import {
 } from './H264ProfileCapabilities';
 import {
     getExternalHDRAuthorizationRouteKey,
-    type ExternalHDRAuthorizationRouteKey
+    type ExternalHDRAuthorizationRouteKey,
+    type ExternalHDRVideoCodec
 } from '../validation/ExternalHDRPresentationAuthorization';
 import {
     getRawHDRAuthorizationRouteKey,
@@ -1018,6 +1019,30 @@ function supportsNativeMain10HEVC(
         && isPositiveSafeInteger(stream.Height);
 }
 
+/** Returns the native external HDR route's codec, whose decoder a native HDR probe qualified at the stream's depth and profile, or null. */
+function getNativeHDRVideoCodec(
+    capabilities: CustomDecodeCapabilities,
+    videoCodec: CustomVideoCodec,
+    stream: MediaStream
+): ExternalHDRVideoCodec | null {
+    switch (videoCodec) {
+        case 'hevc':
+            return supportsNativeMain10HEVC(capabilities.nativeHDRHEVC, videoCodec, stream) ? 'hevc' : null;
+        case 'av1': {
+            const capability = capabilities.nativeHDRAV1;
+            return capability?.status === 'supported'
+                && stream.BitDepth === capability.bitDepth
+                && hasSupportedRawVideoProfile(videoCodec, stream)
+                && isPositiveSafeInteger(stream.Width)
+                && isPositiveSafeInteger(stream.Height) ?
+                'av1' :
+                null;
+        }
+        default:
+            return null;
+    }
+}
+
 /** The native HDR route rewrites the bitstream as BT.2020, so it needs a named BT.2020 HDR description */
 function hasExplicitNativeHDRChromaticity(stream: MediaStream): boolean {
     return hasExplicitBT2020HDRColorDescription(stream);
@@ -1193,7 +1218,7 @@ function selectNativeDolbyVisionBaseOutput(
         return null;
     }
 
-    const routeKey = getExternalHDRAuthorizationRouteKey(colorMetadata);
+    const routeKey = getExternalHDRAuthorizationRouteKey('hevc', colorMetadata);
     if (
         routeKey === null
         || !(eligibilityOptions.authorizedExternalHDRRouteKeys ?? []).includes(routeKey)
@@ -1737,18 +1762,17 @@ function selectColorVideoOutput(
     if (!hdr) {
         return selectSDRVideoOutput(capabilities, eligibilityOptions, videoCodec, videoStream, colorMetadata);
     }
-    const externalHDRRouteKey = getExternalHDRAuthorizationRouteKey(colorMetadata);
+    const nativeHDRVideoCodec = getNativeHDRVideoCodec(capabilities, videoCodec, videoStream);
+    const externalHDRRouteKey = nativeHDRVideoCodec === null ? null : getExternalHDRAuthorizationRouteKey(nativeHDRVideoCodec, colorMetadata);
     const nativeHDRTransfer = colorMetadata.transfer === 'sdr' ?
         null :
         colorMetadata.transfer;
-    const nativeHDRCapability = capabilities.nativeHDRHEVC;
     if (
         eligibilityOptions.allowNativeHDR === true
         && externalHDRRouteKey !== null
         && (eligibilityOptions.authorizedExternalHDRRouteKeys ?? []).includes(externalHDRRouteKey)
         && nativeHDRTransfer !== null
         && hasExplicitNativeHDRChromaticity(videoStream)
-        && supportsNativeMain10HEVC(nativeHDRCapability, videoCodec, videoStream)
     ) {
         return {
             hdr: true,
