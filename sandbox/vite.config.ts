@@ -41,7 +41,12 @@ function listOutputFolderPlugin(route: string, outputDirectory: string, name: st
     };
 }
 
+// Changes at each start of the dev server, which may serve changed probe code under the same asset key
+const SERVER_START_KEY = Date.now().toString(36);
+
 export default defineConfig({
+    // The capability probe store's build key takes it, so a restarted server never reuses verdicts the old code measured
+    define: { __SANDBOX_SERVER_START_KEY__: JSON.stringify(SERVER_START_KEY) },
     // ffmpeg.wasm starts its worker from a URL relative to its own module, which pre-bundling would move
     optimizeDeps: { exclude: [ '@ffmpeg/ffmpeg' ] },
     plugins: [
