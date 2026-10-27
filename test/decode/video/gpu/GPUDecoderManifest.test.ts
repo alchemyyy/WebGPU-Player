@@ -32,6 +32,7 @@ import {
     type GPUDecoderByteLengthResult,
     GPUDecoderManifestError,
     type GPUDecoderManifestErrorCode,
+    parseGPUDecoderHeader,
     parseGPUDecoderManifest
 } from 'webgpu-player/decode/video/gpu/GPUDecoderManifest';
 import type { GPUDecodeStreamFacts } from 'webgpu-player/decode/video/gpu/GPUDecodeTypes';
@@ -900,6 +901,49 @@ describe('parseGPUDecoderManifest', () => {
             detail: quote(BODY_ENABLE_DIRECTIVE),
             line: bodyFirstLine + 1
         });
+    });
+});
+
+describe('parseGPUDecoderHeader', () => {
+    // The checks of a decoder's body, which a header alone cannot run
+    const BODY_CHECK_CODES: ReadonlySet<GPUDecoderManifestErrorCode> = new Set([ 'body-binding', 'body-enable', 'entry-point-missing', 'entry-point-stage' ]);
+
+    function getHeaderParseError(header: readonly string[]): GPUDecoderManifestError {
+        try {
+            parseGPUDecoderHeader(header.join('\n'));
+        } catch (error) {
+            if (error instanceof GPUDecoderManifestError) {
+                return error;
+            }
+            throw error;
+        }
+        throw new Error('The header parsed');
+    }
+
+    it('reads a header without its body as the manifest reads it', () => {
+        const { body, bodyFirstLine, ...header } = parseGPUDecoderManifest(createSource(COMPLETE_HEADER));
+
+        expect(parseGPUDecoderHeader(COMPLETE_HEADER.join('\n'))).toEqual(header);
+        expect({ body, bodyFirstLine }).toEqual({ body: BODY, bodyFirstLine: COMPLETE_HEADER.length + 1 });
+    });
+
+    it('reads a whole source\'s header without reading its body', () => {
+        const header = replaceHeaderLine(MINIMAL_HEADER, 'dispatch', `//! dispatch: ${MISSING_ENTRY_POINT}, 1`);
+
+        expect(parseGPUDecoderHeader(createSource(header)).dispatches[0].entryPoint).toBe(MISSING_ENTRY_POINT);
+        expect(getParseError(createSource(header)).code).toBe('entry-point-missing');
+    });
+
+    it.each(REJECTION_CASES.filter(rejection => !BODY_CHECK_CODES.has(rejection[3])))('rejects %s as the manifest does', (
+        _description: string,
+        header: readonly string[],
+        line: number,
+        code: GPUDecoderManifestErrorCode,
+        detail: string
+    ) => {
+        const error = getHeaderParseError(header);
+
+        expect({ code: error.code, detail: error.detail, line: error.line }).toEqual({ code, detail, line });
     });
 });
 

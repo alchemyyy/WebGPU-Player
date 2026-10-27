@@ -133,6 +133,9 @@ export type GPUDecoderManifest = {
     stateByteLength: PassExpression
 };
 
+/** A decoder's `//!` header without its WGSL body, as a host reads it before it has the package, such as from a server's catalog: what eligibility's fit check reads. */
+export type GPUDecoderHeader = Omit<GPUDecoderManifest, 'body' | 'bodyFirstLine'>;
+
 /** Stream facts the planner and the decoder need, from the container or one header parse. */
 export type GPUDecodeStreamFacts = {
     bitDepth: number

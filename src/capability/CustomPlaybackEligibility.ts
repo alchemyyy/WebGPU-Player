@@ -87,9 +87,11 @@ import {
 } from '../decode/video/gpu/GPUDecodeFormats';
 import { findGPUDecoderStreamFitFailure } from '../decode/video/gpu/GPUDecoderStreamFit';
 import { createGPUDecodeStreamFacts } from '../decode/video/gpu/GPUFramePool';
-import type {
-    GPUVideoDecoderOffer,
-    GPUVideoDecoderSelection
+import {
+    isGPUVideoDecoderSummaryFit,
+    type GPUVideoDecoderOffer,
+    type GPUVideoDecoderSelection,
+    type GPUVideoDecoderSummary
 } from '../decode/video/gpu/GPUVideoDecoderCatalog';
 
 const DIRECT_PLAY_METHOD = 'DIRECTPLAY';
@@ -353,15 +355,9 @@ export type CustomPlaybackEligibilityOptions = {
     runtimeAvailability: CustomPlaybackRuntimeAvailability
 };
 
-/** What a GPU decoder package decodes, as a host knows it without the package or the device: the codec families and the output formats. */
-export type GPUVideoDecoderSummary = Readonly<{
-    codecs: readonly string[]
-    outputFormats: readonly string[]
-}>;
-
 /** The options of `hasEligibleCustomVideoRoute`: the eligibility's, without runtime availability, and with summaries of the GPU decoders in place of offers. */
 export type CustomVideoRouteOptions = Omit<CustomPlaybackEligibilityOptions, 'gpuVideoDecoders' | 'runtimeAvailability'> & {
-    /** The GPU decoder packages a playback could use, which the frame-pool route takes by codec and output format alone, without their headers' conditions or the device's buffer limit */
+    /** The GPU decoder packages a playback could use, which the frame-pool route takes by the offers' fit check where a summary carries its header and the device's limit */
     gpuVideoDecoderSummaries?: readonly GPUVideoDecoderSummary[]
 };
 
@@ -1467,7 +1463,7 @@ function getGPUDecodeOutputFormat(
  * and the device's limit on its frame pool, its state and scratch buffers, and its packet ring, so an offer the session would refuse is skipped.
  * A 4:0:0 stream, by its pixel format, goes only to a decoder whose header declares `monochrome`.
  * Its HDR needs the host's tone mapping; no presentation authorization gates it, and whether a package was verified is the host's choice.
- * Without a fitting offer, a summary that decodes the codec into the format selects the route without a decoder, which only negotiation passes.
+ * Without a fitting offer, a summary that takes the stream selects the route without a decoder, which only negotiation passes.
  */
 function selectGPUVideoOutput(
     eligibilityOptions: CustomPlaybackEligibilityOptions,
@@ -1512,7 +1508,7 @@ function selectGPUVideoOutput(
         return { ...route, gpuVideoDecoder: { codec: videoCodec, decoderId: offer.decoderId, package: offer.package } };
     }
     const summarized = gpuVideoDecoderSummaries.some((summary: GPUVideoDecoderSummary): boolean => (
-        summary.codecs.includes(videoCodec) && summary.outputFormats.includes(format)
+        isGPUVideoDecoderSummaryFit(summary, videoCodec, format, route.maximumCodedWidth, route.maximumCodedHeight, monochrome)
     ));
     return summarized ? route : null;
 }
@@ -2075,7 +2071,8 @@ export function getPlaybackAudioCodec(options: unknown): CustomAudioCodec | null
 /**
  * Returns whether a media source's presented video stream has an eligible route, judged by the same video selection playback runs.
  * Audio, transport, and runtime availability are ignored.
- * GPU decoders are judged by summaries of the packages a playback could use, since offers exist only once a playback has its packages and its device.
+ * GPU decoders are judged by summaries of the packages a playback could use, since offers exist only once a playback has its packages and its device;
+ * a summary with its package's header and the device's buffer limit runs the offers' fit check on the stream.
  * Negotiation uses it to advertise one exact item whose range label no generic route covers.
  */
 export function hasEligibleCustomVideoRoute(
