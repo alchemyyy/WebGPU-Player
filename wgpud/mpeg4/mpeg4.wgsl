@@ -1,7 +1,7 @@
 //! id: mpeg4
 //! name: MPEG-4 Part 2, H.263, and MS-MPEG4
 //! decoder: video
-//! accepts: codec in [mpeg4, h263, h263p, msmpeg4v3, msmpeg4v2, msmpeg4v1], picture.width <= 4096, picture.height <= 4096, picture.width * picture.height <= 9437184, stream.bitDepth == 8
+//! accepts: codec in [mpeg4, h263, msmpeg4v3, msmpeg4v2, msmpeg4v1], picture.width <= 4096, picture.height <= 4096, picture.width * picture.height <= 9437184, stream.bitDepth == 8
 //! output: I420
 //! parser: 2
 //! references: 2
