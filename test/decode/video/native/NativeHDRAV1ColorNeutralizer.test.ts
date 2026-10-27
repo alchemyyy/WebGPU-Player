@@ -157,4 +157,22 @@ describe('NativeHDRAV1TemporalUnitNeutralizer', () => {
         expect(() => new NativeHDRAV1TemporalUnitNeutralizer(transfer, true).neutralize(unit, parseAV1OBUs(unit)))
             .toThrow('does not match the expected limited-range BT.2020 HDR route');
     });
+
+    it.each([
+        [ 'full-range header without a color description, as Profile 10.0 signals', FULL_RANGE_SEQUENCE_HEADER_OBU ],
+        [ 'BT.709 SDR header, as Profile 10.2 signals', '0a0e0000002d4cffb3ccaf9501010104' ],
+        [ 'HLG header, as Profile 10.4 signals', HLG_SEQUENCE_HEADER_OBU ]
+    ])('neutralizes a %s on the Dolby Vision route, whose RPU describes the picture', (_name, sequenceHeaderHex) => {
+        const unit = createKeyUnit(sequenceHeaderHex);
+
+        const neutralized = new NativeHDRAV1TemporalUnitNeutralizer('dolby-vision', false).neutralize(unit, parseAV1OBUs(unit));
+
+        expect(findAV1SequenceHeader(neutralized.data)?.colorConfig).toMatchObject({
+            colorDescriptionPresent: true,
+            colorPrimaries: 1,
+            fullRange: false,
+            matrixCoefficients: 1,
+            transferCharacteristics: 1
+        });
+    });
 });

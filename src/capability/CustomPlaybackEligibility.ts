@@ -103,6 +103,8 @@ import {
 } from '../decode/video/gpu/GPUVideoDecoderCatalog';
 
 const DIRECT_PLAY_METHOD = 'DIRECTPLAY';
+// The AV1 external key whose vector proves the AV1 decoder's frames import exactly, which the external Dolby Vision route of AV1 also relies on
+const NATIVE_AV1_DOLBY_VISION_DECODE_ROUTE_KEY: ExternalHDRAuthorizationRouteKey = 'external-av1-main10-bt709-limited:pq-v1';
 const VIDEO_CODEC_ALIASES: Readonly<Record<string, CustomVideoCodec>> = {
     AVC: 'h264',
     AVC1: 'h264',
@@ -341,6 +343,8 @@ export type CustomPlaybackEligibilityOptions = {
     /** A GPU decoder may present HDR: the host tone-maps it, and the decoder's vector stands in for a presentation authorization. */
     allowFramePoolHDR?: boolean
     allowNativeDolbyVision?: boolean
+    /** External Profile 8 reconstruction is authorized, which AV1 Profile 10 over a compatible or SDR base takes. */
+    allowNativeDolbyVisionProfile8?: boolean
     allowNativeDolbyVisionProfile7HDR10Base?: boolean
     allowNativeDolbyVisionProfile8HDR10Base?: boolean
     allowNativeDolbyVisionProfile8HLGBase?: boolean
@@ -1515,8 +1519,49 @@ function selectGPUDolbyVisionVideoOutput(
 }
 
 /**
+ * Selects AV1 Profile 10's RPU reconstruction from the hardware decoder's frames, neutralized to limited BT.709, through the external route of the profile it reconstructs as.
+ * The AV1 PQ external key proves the AV1 decoder's frames import exactly; the Profile 5 or 8 key proves the reconstruction.
+ */
+function selectNativeAV1DolbyVisionOutput(
+    descriptor: DolbyVisionPresentationDescriptor,
+    capabilities: CustomDecodeCapabilities,
+    eligibilityOptions: CustomPlaybackEligibilityOptions,
+    videoCodec: CustomVideoCodec,
+    videoStream: MediaStream
+): VideoOutputSelection | null {
+    const profile = descriptor.reconstructionProfile;
+    if (profile !== 5 && profile !== 8) {
+        return null;
+    }
+    const reconstructionAuthorized = profile === 5 ?
+        eligibilityOptions.allowNativeDolbyVision === true :
+        eligibilityOptions.allowNativeDolbyVisionProfile8 === true;
+    if (
+        !reconstructionAuthorized
+        || descriptor.baseLayerBitDepth !== 10
+        || getNativeHDRVideoCodec(capabilities, videoCodec, videoStream) !== 'av1'
+        || !(eligibilityOptions.authorizedExternalHDRRouteKeys ?? []).includes(NATIVE_AV1_DOLBY_VISION_DECODE_ROUTE_KEY)
+    ) {
+        return null;
+    }
+    return {
+        dolbyVisionProfile: profile,
+        hdr: true,
+        maximumCodedHeight: Number(videoStream.Height),
+        maximumCodedWidth: Number(videoStream.Width),
+        nativeVideoDecoderRequired: true,
+        neutralizeHDRColorMetadata: false,
+        rawVideoFrameFormat: null,
+        status: 'selected',
+        videoDecoderBackend: 'native',
+        videoOutputMode: 'video-frame'
+    };
+}
+
+/**
  * Selects a Dolby Vision route in this order:
- * - native Profile 5;
+ * - native Profile 5 of HEVC;
+ * - native Profile 5 or 8 reconstruction of AV1;
  * - the native compatible base of Profile 7 or 8;
  * - RPU reconstruction from raw planes;
  * - the base layer a compatibility ID declares, which the ordinary routes present, a GPU decoder's RPU reconstruction before the base's own GPU route;
@@ -1556,6 +1601,11 @@ function selectDolbyVisionVideoOutput(
             videoDecoderBackend: 'native',
             videoOutputMode: 'video-frame'
         };
+    }
+
+    const nativeAV1Selection = selectNativeAV1DolbyVisionOutput(descriptor, capabilities, eligibilityOptions, videoCodec, videoStream);
+    if (nativeAV1Selection !== null) {
+        return nativeAV1Selection;
     }
 
     const nativeBaseSelection = selectNativeDolbyVisionBaseOutput(

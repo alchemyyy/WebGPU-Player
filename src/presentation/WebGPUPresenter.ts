@@ -105,8 +105,11 @@ import {
     type DolbyVisionAuthorizationTelemetry
 } from '../validation/DolbyVisionPresentationAuthorization';
 import {
+    createExternalDolbyVisionAuthorizationFrame,
     ExternalDolbyVisionPresentationAuthorizationRegistry,
-    type ExternalDolbyVisionAuthorizationTelemetry
+    ExternalDolbyVisionPresentationAuthorizationRunner,
+    type ExternalDolbyVisionAuthorizationTelemetry,
+    type ExternalDolbyVisionProfile
 } from '../validation/ExternalDolbyVisionPresentationAuthorization';
 import {
     ExternalHDRPresentationAuthorizationRegistry,
@@ -345,7 +348,8 @@ export type RawDolbyVisionColorPipelineConfiguration = {
 
 export type ExternalDolbyVisionColorPipelineConfiguration = {
     inputMode: 'external-dolby-vision'
-    profile: 5
+    /** The single-layer reconstruction: Profile 5, or Profile 8 over a compatible base */
+    profile: ExternalDolbyVisionProfile
     settings: HDRToSDRRenderSettings
 };
 
@@ -1295,6 +1299,10 @@ export default class WebGPUPresenter {
     private readonly fallbackHandler: PresentationFallbackHandler;
     private readonly decodedPresentationRefreshHandler: DecodedPresentationRefreshHandler;
     private readonly externalDolbyVisionAuthorization = new ExternalDolbyVisionPresentationAuthorizationRegistry();
+    // External Profile 8 reconstruction, which only AV1 Profile 10 takes, authorizes on first use
+    private readonly externalDolbyVisionProfile8Authorization = new ExternalDolbyVisionPresentationAuthorizationRegistry(
+        new ExternalDolbyVisionPresentationAuthorizationRunner(createExternalDolbyVisionAuthorizationFrame, 8)
+    );
     private readonly externalHDRAuthorization = new ExternalHDRPresentationAuthorizationRegistry();
     // Every raw Dolby Vision route authorizes each raw frame format on first use, apart from the prewarmed I420P10 single-layer and Profile 7 routes
     private readonly rawDolbyVisionAuthorizations = new Map<
@@ -1735,8 +1743,32 @@ export default class WebGPUPresenter {
     /** Returns only settled external-texture Profile 5 authorization. */
     isExternalDolbyVisionPresentationAuthorized(): boolean {
         return this.settings.mode === 'hdr-to-sdr' ?
-            this.getActiveExternalDolbyVisionAuthorizationFailure() === null :
+            this.getExternalDolbyVisionAuthorizationFailure(5) === null :
             this.externalDolbyVisionAuthorization.getTelemetry(this.device, this.canvasFormat).status === 'authorized';
+    }
+
+    /** Returns only settled external-texture Profile 8 authorization. */
+    isExternalDolbyVisionProfile8PresentationAuthorized(): boolean {
+        return this.externalDolbyVisionProfile8Authorization.getTelemetry(this.device, this.canvasFormat).status === 'authorized';
+    }
+
+    /** Starts the external Profile 8 probe on first use and waits a tightly bounded run of it; a settled probe resolves at once. */
+    async waitForExternalDolbyVisionProfile8Authorization(): Promise<void> {
+        await waitForRawHDRNegotiationProbe((async (): Promise<void> => {
+            if (!await isHDRToneMappingEnabled() || !await this.ensureDevice()) {
+                return;
+            }
+            const device = this.device;
+            const targetFormat = this.canvasFormat;
+            if (device && targetFormat) {
+                await this.externalDolbyVisionProfile8Authorization.authorize(device, targetFormat);
+            }
+        })());
+    }
+
+    /** Returns bounded external-texture Profile 8 authorization state. */
+    getExternalDolbyVisionProfile8AuthorizationTelemetry(): ExternalDolbyVisionAuthorizationTelemetry {
+        return this.externalDolbyVisionProfile8Authorization.getTelemetry(this.device, this.canvasFormat);
     }
 
     /**
@@ -2428,7 +2460,7 @@ export default class WebGPUPresenter {
         if (!await this.awaitHDRConfigurationPrerequisites(pendingConfiguration)) {
             return null;
         }
-        const authorizationFailure = this.getExternalDolbyVisionAuthorizationFailure();
+        const authorizationFailure = this.getExternalDolbyVisionAuthorizationFailure(configuration.profile);
         if (authorizationFailure !== null) {
             this.failColorConfiguration(pendingConfiguration, 'hdr-authorization-unavailable', authorizationFailure);
             return null;
@@ -2887,19 +2919,27 @@ export default class WebGPUPresenter {
         return this.getRawDolbyVisionAuthorizationFailure(this.getRawDolbyVisionAuthorizations(profile, format).base, format);
     }
 
-    private getExternalDolbyVisionAuthorizationFailure(): string | null {
+    private getExternalDolbyVisionAuthorizationRegistry(profile: ExternalDolbyVisionProfile): ExternalDolbyVisionPresentationAuthorizationRegistry {
+        return profile === 5 ? this.externalDolbyVisionAuthorization : this.externalDolbyVisionProfile8Authorization;
+    }
+
+    private getExternalDolbyVisionAuthorizationFailure(profile: ExternalDolbyVisionProfile): string | null {
         const device = this.device;
         const targetFormat = this.canvasFormat;
         if (!device || !targetFormat) {
             return 'device: unavailable';
         }
-        return this.externalDolbyVisionAuthorization.getAuthorizationFailure(device, targetFormat);
+        return this.getExternalDolbyVisionAuthorizationRegistry(profile).getAuthorizationFailure(device, targetFormat);
     }
 
-    /** Returns why the active external Profile 5 route is not authorized, including a mode that tone maps nothing. */
+    /** Returns why the active external Dolby Vision route is not authorized for its profile, including a mode that tone maps nothing. */
     private getActiveExternalDolbyVisionAuthorizationFailure(): string | null {
+        const profile = this.activeDolbyVisionProfile;
+        if (profile !== 5 && profile !== 8) {
+            return `profile: ${profile}, expected 5 or 8`;
+        }
         return this.settings.mode === 'hdr-to-sdr' ?
-            this.getExternalDolbyVisionAuthorizationFailure() :
+            this.getExternalDolbyVisionAuthorizationFailure(profile) :
             `mode: ${this.settings.mode}, expected hdr-to-sdr`;
     }
 
@@ -3521,7 +3561,7 @@ export default class WebGPUPresenter {
             case 'external-dolby-vision': {
                 const executor = this.executor;
                 const profile = this.activeDolbyVisionProfile;
-                const frameFailure = (profile === 5 ? null : `profile: ${profile}, expected 5`)
+                const frameFailure = (profile === 5 || profile === 8 ? null : `profile: ${profile}, expected 5 or 8`)
                     ?? getNeutralBT709FrameColorFailure(frame)
                     ?? prefixFailure('authorization', this.getActiveExternalDolbyVisionAuthorizationFailure());
                 if (frameFailure !== null || !executor) {
@@ -4681,14 +4721,15 @@ export default class WebGPUPresenter {
         if (this.settings.mode !== 'hdr-to-sdr') {
             return `mode: ${this.settings.mode}, expected hdr-to-sdr`;
         }
-        if (this.activeInputMode === 'external-dolby-vision') {
-            await this.externalDolbyVisionAuthorization.authorize(device, targetFormat);
+        const activeProfile = this.activeDolbyVisionProfile;
+        if (this.activeInputMode === 'external-dolby-vision' && (activeProfile === 5 || activeProfile === 8)) {
+            const registry = this.getExternalDolbyVisionAuthorizationRegistry(activeProfile);
+            await registry.authorize(device, targetFormat);
             return this.isReauthorizationCurrent(generation, device) ?
-                this.externalDolbyVisionAuthorization.getAuthorizationFailure(device, targetFormat) :
+                registry.getAuthorizationFailure(device, targetFormat) :
                 'superseded';
         }
         const rawFrameFormat = this.activeRawFrameFormat;
-        const activeProfile = this.activeDolbyVisionProfile;
         if (!rawFrameFormat || !isRawDolbyVisionVideoFrameFormat(rawFrameFormat) || activeProfile === null) {
             return 'route: incomplete';
         }
