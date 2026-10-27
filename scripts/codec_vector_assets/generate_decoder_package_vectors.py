@@ -2,7 +2,9 @@
 """Generate the self-test vectors of every decoder project in wgpud/.
 
 A project's decoder.json lists its vectors under "vectors": each one's output format, its source media as a folder key of
-tools/constants.json and a path in that folder, and optionally the FFmpeg decoder options of the reference decode ("decoderOptions").
+tools/constants.json and a path in that folder, optionally the FFmpeg decoder options of the reference decode ("decoderOptions"),
+and optionally the layout of the codec private data the engine passes the decoder ("codecPrivate"): the stream's extradata by default,
+or with "bitmap-info-header" a 40-byte BITMAPINFOHEADER of the stream's size and FourCC before it.
 Named projects are generated alone; with none named, every project is. For each project that lists any, this writes <project>/<project>.vectors,
 the vectors section its package build packs. A vector holds its source's packets as FFprobe demuxes them, its frame range,
 and the SHA-256 of FFmpeg's decode of every frame in presentation order, each plane's visible samples packed row after row
@@ -42,6 +44,19 @@ KEYFRAME_FLAG: Final = 1
 FFPROBE_KEYFRAME_FLAG: Final = "K"
 MICROSECONDS_PER_SECOND: Final = 1_000_000
 FIRST_CHECKED_FRAME: Final = 0
+# The codec private data layouts a vector may declare: the stream's extradata, or a BITMAPINFOHEADER of the stream's size and FourCC before it,
+# as the engine passes the MPEG-4 Part 2, H.263, and MS-MPEG4 codecs
+CODEC_PRIVATE_EXTRADATA: Final = "extradata"
+CODEC_PRIVATE_BITMAP_INFO_HEADER: Final = "bitmap-info-header"
+CODEC_PRIVATE_LAYOUTS: Final = (CODEC_PRIVATE_EXTRADATA, CODEC_PRIVATE_BITMAP_INFO_HEADER)
+# biSize, biWidth, biHeight, biPlanes, biBitCount, biCompression, then biSizeImage, the resolutions, and the colour counts, all zero
+BITMAP_INFO_HEADER: Final = struct.Struct("<IiiHH4s5I")
+BITMAP_INFO_HEADER_PLANES: Final = 1
+BITMAP_INFO_HEADER_BIT_COUNT: Final = 24
+# The FourCC of a stream whose container gives none, by FFmpeg's codec name: what the engine passes for an MPEG-4 Part 2 track of
+# Matroska or ISO base media, an ISO base media H.263 track, and a Matroska MS-MPEG4 V3 track, and FFmpeg's first AVI tag of the others
+DEFAULT_FOURCCS: Final = {"mpeg4": b"mp4v", "h263": b"s263", "msmpeg4v3": b"MP43", "msmpeg4v2": b"MP42", "msmpeg4v1": b"MPG4"}
+FOURCC_BYTE_LENGTH: Final = 4
 
 
 class VectorGenerationError(RuntimeError):
@@ -84,8 +99,10 @@ def get_output_format(name: str) -> OutputFormat:
 
 @dataclass(frozen=True)
 class VectorSource:
-    """One vector: the media whose packets and decode it holds, the format FFmpeg decodes that media to, and FFmpeg's decoder options."""
+    """One vector: the media whose packets and decode it holds, the format FFmpeg decodes that media to, FFmpeg's decoder options, and its codec private data's layout."""
 
+    # One of CODEC_PRIVATE_LAYOUTS
+    codec_private_layout: str
     # FFmpeg input options that pick the reference decode a GPU decoder matches, such as a codec's bit-exact inverse transform
     decoder_options: tuple[str, ...]
     output_format: OutputFormat
@@ -125,15 +142,20 @@ class Vector:
 
 
 def read_source(project_name: str, declaration: dict[str, Any]) -> VectorSource:
-    """Reads one vector declaration: its format, its media as a layout folder key and a path in that folder, and optional FFmpeg decoder options."""
+    """Reads one vector declaration: its format, its media as a layout folder key and a path in that folder, optional FFmpeg decoder options,
+    and the optional layout of its codec private data."""
 
     label = f"{project_name}: vector {declaration}"
     decoder_options = declaration.get("decoderOptions", [])
     if not isinstance(decoder_options, list) or not all(isinstance(option, str) for option in decoder_options):
         raise VectorGenerationError(f"{label}: decoderOptions must be a list of FFmpeg option strings")
+    codec_private_layout = declaration.get("codecPrivate", CODEC_PRIVATE_EXTRADATA)
+    if codec_private_layout not in CODEC_PRIVATE_LAYOUTS:
+        raise VectorGenerationError(f"{label}: codecPrivate must be one of {', '.join(CODEC_PRIVATE_LAYOUTS)}")
     try:
         root = LAYOUT[declaration["root"]]
         return VectorSource(
+            codec_private_layout=codec_private_layout,
             decoder_options=tuple(decoder_options),
             output_format=get_output_format(declaration["format"]),
             path=ENGINE_ROOT / root / declaration["path"],
@@ -270,6 +292,40 @@ def decode_source(path: Path, output_format: OutputFormat, decoder_options: Sequ
     )
 
 
+def get_stream_fourcc(stream: dict[str, Any], label: str) -> bytes:
+    """Returns a stream's FourCC: the container's tag as FFprobe reads it, else the one the engine passes for its codec."""
+
+    tag = int(stream.get("codec_tag", "0x0"), 16)
+    if tag != 0:
+        return tag.to_bytes(FOURCC_BYTE_LENGTH, "little")
+    codec_name = stream.get("codec_name")
+    if codec_name not in DEFAULT_FOURCCS:
+        raise VectorGenerationError(f"{label}: no FourCC for a {codec_name} stream without a tag")
+    return DEFAULT_FOURCCS[codec_name]
+
+
+def get_codec_private(stream: dict[str, Any], layout: str, label: str) -> bytes:
+    """Returns a stream's codec private data in a layout: its extradata, or a BITMAPINFOHEADER of its size and FourCC, then its extradata."""
+
+    extradata = decode_base64(stream.get("extradata", ""))
+    if layout == CODEC_PRIVATE_EXTRADATA:
+        return extradata
+    header = BITMAP_INFO_HEADER.pack(
+        BITMAP_INFO_HEADER.size,
+        int(stream["width"]),
+        int(stream["height"]),
+        BITMAP_INFO_HEADER_PLANES,
+        BITMAP_INFO_HEADER_BIT_COUNT,
+        get_stream_fourcc(stream, label),
+        0,
+        0,
+        0,
+        0,
+        0,
+    )
+    return header + extradata
+
+
 def read_vector(source: VectorSource) -> Vector:
     """Demuxes a source into a vector and hashes FFmpeg's decode of all of its frames."""
 
@@ -295,7 +351,7 @@ def read_vector(source: VectorSource) -> Vector:
     if not decoded or len(decoded) % frame_byte_length != 0:
         raise VectorGenerationError(f"{label}: {len(decoded)} decoded bytes are not whole {frame_byte_length}-byte frames")
     return Vector(
-        codec_private=decode_base64(stream.get("extradata", "")),
+        codec_private=get_codec_private(stream, source.codec_private_layout, label),
         frame_count=len(decoded) // frame_byte_length,
         height=height,
         output_format=source.output_format,
