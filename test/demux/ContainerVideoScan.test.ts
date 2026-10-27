@@ -1,11 +1,11 @@
 // @vitest-environment node
 
-import { ALL_FORMATS, BufferSource, Input, type InputFormat } from 'mediabunny';
+import { ALL_FORMATS, BufferSource, Input } from 'mediabunny';
 import { describe, expect, it } from 'vitest';
 
 import type { VideoScan } from 'webgpu-player/decode/video/VideoFields';
 import { MATROSKA_AV1_CODEC_ID } from 'webgpu-player/demux/av1/AV1CodecConfigurationRecord';
-import { hasSwappedMatroskaFieldOrders, readContainerVideoScan, withMatroskaVideoFieldOrder } from 'webgpu-player/demux/ContainerVideoScan';
+import { readContainerVideoScan } from 'webgpu-player/demux/ContainerVideoScan';
 
 import { createBox, createVideoTrackISOBaseMedia, createVisualSampleEntry } from '../helpers/isoBaseMediaBoxes';
 import { createASCIIElement, createElement, createUnsignedIntegerElement, createVideoTrackMatroska } from '../helpers/matroskaElements';
@@ -119,8 +119,8 @@ function createISOBaseMedia(fieldBoxPayload: Uint8Array | null): Uint8Array {
     });
 }
 
-async function readScan(file: Uint8Array, formats: InputFormat[]): Promise<VideoScan> {
-    const input = new Input({ formats, source: new BufferSource(file) });
+async function readScan(file: Uint8Array): Promise<VideoScan> {
+    const input = new Input({ formats: ALL_FORMATS, source: new BufferSource(file) });
     try {
         const track = await input.getPrimaryVideoTrack();
         if (!track) {
@@ -134,13 +134,13 @@ async function readScan(file: Uint8Array, formats: InputFormat[]): Promise<Video
 
 describe('readContainerVideoScan', () => {
     it.each(MATROSKA_CASES)('reads a Matroska track that is $name', async (containerCase: ContainerCase) => {
-        expect(await readScan(createMatroska(createFieldElements(containerCase.values)), withMatroskaVideoFieldOrder(ALL_FORMATS))).toBe(containerCase.expected);
+        expect(await readScan(createMatroska(createFieldElements(containerCase.values)))).toBe(containerCase.expected);
     });
 
     it('reads an unsigned integer element of more bytes than its value needs', async () => {
         const elements = [ createUnsignedIntegerElement(FLAG_INTERLACED_ID, FLAG_INTERLACED_INTERLACED), createElement(FIELD_ORDER_ID, PADDED_BOTTOM_FIRST_PAYLOAD) ];
 
-        expect(await readScan(createMatroska(elements), withMatroskaVideoFieldOrder(ALL_FORMATS))).toBe('bottom-first');
+        expect(await readScan(createMatroska(elements))).toBe('bottom-first');
     });
 
     it.each([
@@ -154,7 +154,7 @@ describe('readContainerVideoScan', () => {
             [ createASCIIElement(MUXING_APPLICATION_ID, SWAPPED_FIELD_ORDER_MUXER) ]
         );
 
-        expect(await readScan(file, withMatroskaVideoFieldOrder(ALL_FORMATS))).toBe(expected);
+        expect(await readScan(file)).toBe(expected);
     });
 
     it('reads a MuxingApp up to its terminator', async () => {
@@ -163,7 +163,7 @@ describe('readContainerVideoScan', () => {
             [ createElement(MUXING_APPLICATION_ID, TERMINATED_SWAPPED_FIELD_ORDER_MUXER_PAYLOAD) ]
         );
 
-        expect(await readScan(file, withMatroskaVideoFieldOrder(ALL_FORMATS))).toBe('top-first');
+        expect(await readScan(file)).toBe('top-first');
     });
 
     it('keeps FieldOrder 9 and 14 for another muxer', async () => {
@@ -172,7 +172,7 @@ describe('readContainerVideoScan', () => {
             [ createASCIIElement(MUXING_APPLICATION_ID, OTHER_MUXER) ]
         );
 
-        expect(await readScan(file, withMatroskaVideoFieldOrder(ALL_FORMATS))).toBe('bottom-first');
+        expect(await readScan(file)).toBe('bottom-first');
     });
 
     it.each([
@@ -188,30 +188,20 @@ describe('readContainerVideoScan', () => {
         { muxingApplication: MINOR_ONLY_FIELD_ORDER_MUXER, swapped: false },
         { muxingApplication: OTHER_MUXER, swapped: false },
         { muxingApplication: null, swapped: false }
-    ])('decides that $muxingApplication swapped FieldOrder 9 and 14: $swapped', ({ muxingApplication, swapped }) => {
-        expect(hasSwappedMatroskaFieldOrders(muxingApplication)).toBe(swapped);
-    });
+    ])('reads FieldOrder 9 that $muxingApplication wrote as swapped: $swapped', async ({ muxingApplication, swapped }) => {
+        const file = createMatroska(
+            createFieldElements([ FLAG_INTERLACED_INTERLACED, FIELD_ORDER_TOP_CODED_BOTTOM_SHOWN_FIRST ]),
+            muxingApplication === null ? [] : [ createASCIIElement(MUXING_APPLICATION_ID, muxingApplication) ]
+        );
 
-    it('knows no Matroska scan from formats that do not record it', async () => {
-        const file = createMatroska(createFieldElements([ FLAG_INTERLACED_INTERLACED, FIELD_ORDER_TOP_FIRST ]));
-
-        expect(await readScan(file, ALL_FORMATS)).toBe('unknown');
-    });
-
-    it('leaves the other formats in their places', () => {
-        const formats = withMatroskaVideoFieldOrder(ALL_FORMATS);
-
-        expect(formats).toHaveLength(ALL_FORMATS.length);
-        ALL_FORMATS.forEach((format: InputFormat, index: number): void => {
-            expect(Object.getPrototypeOf(formats[index]) === format || formats[index] === format).toBe(true);
-        });
+        expect(await readScan(file)).toBe(swapped ? 'top-first' : 'bottom-first');
     });
 
     it.each(FIELD_BOX_CASES)('reads an ISO base media sample entry\'s fiel box of $name', async (containerCase: ContainerCase) => {
-        expect(await readScan(createISOBaseMedia(Uint8Array.from(containerCase.values)), ALL_FORMATS)).toBe(containerCase.expected);
+        expect(await readScan(createISOBaseMedia(Uint8Array.from(containerCase.values)))).toBe(containerCase.expected);
     });
 
     it('knows no scan of an ISO base media sample entry without a fiel box', async () => {
-        expect(await readScan(createISOBaseMedia(null), ALL_FORMATS)).toBe('unknown');
+        expect(await readScan(createISOBaseMedia(null))).toBe('unknown');
     });
 });
