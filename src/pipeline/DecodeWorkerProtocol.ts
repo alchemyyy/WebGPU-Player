@@ -410,6 +410,8 @@ export type DecodeWorkerGPUVideoParser = Readonly<{
 export type DecodeWorkerPacketResponse = {
     data: ArrayBuffer
     durationMicroseconds: Microseconds
+    /** On a Dolby Vision route, the RPUs of the packet, parsed in decode order; on a packet's first picture, and omitted for a packet without any */
+    encodedDolbyVisionMetadata?: TransferableDolbyVisionEncodedFrameMetadata
     /**
      * The picture's fields: its parser's report, else its container's field order; omitted when neither names them.
      * A decoder without a parser reports its own in its status, which replaces these.
@@ -1092,7 +1094,7 @@ function hasValidVideoOutputFormat(value: Record<string, unknown>): boolean {
 
 /**
  * The frame-pool route, and it alone, takes the GPU decoder backend and names the codec family its decoder takes.
- * It presents planes without Dolby Vision reconstruction or native color handling.
+ * It presents planes without native color handling, and reconstructs Dolby Vision only over an HEVC or AV1 BL, the codecs that carry RPUs.
  */
 function hasValidFramePoolRoute(value: Record<string, unknown>): boolean {
     const framePool = value.videoOutputMode === 'frame-pool';
@@ -1106,7 +1108,7 @@ function hasValidFramePoolRoute(value: Record<string, unknown>): boolean {
     return typeof value.gpuVideoCodec === 'string'
         && value.gpuVideoCodec.length > 0
         && (parser === undefined || (isRecord(parser) && isDecoderPackageVersion(parser.packageVersion) && isGPUDecoderParserModule(parser.parser)))
-        && value.dolbyVisionProfile === null
+        && (value.dolbyVisionProfile === null || value.gpuVideoCodec === 'hevc' || value.gpuVideoCodec === 'av1')
         && value.neutralizeHDRColorMetadata === false
         && value.nativeHDRTransfer === null;
 }
@@ -1298,6 +1300,7 @@ function isDecodeWorkerPacketResponse(value: Record<string, unknown>): boolean {
             && Number(value.durationMicroseconds) >= 0
             && typeof value.keyframe === 'boolean'
             && value.HDR10PlusMetadata === undefined
+            && value.encodedDolbyVisionMetadata === undefined
             && (value.videoEpoch === undefined || isVideoEpoch(value.videoEpoch, true));
     }
     return value.data instanceof ArrayBuffer
@@ -1310,6 +1313,7 @@ function isDecodeWorkerPacketResponse(value: Record<string, unknown>): boolean {
         && typeof value.keyframe === 'boolean'
         && (value.format === undefined || (typeof value.format === 'string' && isGPUDecoderOutputFormat(value.format)))
         && hasValidOptionalHDR10PlusMetadata(value)
+        && hasValidOptionalDolbyVisionMetadata(value)
         && (value.maximumPictureSize === undefined || isGPUDecoderPictureSize(value.maximumPictureSize))
         && hasValidOptionalOutputEvents(value)
         && (value.repeatCounts === undefined || isGPUDecoderRepeatCounts(value.repeatCounts))

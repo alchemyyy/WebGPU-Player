@@ -1,5 +1,6 @@
 // The contracts of the GPU decode route: a user WGSL compute decoder's manifest, its frame pool, its failures, and its recoveries.
 // The engine book's decoder packages chapter describes the design they implement.
+import type { TransferableDolbyVisionEncodedFrameMetadata } from '../../../demux/dolby-vision/DolbyVisionEncodedMetadataProtocol';
 import type { PassExpression } from '../../../presentation/passes/PassTypes';
 import type { VideoFrameFields } from '../VideoFields';
 import type { GPUDecoderOutputFormat } from './GPUDecodeFormats';
@@ -179,6 +180,11 @@ export function isGPUDecoderRepeatCounts(value: unknown): value is readonly numb
 export type GPUDecodePacket = {
     data: ArrayBuffer
     durationMicroseconds: number
+    /**
+     * The Dolby Vision RPUs of the picture's packet, which its frame carries to presentation, null for none; a repeat of the last good frame carries that frame's.
+     * Absent for none, as on a route without Dolby Vision.
+     */
+    encodedDolbyVisionMetadata?: TransferableDolbyVisionEncodedFrameMetadata | null
     /** The frame's fields as the CPU side knows them, the parser's report or else the container's scan; a decoder's own report replaces them. */
     fields: VideoFrameFields | null
     /** A packet whose picture is lost, as after a parser's recoverable failure: it decodes nothing, and its frame repeats the last good frame at its time. */

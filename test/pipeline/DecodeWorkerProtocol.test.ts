@@ -2140,8 +2140,10 @@ describe('DecodeWorkerProtocol', () => {
             expect(isDecodeWorkerRequest({ ...framePoolStartRequest, frameCredits: MAX_GPU_DECODE_PACKET_CREDITS - 1 })).toBe(false);
         });
 
-        it('rejects a start that asks the frame pool for Dolby Vision or native color handling', () => {
-            expect(isDecodeWorkerRequest({ ...framePoolStartRequest, dolbyVisionProfile: 8 })).toBe(false);
+        it('takes Dolby Vision on the frame pool only over an HEVC or AV1 BL, and never native color handling', () => {
+            expect(isDecodeWorkerRequest({ ...framePoolStartRequest, dolbyVisionProfile: 5, gpuVideoCodec: 'hevc' })).toBe(true);
+            expect(isDecodeWorkerRequest({ ...framePoolStartRequest, dolbyVisionProfile: 8, gpuVideoCodec: 'av1' })).toBe(true);
+            expect(isDecodeWorkerRequest({ ...framePoolStartRequest, dolbyVisionProfile: 8, gpuVideoCodec: 'mpeg2video' })).toBe(false);
             expect(isDecodeWorkerRequest({ ...framePoolStartRequest, nativeHDRTransfer: 'pq', neutralizeHDRColorMetadata: true })).toBe(false);
         });
 
@@ -2252,6 +2254,19 @@ describe('DecodeWorkerProtocol', () => {
 
             expect(isDecodeWorkerResponse({ ...packetResponse, HDR10PlusMetadata })).toBe(true);
             expect(isDecodeWorkerResponse({ ...packetResponse, HDR10PlusMetadata: { status: 'valid' } })).toBe(false);
+        });
+
+        it('accepts a packet\'s Dolby Vision RPUs only when well formed, and none on a held packet, which repeats another frame\'s', () => {
+            const encodedDolbyVisionMetadata = {
+                enhancementLayerDisposition: 'absent',
+                hasEnhancementLayerVCL: false,
+                parsedRPUData: [ createPackedRPUData() ],
+                schemaVersion: DOLBY_VISION_ENCODED_METADATA_SCHEMA_VERSION
+            } as const;
+
+            expect(isDecodeWorkerResponse({ ...packetResponse, encodedDolbyVisionMetadata })).toBe(true);
+            expect(isDecodeWorkerResponse({ ...packetResponse, encodedDolbyVisionMetadata: { ...encodedDolbyVisionMetadata, parsedRPUData: [] } })).toBe(false);
+            expect(isDecodeWorkerResponse({ ...packetResponse, data: new ArrayBuffer(0), encodedDolbyVisionMetadata, hold: true })).toBe(false);
         });
 
         it('accepts the track\'s codec private data on ready only within its bound', () => {

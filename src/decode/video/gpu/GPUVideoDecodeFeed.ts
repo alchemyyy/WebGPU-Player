@@ -24,6 +24,7 @@ import type { GPUVideoDecoderSelection } from './GPUVideoDecoderCatalog';
 import type GPUVideoDecodeSession from './GPUVideoDecodeSession';
 import type { GPUDecodedFrame } from './GPUVideoDecodeSession';
 import type { HDR10PlusFrameMetadata } from '../../../demux/hdr/HDR10PlusMetadata';
+import type { TransferableDolbyVisionEncodedFrameMetadata } from '../../../demux/dolby-vision/DolbyVisionEncodedMetadataProtocol';
 import type { VideoChromaFormat } from '../../../demux/VideoChromaFormat';
 
 // A picture index at most half the index range behind a picture is an earlier one
@@ -67,6 +68,8 @@ export type GPUVideoDecodeSessionFactory = (request: GPUVideoDecodeSessionReques
 export type GPUVideoDecodeFeedPacket = Readonly<{
     data: ArrayBuffer
     durationMicroseconds: Microseconds
+    /** On a Dolby Vision route, the RPUs of the picture's packet, on its first picture, or null for none */
+    encodedDolbyVisionMetadata: TransferableDolbyVisionEncodedFrameMetadata | null
     /** The picture's fields as the worker knew them, its parser's or its container's, or null; its decoder's own report replaces them */
     fields: VideoFrameFields | null
     /** The output format the picture decodes into, or null for its session's */
@@ -162,6 +165,8 @@ type FeedGeneration = {
     /** The chroma the track declares, which every frame carries to presentation */
     chromaFormat: VideoChromaFormat | null
     displaySize: GPUVideoDecodeDisplaySize | null
+    /** The generation reconstructs Dolby Vision, so every frame carries its RPUs and its slot's format to presentation */
+    dolbyVision: boolean
     /** The epoch's last frame left the decoder after its end */
     drained: boolean
     failed: boolean
@@ -383,6 +388,7 @@ export default class GPUVideoDecodeFeed {
             callbacks,
             chromaFormat: null,
             displaySize: null,
+            dolbyVision: false,
             drained: false,
             failed: false,
             frameMetadata: new Map<number, HDR10PlusFrameMetadata>(),
@@ -401,15 +407,21 @@ export default class GPUVideoDecodeFeed {
     /**
      * Prepares the generation's session once the worker described the track, reusing the current session when it decodes the same stream.
      * Packets that arrive before the session exists wait for it.
-     * Every frame of the generation carries the display size and the chroma the track declares.
+     * Every frame of the generation carries the display size and the chroma the track declares, and on a Dolby Vision route its RPUs and its slot's format.
      */
-    configure(request: GPUVideoDecodeSessionRequest, displaySize: GPUVideoDecodeDisplaySize, chromaFormat: VideoChromaFormat | null = null): void {
+    configure(
+        request: GPUVideoDecodeSessionRequest,
+        displaySize: GPUVideoDecodeDisplaySize,
+        chromaFormat: VideoChromaFormat | null = null,
+        dolbyVision: boolean = false
+    ): void {
         const generation = this.generation;
         if (!generation || this.destroyed) {
             return;
         }
         generation.chromaFormat = chromaFormat;
         generation.displaySize = displaySize;
+        generation.dolbyVision = dolbyVision;
         const handle = this.handle;
         const sessionRequest = this.sessionRequest;
         if (handle && sessionRequest && handle.session.getFailure() === null && canReuseSession(sessionRequest, request)) {
@@ -749,6 +761,7 @@ export default class GPUVideoDecodeFeed {
         const decodePacket: GPUDecodePacket = {
             data: packet.data,
             durationMicroseconds: packet.durationMicroseconds,
+            encodedDolbyVisionMetadata: packet.encodedDolbyVisionMetadata,
             fields: packet.fields,
             hold: packet.hold,
             keyframe: packet.keyframe,
@@ -846,7 +859,7 @@ export default class GPUVideoDecodeFeed {
         handle.session.waitForDecodeProgress().then(progressed, progressed);
     }
 
-    /** Hands every frame the session made presentable to the frame queue, with its packet's HDR10+ state. */
+    /** Hands every frame the session made presentable to the frame queue, with its packet's HDR10+ state, and on a Dolby Vision route its RPUs and its slot's format. */
     private deliverFrames(handle: GPUVideoDecodeHandle, generation: FeedGeneration): void {
         const chromaFormat = generation.chromaFormat;
         const displaySize = generation.displaySize;
@@ -854,10 +867,14 @@ export default class GPUVideoDecodeFeed {
             const metadata = generation.frameMetadata.get(decodedFrame.timestampMicroseconds);
             generation.frameMetadata.delete(decodedFrame.timestampMicroseconds);
             const visibleRectangle = decodedFrame.frame.visibleRectangle;
+            const dolbyVisionMetadata = decodedFrame.encodedDolbyVisionMetadata;
             const presentationFrame: DecodedFramePoolPresentationFrame = {
                 ...(chromaFormat ? { chromaFormat } : {}),
                 displayHeight: displaySize?.displayHeight ?? visibleRectangle.height,
                 displayWidth: displaySize?.displayWidth ?? visibleRectangle.width,
+                ...(generation.dolbyVision ?
+                    { dolbyVision: { ...(dolbyVisionMetadata ? { encodedMetadata: dolbyVisionMetadata } : {}), format: handle.session.format } } :
+                    {}),
                 durationMicroseconds: requireMicroseconds(decodedFrame.durationMicroseconds, 'GPU decoded frame duration'),
                 ...(decodedFrame.fields ? { fields: decodedFrame.fields } : {}),
                 frame: decodedFrame.frame,

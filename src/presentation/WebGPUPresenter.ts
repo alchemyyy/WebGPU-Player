@@ -47,7 +47,7 @@ import {
     isHDR10PlusFrameMetadata,
     type HDR10PlusFrameMetadata
 } from '../demux/hdr/HDR10PlusMetadata';
-import type { GPUDecoderOutputFormat } from '../decode/video/gpu/GPUDecodeFormats';
+import { getGPUDecoderFormatFacts, isGPUDecoderOutputFormat, type GPUDecoderOutputFormat } from '../decode/video/gpu/GPUDecodeFormats';
 import { getGPUFramePoolByteLimit } from '../decode/video/gpu/GPUFramePool';
 import {
     getScanFrameFields,
@@ -278,6 +278,14 @@ export type DecodedRawPresentationFrame = {
     videoEpoch?: number
 };
 
+/** What a Dolby Vision route's frame pool slot carries besides its planes. */
+export type FramePoolDolbyVisionFrame = {
+    /** The RPUs of the frame's packet, absent when its packet carried none; a repeated frame carries those of the frame it repeats */
+    encodedMetadata?: TransferableDolbyVisionEncodedFrameMetadata
+    /** The output format of the frame's slot, whose bit depth the RPU's BL depth must match */
+    format: GPUDecoderOutputFormat
+};
+
 /** A frame a GPU decoder wrote into a frame pool slot on the presenter's device. */
 export type DecodedFramePoolPresentationFrame = {
     /** The chroma the stream's decoder configuration declares, whose location the signal reads the frame's chroma at */
@@ -286,6 +294,8 @@ export type DecodedFramePoolPresentationFrame = {
     displayHeight: number
     displayWidth: number
     durationMicroseconds: Microseconds
+    /** Set on a Dolby Vision route: the frame's RPUs and its slot's format */
+    dolbyVision?: FramePoolDolbyVisionFrame
     /** The picture's own fields, which its decoder, its parser, or its container reported; absent ones take the stream's scan */
     fields?: VideoFrameFields
     frame: FramePoolFrame
@@ -343,6 +353,17 @@ export type FramePoolColorPipelineConfiguration = {
 };
 
 /**
+ * The GPU decode route's Dolby Vision reconstruction: a GPU decoder's BL frame pool in format, through each frame's RPU.
+ * It renders through the raw route's reconstruction over the frame pool's read, so the raw route's Dolby Vision key of the BL format authorizes it.
+ */
+export type FramePoolDolbyVisionColorPipelineConfiguration = {
+    format: GPUDecoderOutputFormat
+    inputMode: 'frame-pool-dolby-vision'
+    profile: DolbyVisionReconstructionProfile
+    settings: HDRToSDRRenderSettings
+};
+
+/**
  * One file of a presentation preset: its WGSL source, holding one or more passes that each start with a `//!` header, and the parameter values the host stored for it.
  * The file's passes run in file order, and each value applies to every pass of the file that declares its parameter.
  */
@@ -355,6 +376,7 @@ export type PresentationColorPipelineConfiguration = (
     | ExternalDolbyVisionColorPipelineConfiguration
     | ExternalHDRColorPipelineConfiguration
     | FramePoolColorPipelineConfiguration
+    | FramePoolDolbyVisionColorPipelineConfiguration
     | IdentityColorPipelineConfiguration
     | RawDolbyVisionColorPipelineConfiguration
     | RawHDRColorPipelineConfiguration
@@ -552,6 +574,7 @@ function isHDRSourceConfiguration(configuration: BuiltinChainConfiguration): boo
         case 'external-identity':
             return false;
         case 'external-dolby-vision':
+        case 'frame-pool-dolby-vision':
         case 'raw-dolby-vision':
             return true;
         case 'external-hdr':
@@ -607,6 +630,7 @@ function withInterlacedChroma(configuration: BuiltinChainConfiguration, interlac
         case 'external-dolby-vision':
         case 'external-hdr':
         case 'external-identity':
+        case 'frame-pool-dolby-vision':
         case 'raw-dolby-vision':
             return configuration;
     }
@@ -626,6 +650,7 @@ function withStreamChroma(
         case 'external-identity':
             return { ...configuration, chromaLocation, chromaSubsampling };
         case 'frame-pool':
+        case 'frame-pool-dolby-vision':
         case 'raw-dolby-vision':
         case 'raw-yuv':
             return { ...configuration, chromaLocation };
@@ -647,6 +672,7 @@ function getChainBitDepth(configuration: BuiltinChainConfiguration): number | nu
         case 'raw-yuv':
             return configuration.metadata.bitDepth;
         case 'external-dolby-vision':
+        case 'frame-pool-dolby-vision':
         case 'raw-dolby-vision':
             return null;
     }
@@ -1194,6 +1220,30 @@ function getDualLayerDolbyVisionRPUData(
         },
         failure: null
     };
+}
+
+/**
+ * Returns the packed RPU a reconstruction profile's frame writes, with its dual-layer facts for Profiles 4 and 7, or the check that refused it.
+ * The BL bit depth is the frame's own, which the RPU must declare.
+ */
+function getDolbyVisionFrameRPUData(
+    metadata: TransferableDolbyVisionEncodedFrameMetadata | undefined,
+    profile: DolbyVisionReconstructionProfile,
+    baseLayerBitDepth: number,
+    hasDecodedEnhancementFrame: boolean
+): DolbyVisionRPUResult<{ dualLayer: DualLayerDolbyVisionRPUData | null; packedRPUData: ArrayBuffer }> {
+    switch (profile) {
+        case 5:
+        case 8: {
+            const rpu = getSingleLayerDolbyVisionRPUData(metadata, baseLayerBitDepth);
+            return rpu.failure === null ? { data: { dualLayer: null, packedRPUData: rpu.data }, failure: null } : createRPUFailure(rpu.failure);
+        }
+        case 4:
+        case 7: {
+            const rpu = getDualLayerDolbyVisionRPUData(metadata, profile, baseLayerBitDepth, hasDecodedEnhancementFrame);
+            return rpu.failure === null ? { data: { dualLayer: rpu.data, packedRPUData: rpu.data.packedRPUData }, failure: null } : createRPUFailure(rpu.failure);
+        }
+    }
 }
 
 /**
@@ -2241,6 +2291,8 @@ export default class WebGPUPresenter {
                     return this.prepareExternalHDRColorPipeline(configuration, pendingConfiguration);
                 case 'frame-pool':
                     return this.prepareFramePoolColorPipeline(configuration, pendingConfiguration);
+                case 'frame-pool-dolby-vision':
+                    return this.prepareFramePoolDolbyVisionColorPipeline(configuration, pendingConfiguration);
                 case 'raw-dolby-vision':
                     return this.prepareRawDolbyVisionColorPipeline(configuration, pendingConfiguration);
                 case 'raw-yuv':
@@ -2568,6 +2620,71 @@ export default class WebGPUPresenter {
             dolbyVisionFELReconstruction,
             dolbyVisionProfile: configuration.profile,
             inputMode: 'raw-dolby-vision',
+            inputColorMetadata: null,
+            rawFrameFormat: format,
+            settings: cloneRenderSettings(configuration.settings)
+        };
+    }
+
+    /**
+     * Prepares the GPU decode route's Dolby Vision chain: the frame pool's reconstruction signal and the raw route's Dolby Vision color track.
+     * The raw route's base key of the BL format authorizes it, since it is the raw route's reconstruction over the frame pool's read.
+     * A frame pool holds no EL, so a dual-layer route never composes one and needs no FEL key.
+     * Its input mode stays the frame pool's, with the profile active, so frames arrive as pool slots.
+     */
+    private async prepareFramePoolDolbyVisionColorPipeline(
+        configuration: FramePoolDolbyVisionColorPipelineConfiguration,
+        pendingConfiguration: PendingColorConfiguration
+    ): Promise<PreparedColorPipeline | null> {
+        try {
+            assertValidRenderSettings(configuration.settings);
+        } catch (error) {
+            this.failColorConfiguration(pendingConfiguration, 'hdr-color-configuration-invalid', getErrorMessage(error));
+            return null;
+        }
+        if (configuration.settings.mode !== 'hdr-to-sdr') {
+            this.failColorConfiguration(
+                pendingConfiguration,
+                'hdr-color-configuration-invalid',
+                `mode: ${String(configuration.settings.mode)}, expected hdr-to-sdr`
+            );
+            return null;
+        }
+        const format = configuration.format;
+        if (!isGPUDecoderOutputFormat(format)) {
+            this.failColorConfiguration(pendingConfiguration, 'hdr-color-configuration-invalid', `format: ${String(format)} is not a GPU decoder output format`);
+            return null;
+        }
+
+        if (!await this.awaitHDRConfigurationPrerequisites(pendingConfiguration)) {
+            return null;
+        }
+        const baseAuthorizationFailure = this.getRawDolbyVisionAuthorizationFailure(
+            this.getRawDolbyVisionAuthorizations(configuration.profile, format).base,
+            format
+        );
+        if (baseAuthorizationFailure !== null) {
+            this.failColorConfiguration(pendingConfiguration, 'hdr-authorization-unavailable', baseAuthorizationFailure);
+            return null;
+        }
+        const chainConfiguration: BuiltinChainConfiguration = {
+            format,
+            hdrOutput: false,
+            profile: configuration.profile,
+            route: 'frame-pool-dolby-vision',
+            settings: configuration.settings
+        };
+        const chainFailure = this.validateChainConfiguration(chainConfiguration);
+        if (chainFailure !== null) {
+            this.failColorConfiguration(pendingConfiguration, 'hdr-color-configuration-invalid', chainFailure);
+            return null;
+        }
+        return {
+            chainConfiguration,
+            dolbyVisionFELAuthorizationFailure: null,
+            dolbyVisionFELReconstruction: false,
+            dolbyVisionProfile: configuration.profile,
+            inputMode: 'frame-pool',
             inputColorMetadata: null,
             rawFrameFormat: format,
             settings: cloneRenderSettings(configuration.settings)
@@ -3408,7 +3525,10 @@ export default class WebGPUPresenter {
         }
     }
 
-    /** Presents a GPU decoder's pool slot in place; its slot stays the decoder's to reuse once this submit is queued, since later decode work runs after it. */
+    /**
+     * Presents a GPU decoder's pool slot in place; its slot stays the decoder's to reuse once this submit is queued, since later decode work runs after it.
+     * A Dolby Vision route reconstructs the slot through its frame's RPU.
+     */
     private renderDecodedFramePoolFrame(
         decodedFrame: DecodedFramePoolPresentationFrame,
         generation: number,
@@ -3416,10 +3536,11 @@ export default class WebGPUPresenter {
     ): FrameSubmission | null {
         const frame = decodedFrame.frame;
         const rectangle = frame.visibleRectangle;
+        const profile = this.activeDolbyVisionProfile;
         let frameFailure: string | null = null;
         if (this.activeInputMode !== 'frame-pool') {
             frameFailure = `input-mode: ${this.activeInputMode} takes no frame pool slots`;
-        } else if (this.activeInputColorMetadata === null) {
+        } else if (this.activeInputColorMetadata === null && profile === null) {
             frameFailure = 'metadata: none configured';
         } else if (
             rectangle.width <= 0
@@ -3433,12 +3554,64 @@ export default class WebGPUPresenter {
             this.fallback(generation, 'decoded-frame-color-mismatch', frameFailure);
             return null;
         }
+        if (profile !== null) {
+            return this.renderDecodedFramePoolDolbyVisionFrame(decodedFrame, generation, profile, targetTimeMicroseconds);
+        }
         return this.submitFrame(
             { frame, kind: 'frame-pool' },
             decodedFrame.displayWidth,
             decodedFrame.displayHeight,
             this.getDecodedFrameTiming(decodedFrame, targetTimeMicroseconds)
         );
+    }
+
+    /**
+     * Presents a Dolby Vision BL slot through its frame's RPU, with the raw route's per-frame checks against the bit depth of the slot's format, which must be the route's.
+     * A frame pool holds no EL, so a dual-layer FEL frame presents its compatible base.
+     */
+    private renderDecodedFramePoolDolbyVisionFrame(
+        decodedFrame: DecodedFramePoolPresentationFrame,
+        generation: number,
+        profile: DolbyVisionReconstructionProfile,
+        targetTimeMicroseconds: number | null
+    ): FrameSubmission | null {
+        const executor = this.executor;
+        const format = this.activeRawFrameFormat;
+        const dolbyVision = decodedFrame.dolbyVision;
+        let frameFailure: string | null = null;
+        if (format === null) {
+            frameFailure = 'format: none configured';
+        } else if (!dolbyVision) {
+            frameFailure = 'dolby-vision: missing';
+        } else if (dolbyVision.format !== format) {
+            frameFailure = `format: ${dolbyVision.format}, expected ${format}`;
+        } else {
+            frameFailure = prefixFailure('authorization', this.getActiveRawDolbyVisionAuthorizationFailure(format, profile));
+        }
+        if (frameFailure !== null || !executor || !dolbyVision) {
+            this.fallback(generation, 'decoded-frame-color-mismatch', frameFailure ?? 'executor: unavailable');
+            return null;
+        }
+        const rpu = getDolbyVisionFrameRPUData(dolbyVision.encodedMetadata, profile, getGPUDecoderFormatFacts(dolbyVision.format).bitDepth, false);
+        if (rpu.failure !== null) {
+            this.fallback(generation, 'dolby-vision-metadata-invalid', rpu.failure);
+            return null;
+        }
+        executor.writeDolbyVisionRPU(rpu.data.packedRPUData);
+        const submission = this.submitFrame(
+            { frame: decodedFrame.frame, kind: 'frame-pool' },
+            decodedFrame.displayWidth,
+            decodedFrame.displayHeight,
+            this.getDecodedFrameTiming(decodedFrame, targetTimeMicroseconds)
+        );
+        const dualLayerRPUData = rpu.data.dualLayer;
+        if (!submission || !dualLayerRPUData) {
+            return submission;
+        }
+        return {
+            ...submission,
+            dolbyVisionDualLayerMode: getDualLayerPresentation(dualLayerRPUData, null)
+        };
     }
 
     private renderDecodedRawYUVFrame(
@@ -3487,41 +3660,18 @@ export default class WebGPUPresenter {
             return null;
         }
 
-        let packedRPUData: ArrayBuffer;
-        let dualLayerRPUData: DualLayerDolbyVisionRPUData | null = null;
-        switch (profile) {
-            case 5:
-            case 8: {
-                const rpu = getSingleLayerDolbyVisionRPUData(
-                    decodedFrame.encodedDolbyVisionMetadata,
-                    decodedFrame.frame.bitDepth
-                );
-                if (rpu.failure !== null) {
-                    this.fallback(generation, 'dolby-vision-metadata-invalid', rpu.failure);
-                    return null;
-                }
-                packedRPUData = rpu.data;
-                break;
-            }
-            case 4:
-            case 7: {
-                const rpu = getDualLayerDolbyVisionRPUData(
-                    decodedFrame.encodedDolbyVisionMetadata,
-                    profile,
-                    decodedFrame.frame.bitDepth,
-                    Boolean(decodedFrame.enhancementFrame)
-                );
-                if (rpu.failure !== null) {
-                    this.fallback(generation, 'dolby-vision-metadata-invalid', rpu.failure);
-                    return null;
-                }
-                dualLayerRPUData = rpu.data;
-                packedRPUData = rpu.data.packedRPUData;
-                break;
-            }
+        const rpu = getDolbyVisionFrameRPUData(
+            decodedFrame.encodedDolbyVisionMetadata,
+            profile,
+            decodedFrame.frame.bitDepth,
+            Boolean(decodedFrame.enhancementFrame)
+        );
+        if (rpu.failure !== null) {
+            this.fallback(generation, 'dolby-vision-metadata-invalid', rpu.failure);
+            return null;
         }
-
-        executor.writeDolbyVisionRPU(packedRPUData);
+        const dualLayerRPUData = rpu.data.dualLayer;
+        executor.writeDolbyVisionRPU(rpu.data.packedRPUData);
         const enhancementFrame = getComposedEnhancementFrame(
             dualLayerRPUData,
             this.activeDolbyVisionFELReconstruction,

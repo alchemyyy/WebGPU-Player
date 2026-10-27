@@ -421,7 +421,7 @@ export async function getCustomPresentationEligibilityOptions(
     );
     return {
         ...getRawDolbyVisionRouteFlags(presenter, input.dolbyVisionDescriptor, reconstructionTarget),
-        // A GPU decoder's vector stands in for authorization, so its HDR needs only the host's tone mapping
+        // A GPU decoder's vector stands in for authorization, so its static HDR needs only the host's tone mapping; its RPU reconstruction takes the RPU route's flags above
         allowFramePoolHDR: rawHDRRequested,
         allowNativeDolbyVision: dolbyVisionRequested && presenter.isExternalDolbyVisionPresentationAuthorized(),
         allowNativeDolbyVisionProfile7HDR10Base: profile7HDR10BaseRequested
@@ -487,6 +487,15 @@ function configureDolbyVisionColorPipeline(
             ...request.createHDRRenderConfiguration(DOLBY_VISION_INPUT_PEAK_NITS),
             inputMode: 'external-dolby-vision',
             profile: DOLBY_VISION_PROFILE_5
+        }, generation);
+    }
+    // A GPU decoder package's BL reconstructs from its frame pool
+    if (videoOutputMode === 'frame-pool' && rawVideoFrameFormat !== null && isGPUDecoderOutputFormat(rawVideoFrameFormat)) {
+        return presenter.configureColorPipeline({
+            ...request.createHDRRenderConfiguration(DOLBY_VISION_INPUT_PEAK_NITS),
+            format: rawVideoFrameFormat,
+            inputMode: 'frame-pool-dolby-vision',
+            profile: dolbyVisionProfile
         }, generation);
     }
     if (videoOutputMode !== 'raw-planes' || rawVideoFrameFormat === null || !isRawDolbyVisionVideoFrameFormat(rawVideoFrameFormat)) {

@@ -22,7 +22,7 @@ import {
     PLANE_NATIVE_HALF_FLOAT_FORMAT
 } from '../../WebGPUConstants';
 import { PRESENTATION_FIELD_STATE } from '../PassResources';
-import type { EngineResource, RawDolbyVisionFrameFormat, SignalDefinition, SignalPlanes } from '../PassTypes';
+import type { EngineResource, PresentationSourceKind, RawDolbyVisionFrameFormat, SignalDefinition, SignalPlanes } from '../PassTypes';
 import { joinWGSL, toWGSLFloat } from './BuiltinWGSL';
 
 /** The compatible base a dual-layer signal presents for an FEL frame whose EL it does not reconstruct. */
@@ -913,47 +913,87 @@ fn ${SIGNAL_ENTRY_POINT}(coordinate: vec2f) -> vec4f {
     };
 }
 
-/** Returns single-layer RPU reconstruction of raw BL codes into encoded BT.2020 PQ. */
-function createRawDolbyVisionSingleLayerSignal(format: RawDolbyVisionFrameFormat, profile: 5 | 8, chromaLocation: ChromaLocation | null): SignalDefinition {
+/**
+ * How a Dolby Vision signal reads its layers: the WGSL whose function returns a coordinate's BL codes, and the EL's read where the source holds an EL,
+ * with the resources, source, entry point, and name of the signal.
+ * The raw planes and the frame pool each have one, and the reconstruction around them is the same text, so both present the same codes alike.
+ */
+export type DolbyVisionSignalSource = Readonly<{
+    /** The resources of a signal that reads the BL and the RPU */
+    baseResources: readonly EngineResource[]
+    /** `fn <name>(textureCoordinate: vec2f) -> vec3f`: the BL's codes at a coordinate normalized over the BL's coded frame */
+    baseSamplingFunction: string
+    baseSamplingWGSL: string
+    /** The EL's read at the same coordinate and the resources of a signal that composes it; null for a source that holds no EL */
+    enhancement: Readonly<{ resources: readonly EngineResource[]; samplingFunction: string; samplingWGSL: string }> | null
+    entryPoint: string
+    /** What the profile, an FEL mark, and the format follow in the signal's name */
+    namePrefix: string
+    sourceKind: PresentationSourceKind
+}>;
+
+/** Returns how the raw Dolby Vision signal reads a BL of raw planes in format, with 4:2:0 chroma at the stream's location, and its I420P10 EL. */
+function createRawDolbyVisionSignalSource(format: RawDolbyVisionFrameFormat, chromaLocation: ChromaLocation | null): DolbyVisionSignalSource {
+    return {
+        baseResources: RAW_DOLBY_VISION_RESOURCES,
+        baseSamplingFunction: 'sampleRawYUV',
+        baseSamplingWGSL: createRawYUVSamplingWGSL(format, false, chromaLocation),
+        enhancement: {
+            resources: RAW_DOLBY_VISION_FEL_RESOURCES,
+            samplingFunction: 'sampleRawEnhancementYUV',
+            samplingWGSL: ENHANCEMENT_SAMPLING_WGSL
+        },
+        entryPoint: SIGNAL_ENTRY_POINT,
+        namePrefix: `${SIGNAL_NAME_PREFIX}.raw-dolby-vision`,
+        sourceKind: 'planes'
+    };
+}
+
+/** Returns single-layer RPU reconstruction of a source's BL codes into encoded BT.2020 PQ. */
+function createDolbyVisionSingleLayerSignal(source: DolbyVisionSignalSource, format: RawDolbyVisionFrameFormat, profile: 5 | 8): SignalDefinition {
     const entryWGSL = `
-fn ${SIGNAL_ENTRY_POINT}(coordinate: vec2f) -> vec4f {
+fn ${source.entryPoint}(coordinate: vec2f) -> vec4f {
     let encodedBT2020PQ = reconstructDolbyVisionBT2020PQ(
-        sampleRawYUV(coordinate)
+        ${source.baseSamplingFunction}(coordinate)
     );
     return vec4f(encodedBT2020PQ, 1.0);
 }`;
     return {
         bypassCondition: null,
-        code: joinWGSL([ createRawYUVSamplingWGSL(format, false, chromaLocation), createDolbyVisionColorFunctionsWGSL(), entryWGSL ]),
-        entryPoint: SIGNAL_ENTRY_POINT,
-        name: `${SIGNAL_NAME_PREFIX}.raw-dolby-vision.profile-${profile}.${format}`,
+        code: joinWGSL([ source.baseSamplingWGSL, createDolbyVisionColorFunctionsWGSL(), entryWGSL ]),
+        entryPoint: source.entryPoint,
+        name: `${source.namePrefix}.profile-${profile}.${format}`,
         planes: null,
-        resources: RAW_DOLBY_VISION_RESOURCES,
-        sourceKind: 'planes'
+        resources: source.baseResources,
+        sourceKind: source.sourceKind
     };
 }
 
 /**
  * Returns dual-layer MEL reconstruction, optional FEL residual reconstruction, and the compatible base an FEL frame falls back to without its EL.
  * Profile 7 falls back to its HDR10 base, a normal PQ source; Profile 4 to its SDR base, which bypassCondition presents unmodified.
- * The BL is sampled in its own planar format, with 4:2:0 chroma at the stream's location, and the EL always as I420P10 at its own siting.
+ * The BL is sampled in its own planar format, with 4:2:0 chroma at the stream's location, and the EL as its source holds it.
  */
-function createRawDolbyVisionDualLayerSignal(
+function createDolbyVisionDualLayerSignal(
+    source: DolbyVisionSignalSource,
     format: RawDolbyVisionFrameFormat,
     profile: 4 | 7,
-    felReconstruction: boolean,
-    chromaLocation: ChromaLocation | null
+    felReconstruction: boolean
 ): SignalDefinition {
+    const enhancement = felReconstruction ? source.enhancement : null;
+    if (felReconstruction && !enhancement) {
+        throw new RangeError(`felReconstruction: ${source.namePrefix} holds no enhancement layer`);
+    }
     const baseLayerFallback: DolbyVisionDualLayerBaseFallback = profile === 4 ? 'sdr' : 'hdr10';
     const baseLayerMetadata = getDolbyVisionDualLayerBaseMetadata(baseLayerFallback, format);
     const baseLayerFallbackStatement = baseLayerFallback === 'hdr10' ?
         'encodedBT2020PQ = convertRawYUVToEncodedRGB(normalizeRawYUV(rawBaseSignal));' :
         'return presentSDRBaseLayer(rawBaseSignal);';
-    const felStatement = felReconstruction ?
+    const felStatement = enhancement ?
         `if (enhancement.enhancementPresent != 0u) {
             encodedBT2020PQ = reconstructDolbyVisionBT2020PQWithEnhancement(
                 rawBaseSignal,
-                sampleRawEnhancementYUV(coordinate),
+                ${enhancement.samplingFunction}(coordinate),
                 true
             );
         } else {
@@ -961,8 +1001,8 @@ function createRawDolbyVisionDualLayerSignal(
         }` :
         baseLayerFallbackStatement;
     const entryWGSL = `
-fn ${SIGNAL_ENTRY_POINT}(coordinate: vec2f) -> vec4f {
-    let rawBaseSignal = sampleRawYUV(coordinate);
+fn ${source.entryPoint}(coordinate: vec2f) -> vec4f {
+    let rawBaseSignal = ${source.baseSamplingFunction}(coordinate);
     var encodedBT2020PQ: vec3f;
     if (isDolbyVisionFEL()) {
         ${felStatement}
@@ -973,9 +1013,9 @@ fn ${SIGNAL_ENTRY_POINT}(coordinate: vec2f) -> vec4f {
 }`;
 
     const declarations: string[] = [];
-    declarations.push(createRawYUVSamplingWGSL(format, false, chromaLocation));
-    if (felReconstruction) {
-        declarations.push(ENHANCEMENT_SAMPLING_WGSL);
+    declarations.push(source.baseSamplingWGSL);
+    if (enhancement) {
+        declarations.push(enhancement.samplingWGSL);
     }
     declarations.push(
         createDolbyVisionColorFunctionsWGSL(),
@@ -989,17 +1029,37 @@ fn ${SIGNAL_ENTRY_POINT}(coordinate: vec2f) -> vec4f {
     return {
         bypassCondition: getDolbyVisionDualLayerBypassCondition(baseLayerFallback, felReconstruction),
         code: joinWGSL(declarations),
-        entryPoint: SIGNAL_ENTRY_POINT,
-        name: `${SIGNAL_NAME_PREFIX}.raw-dolby-vision.profile-${profile}${felReconstruction ? '-fel' : ''}.${format}`,
+        entryPoint: source.entryPoint,
+        name: `${source.namePrefix}.profile-${profile}${felReconstruction ? '-fel' : ''}.${format}`,
         planes: null,
-        resources: felReconstruction ? RAW_DOLBY_VISION_FEL_RESOURCES : RAW_DOLBY_VISION_RESOURCES,
-        sourceKind: 'planes'
+        resources: enhancement ? enhancement.resources : source.baseResources,
+        sourceKind: source.sourceKind
     };
 }
 
 /**
+ * Returns RPU reconstruction of the BL codes a source reads, in format, into encoded BT.2020 PQ.
+ * Profiles 5 and 8 are single-layer, so felReconstruction applies only to the dual-layer Profiles 4 and 7, and only to a source that holds an EL.
+ */
+export function createDolbyVisionSignal(
+    source: DolbyVisionSignalSource,
+    format: RawDolbyVisionFrameFormat,
+    profile: DolbyVisionReconstructionProfile,
+    felReconstruction: boolean
+): SignalDefinition {
+    switch (profile) {
+        case 4:
+        case 7:
+            return createDolbyVisionDualLayerSignal(source, format, profile, felReconstruction);
+        case 5:
+        case 8:
+            return createDolbyVisionSingleLayerSignal(source, format, profile);
+    }
+}
+
+/**
  * Returns RPU reconstruction of raw BL planes in format, with 4:2:0 chroma at the stream's location, into encoded BT.2020 PQ.
- * Profiles 5 and 8 are single-layer, so felReconstruction applies only to the dual-layer Profiles 4 and 7.
+ * Profiles 5 and 8 are single-layer, so felReconstruction applies only to the dual-layer Profiles 4 and 7, whose EL is I420P10.
  */
 export function createRawDolbyVisionSignal(
     format: RawDolbyVisionFrameFormat,
@@ -1007,12 +1067,5 @@ export function createRawDolbyVisionSignal(
     felReconstruction: boolean,
     chromaLocation: ChromaLocation | null = null
 ): SignalDefinition {
-    switch (profile) {
-        case 4:
-        case 7:
-            return createRawDolbyVisionDualLayerSignal(format, profile, felReconstruction, chromaLocation);
-        case 5:
-        case 8:
-            return createRawDolbyVisionSingleLayerSignal(format, profile, chromaLocation);
-    }
+    return createDolbyVisionSignal(createRawDolbyVisionSignalSource(format, chromaLocation), format, profile, felReconstruction);
 }

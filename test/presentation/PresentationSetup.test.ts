@@ -305,6 +305,24 @@ describe('PresentationSetup', () => {
             }, GENERATION);
         });
 
+        it('reconstructs Dolby Vision from a GPU decoder\'s frame pool in its output format', async () => {
+            const presenter = createPresenter();
+
+            await configurePresentationColorPipeline(asPresenter(presenter), createColorPipelineRequest(PROFILE_5_STREAM, {
+                dolbyVisionProfile: 5,
+                rawVideoFrameFormat: 'I420P10',
+                videoOutputMode: 'frame-pool'
+            }));
+
+            expect(presenter.configureColorPipeline).toHaveBeenCalledWith({
+                ...createHDRRenderConfiguration(DOLBY_VISION_INPUT_PEAK_NITS),
+                format: 'I420P10',
+                inputMode: 'frame-pool-dolby-vision',
+                profile: 5,
+                videoFields: PROGRESSIVE_FIELDS
+            }, GENERATION);
+        });
+
         it('refuses a reconstruction profile that is not the stream\'s', async () => {
             const presenter = createPresenter();
             const request = createColorPipelineRequest(PROFILE_8_STREAM, { dolbyVisionProfile: 5 });

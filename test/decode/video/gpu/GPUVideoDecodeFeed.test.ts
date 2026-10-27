@@ -20,6 +20,10 @@ import { selectGPUDecodeSessionStream } from 'webgpu-player/decode/video/gpu/GPU
 import { createGPUFramePoolLayout, getGPUFramePoolSlotCount } from 'webgpu-player/decode/video/gpu/GPUFramePool';
 import type { GPUVideoDecoderSelection } from 'webgpu-player/decode/video/gpu/GPUVideoDecoderCatalog';
 import type { HDR10PlusFrameMetadata } from 'webgpu-player/demux/hdr/HDR10PlusMetadata';
+import {
+    DOLBY_VISION_ENCODED_METADATA_SCHEMA_VERSION,
+    type TransferableDolbyVisionEncodedFrameMetadata
+} from 'webgpu-player/demux/dolby-vision/DolbyVisionEncodedMetadataProtocol';
 import type { VideoFrameFields } from 'webgpu-player/decode/video/VideoFields';
 
 import { createVideoDecoderPackageForTest, createVideoDecoderSource, TEST_DECODER_CODEC } from '../../../helpers/decoderPackages';
@@ -181,6 +185,7 @@ function createPacket(index: number, HDR10PlusMetadata: HDR10PlusFrameMetadata |
     return {
         data: new ArrayBuffer(16),
         durationMicroseconds: FRAME_DURATION_MICROSECONDS,
+        encodedDolbyVisionMetadata: null,
         fields: null,
         format: null,
         HDR10PlusMetadata,
@@ -399,6 +404,33 @@ describe('GPUVideoDecodeFeed', () => {
         harness.feed.queuePacket(createPacket(0, MALFORMED_HDR10_PLUS_METADATA));
 
         expect(harness.callbacks.frames[0].HDR10PlusMetadata).toBe(MALFORMED_HDR10_PLUS_METADATA);
+    });
+
+    it('gives each frame of a Dolby Vision route its packet\'s RPUs and its session\'s format, and other routes neither', async () => {
+        const encodedDolbyVisionMetadata: TransferableDolbyVisionEncodedFrameMetadata = {
+            enhancementLayerDisposition: 'absent',
+            hasEnhancementLayerVCL: false,
+            parsedRPUData: [ new ArrayBuffer(8) ],
+            schemaVersion: DOLBY_VISION_ENCODED_METADATA_SCHEMA_VERSION
+        };
+        const harness = createHarness();
+        harness.feed.start(harness.callbacks, INITIAL_VIDEO_EPOCH);
+        harness.feed.configure(createRequest(), { displayHeight: VISIBLE_HEIGHT, displayWidth: DISPLAY_WIDTH }, null, true);
+        await settle();
+
+        harness.feed.queuePacket({ ...createPacket(0), encodedDolbyVisionMetadata });
+        harness.feed.queuePacket(createPacket(1));
+
+        expect(harness.callbacks.frames.map((frame: DecodedFramePoolPresentationFrame) => frame.dolbyVision)).toEqual([
+            { encodedMetadata: encodedDolbyVisionMetadata, format: 'I420' },
+            { format: 'I420' }
+        ]);
+
+        const otherHarness = createHarness();
+        startConfigured(otherHarness);
+        await settle();
+        otherHarness.feed.queuePacket({ ...createPacket(0), encodedDolbyVisionMetadata });
+        expect(otherHarness.callbacks.frames[0]).not.toHaveProperty('dolbyVision');
     });
 
     it('returns a released frame\'s slot to its session, which then decodes the packet that waited for it', async () => {

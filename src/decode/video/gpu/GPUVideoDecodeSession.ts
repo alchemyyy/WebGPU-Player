@@ -6,6 +6,7 @@ import { getDecoderErrorName } from '../../packages/DecoderHeader';
 import type { DecoderPackageVersion } from '../../packages/DecoderPackageIdentity';
 import { waitForGPUCompletion } from '../../../GPUCompletion';
 import { evaluatePassExpression, PassExpressionError } from '../../../presentation/passes/PassExpression';
+import type { TransferableDolbyVisionEncodedFrameMetadata } from '../../../demux/dolby-vision/DolbyVisionEncodedMetadataProtocol';
 import type { FramePoolFrame, PassExpression } from '../../../presentation/passes/PassTypes';
 import {
     BYTES_PER_WORD,
@@ -106,6 +107,8 @@ export type GPUDecodedFrame = {
     /** Due frames dropped when this frame was taken, for a temporal pass's soft reset. */
     droppedFrameCount: number
     durationMicroseconds: number
+    /** The Dolby Vision RPUs of the frame's packet, those of the frame it repeats for a repeat, or null for none */
+    encodedDolbyVisionMetadata: TransferableDolbyVisionEncodedFrameMetadata | null
     /** The frame's fields: the decoder's own report, else what its packet carried, or null when nobody reported them. */
     fields: VideoFrameFields | null
     /** The slot's planes, with the frame's visible rectangle: its picture's own size, or the stream's. */
@@ -120,6 +123,7 @@ type DecodedFrameEntry = {
     /** Set once its packet's status readback applied, or at once for a repeat; only confirmed frames present */
     confirmed: boolean
     durationMicroseconds: number
+    encodedDolbyVisionMetadata: TransferableDolbyVisionEncodedFrameMetadata | null
     fields: VideoFrameFields | null
     /** A repeat of the last good frame during a resync, which shares that frame's slot */
     held: boolean
@@ -134,6 +138,7 @@ type DecodedFrameEntry = {
 
 /** The last good frame a resync holds: the slot its repeats present, which the resync keeps an output hold on, and the frame's facts. */
 type HeldFrame = Readonly<{
+    encodedDolbyVisionMetadata: TransferableDolbyVisionEncodedFrameMetadata | null
     fields: VideoFrameFields | null
     slot: number
     visibleSize: GPUDecoderPictureSize | null
@@ -1045,6 +1050,7 @@ export default class GPUVideoDecodeSession {
         const entry: DecodedFrameEntry = {
             confirmed: false,
             durationMicroseconds: packet.durationMicroseconds,
+            encodedDolbyVisionMetadata: packet.encodedDolbyVisionMetadata ?? null,
             fields: packet.fields,
             held: false,
             packetSerial: this.takePacketSerial(),
@@ -1104,6 +1110,7 @@ export default class GPUVideoDecodeSession {
         this.receiveDecodedFrame({
             confirmed: true,
             durationMicroseconds: packet.durationMicroseconds,
+            encodedDolbyVisionMetadata: heldFrame.encodedDolbyVisionMetadata,
             fields: heldFrame.fields,
             held: true,
             packetSerial,
@@ -1151,13 +1158,13 @@ export default class GPUVideoDecodeSession {
         for (const entry of [ ...this.parserFrames, ...this.reorderFrames, ...this.presentableFrames ]) {
             const good = firstDroppedSerial === null || entry.packetSerial < firstDroppedSerial;
             if (good && entry.timestampMicroseconds > sourceTimestampMicroseconds) {
-                source = { fields: entry.fields, slot: entry.slot, visibleSize: entry.visibleSize };
+                source = { encodedDolbyVisionMetadata: entry.encodedDolbyVisionMetadata, fields: entry.fields, slot: entry.slot, visibleSize: entry.visibleSize };
                 sourceTimestampMicroseconds = entry.timestampMicroseconds;
             }
         }
         for (const frame of this.takenFrames) {
             if (frame.timestampMicroseconds > sourceTimestampMicroseconds) {
-                source = { fields: frame.fields, slot: frame.slot, visibleSize: frame.visibleSize };
+                source = { encodedDolbyVisionMetadata: frame.encodedDolbyVisionMetadata, fields: frame.fields, slot: frame.slot, visibleSize: frame.visibleSize };
                 sourceTimestampMicroseconds = frame.timestampMicroseconds;
             }
         }
@@ -1177,6 +1184,7 @@ export default class GPUVideoDecodeSession {
                 continue;
             }
             entry.confirmed = true;
+            entry.encodedDolbyVisionMetadata = heldFrame.encodedDolbyVisionMetadata;
             entry.fields = heldFrame.fields;
             entry.held = true;
             entry.slot = heldFrame.slot;
@@ -1583,6 +1591,7 @@ export default class GPUVideoDecodeSession {
         const frame: GPUDecodedFrame = {
             droppedFrameCount,
             durationMicroseconds: entry.durationMicroseconds,
+            encodedDolbyVisionMetadata: entry.encodedDolbyVisionMetadata,
             fields: entry.fields,
             frame: visibleSize ? { ...poolFrame, visibleRectangle: { height: visibleSize.height, width: visibleSize.width, x: 0, y: 0 } } : poolFrame,
             slot: entry.slot,

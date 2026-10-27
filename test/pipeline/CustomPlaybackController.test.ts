@@ -63,7 +63,7 @@ const UNREPRESENTABLE_RAW_PLAYBACK_ERROR = 'Raw custom playback frames have no r
 const HEVC_PACKAGE = createDecoderProjectVideoPackageForTest('hevc');
 const GPU_VIDEO_DECODER: GPUVideoDecoderSelection = { codec: 'hevc', decoderId: HEVC_PACKAGE.id, package: HEVC_PACKAGE };
 const GPU_DECODER_BACKEND_ERROR = 'A GPU video decoder requires the gpu decoder backend, and that backend requires one';
-const GPU_ROUTE_ERROR = 'GPU video playback requires the frame-pool route without Dolby Vision reconstruction or native color handling';
+const GPU_ROUTE_ERROR = 'GPU video playback requires the frame-pool route without native color handling';
 const FRAME_POOL_ROUTE_ERROR = 'Frame-pool custom playback requires the gpu decoder backend and a planar frame format';
 const MAIN10_LEVEL_6_1_CODEC_STRING = 'hvc1.2.6.L183.B0';
 const WORKER_REUSE_SEEK_TARGET_MICROSECONDS = secondsToMicroseconds(42);
@@ -874,7 +874,6 @@ describe('CustomPlaybackController', () => {
         expect(() => harness.controller.play({ ...framePoolOptions, gpuVideoDecoder: undefined })).toThrow(GPU_DECODER_BACKEND_ERROR);
         expect(() => harness.controller.play({ ...framePoolOptions, videoDecoderBackend: 'native' })).toThrow(GPU_DECODER_BACKEND_ERROR);
         expect(() => harness.controller.play({ ...framePoolOptions, videoOutputMode: 'raw-planes' })).toThrow(GPU_ROUTE_ERROR);
-        expect(() => harness.controller.play({ ...framePoolOptions, dolbyVisionProfile: 8 })).toThrow(GPU_ROUTE_ERROR);
         expect(() => harness.controller.play({ ...framePoolOptions, rawVideoFrameFormat: null })).toThrow(FRAME_POOL_ROUTE_ERROR);
         expect(() => harness.controller.play({ ...createPlayOptions(), rawVideoFrameFormat: 'I420P10', videoOutputMode: 'frame-pool' })).toThrow(
             FRAME_POOL_ROUTE_ERROR

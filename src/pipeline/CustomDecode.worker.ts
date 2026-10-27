@@ -106,6 +106,7 @@ import {
     requireConsistentDecodedVideoGeometry
 } from '../decode/video/DecodedVideoGeometry';
 import DolbyVisionEncodedMetadataQueue, {
+    DolbyVisionAV1EncodedMetadataQueue,
     getHEVCNALFormat,
     type ProcessedDolbyVisionHEVCPacket
 } from '../demux/dolby-vision/DolbyVisionEncodedMetadata';
@@ -2253,7 +2254,7 @@ async function createSeparateDolbyVisionEnhancementPacketStream(
  * An EL packet that does not split retires the EL track, which leaves the stream to its BL.
  */
 async function processOwnedHEVCPacket(
-    hevcStream: OwnedHEVCStream,
+    hevcStream: Pick<OwnedHEVCStream, 'metadataQueue' | 'separateEnhancementStream'>,
     packet: EncodedPacket,
     nalUnits: readonly HEVCNALUnit[],
     separateEnhancementPacket: EncodedPacket | null
@@ -2720,10 +2721,12 @@ type GPUDecodeOutgoingData = {
     trailingEvents: Uint32Array | null
 };
 
-/** A packet of the frame-pool route on its way to the page: its timing, its HDR10+ state, and its pictures, which a parser may still be producing. */
+/** A packet of the frame-pool route on its way to the page: its timing, its HDR10+ state, its Dolby Vision RPUs, and its pictures, which a parser may still be producing. */
 type GPUDecodeOutgoingPacket = {
     data: Promise<GPUDecodeOutgoingData>
     durationMicroseconds: Microseconds
+    /** On a Dolby Vision route, the packet's parsed RPUs, null for a packet without any */
+    encodedDolbyVisionMetadata: DolbyVisionEncodedFrameMetadata | null
     HDR10PlusMetadata: HDR10PlusFrameMetadata | null
     keyframe: boolean
     /** The demuxed packet, from which a parser's restart after a failure on it finds the next key packet */
@@ -2733,12 +2736,26 @@ type GPUDecodeOutgoingPacket = {
     timestampMicroseconds: Microseconds
 };
 
+/**
+ * A frame-pool attempt's Dolby Vision RPU reader: the RPU parser and the codec's metadata queue, with a separate EL track's packets for a dual-layer HEVC route.
+ * The packets still reach the decoder's parser whole, which skips their RPU and EL NAL units or metadata OBUs.
+ */
+type GPUDecodeDolbyVisionReader = {
+    av1MetadataQueue: DolbyVisionAV1EncodedMetadataQueue | null
+    hevc: (Pick<OwnedHEVCStream, 'inputFormat' | 'metadataQueue' | 'separateEnhancementStream'>) | null
+    rpuParser: DolbyVisionRPUParserSession
+};
+
 /** One attempt's packets of the frame-pool route, read until their pictures reach readAheadDepth ahead of the credits. */
 type GPUDecodePacketQueue = {
+    /** On a Dolby Vision route, what reads each packet's RPUs; null on any other route */
+    dolbyVisionReader: GPUDecodeDolbyVisionReader | null
     dynamicHDRMetadataQueue: HEVCDynamicHDRMetadataQueue | null
     ended: boolean
     iterator: OwnedVideoPacketIterator
     outgoing: GPUDecodeOutgoingPacket[]
+    /** Opens the RPU reader again at the key packet a parser's restart reads from */
+    openDolbyVisionReader: (keyPacket: EncodedPacket) => Promise<GPUDecodeDolbyVisionReader | null>
     /** The track's packets, which a parser's restart reads again from the next key packet */
     packetReader: PacketReader
     // The decoder package's parser, which turns each packet into what the decoder reads
@@ -2817,6 +2834,92 @@ async function prepareGPUDecodeParser(
     return pipeline.maximumPictureSize;
 }
 
+/**
+ * Opens the RPU reader of a frame-pool attempt on a Dolby Vision route, from the key packet it reads from, or returns null on any other route.
+ * A dual-layer HEVC stream whose key packet carries no EL takes its RPUs from its separate EL track, as the raw route does.
+ */
+async function openGPUDecodeDolbyVisionReader(
+    run: DecodeRun,
+    request: Extract<DecodeWorkerRequest, { type: 'start' }>,
+    preparedVideoTrack: PreparedVideoTrack,
+    keyPacket: EncodedPacket
+): Promise<GPUDecodeDolbyVisionReader | null> {
+    if (request.dolbyVisionProfile === null) {
+        return null;
+    }
+    const rpuParser = DolbyVisionRPUParserSession.create(request.dolbyVisionRPUParserWASMURL, request.dolbyVisionProfile);
+    if (preparedVideoTrack.codec === 'av1') {
+        return { av1MetadataQueue: new DolbyVisionAV1EncodedMetadataQueue(rpuParser), hevc: null, rpuParser };
+    }
+    const inputFormat = getHEVCNALFormat(preparedVideoTrack.decoderConfig);
+    const reader: GPUDecodeDolbyVisionReader = {
+        av1MetadataQueue: null,
+        hevc: { inputFormat, metadataQueue: new DolbyVisionEncodedMetadataQueue(inputFormat, rpuParser), separateEnhancementStream: null },
+        rpuParser
+    };
+    try {
+        const separateEnhancementTrack = await resolveSeparateDolbyVisionEnhancementTrack(
+            run,
+            request,
+            preparedVideoTrack,
+            splitDolbyVisionHEVCAccessUnit(keyPacket.data, inputFormat, inputFormat)
+        );
+        if (separateEnhancementTrack && reader.hevc) {
+            reader.hevc.separateEnhancementStream = await createSeparateDolbyVisionEnhancementPacketStream(
+                run,
+                separateEnhancementTrack,
+                requireMicroseconds(keyPacket.microsecondTimestamp, 'GPU decode key packet timestamp')
+            );
+        }
+    } catch (error) {
+        rpuParser.close();
+        throw error;
+    }
+    return reader;
+}
+
+/** Closes a frame-pool attempt's RPU reader: its parser, and its separate EL track. */
+async function closeGPUDecodeDolbyVisionReader(reader: GPUDecodeDolbyVisionReader | null): Promise<void> {
+    reader?.rpuParser.close();
+    await reader?.hevc?.separateEnhancementStream?.pairer.retire();
+}
+
+/** A frame-pool packet's metadata: its HDR10+ state, and on a Dolby Vision route its parsed RPUs. */
+type GPUDecodePacketMetadata = Pick<GPUDecodeOutgoingPacket, 'encodedDolbyVisionMetadata' | 'HDR10PlusMetadata'>;
+
+/**
+ * Reads a frame-pool packet's metadata in decode order, as the raw route does: an HEVC packet's NAL units are walked once for its HDR10+ parse and its Dolby Vision split,
+ * and a packet with a picture takes the entry its split recorded, since its frame carries it to the page.
+ */
+async function readGPUDecodePacketMetadata(
+    queue: GPUDecodePacketQueue,
+    packet: EncodedPacket,
+    timestampMicroseconds: Microseconds
+): Promise<GPUDecodePacketMetadata> {
+    const av1MetadataQueue = queue.dolbyVisionReader?.av1MetadataQueue ?? null;
+    if (av1MetadataQueue) {
+        const temporalUnit = await av1MetadataQueue.processTemporalUnit(packet);
+        return {
+            encodedDolbyVisionMetadata: temporalUnit.hasFrame ? av1MetadataQueue.takeFrameMetadata(timestampMicroseconds) : null,
+            HDR10PlusMetadata: null
+        };
+    }
+    const hevc = queue.dolbyVisionReader?.hevc ?? null;
+    const nalUnits = hevc ? parseHEVCNALUnits(packet.data, hevc.inputFormat) : undefined;
+    const HDR10PlusMetadata = queue.dynamicHDRMetadataQueue?.processPacket(packet, nalUnits) ?
+        queue.dynamicHDRMetadataQueue.takeFrameMetadata(timestampMicroseconds) :
+        null;
+    if (!hevc || !nalUnits) {
+        return { encodedDolbyVisionMetadata: null, HDR10PlusMetadata };
+    }
+    const separateEnhancementPacket = await takeSeparateEnhancementPacket(hevc.separateEnhancementStream, timestampMicroseconds);
+    const processedPacket = await processOwnedHEVCPacket(hevc, packet, nalUnits, separateEnhancementPacket);
+    return {
+        encodedDolbyVisionMetadata: processedPacket.hasBaseLayerVCL ? hevc.metadataQueue.takeFrameMetadata(timestampMicroseconds) : null,
+        HDR10PlusMetadata
+    };
+}
+
 /** Opens the attempt's packets at the key packet preceding the start time; returns null when the track has none or the attempt stopped. */
 async function openGPUDecodePacketQueue(
     run: DecodeRun,
@@ -2840,7 +2943,12 @@ async function openGPUDecodePacketQueue(
         takePreparedGPUDecodeParser(run)
             ?? await openGPUDecoderParser(parser.parser, parser.packageVersion, copyDecoderDescription(preparedVideoTrack.decoderConfig.description)) :
         null;
+    const openDolbyVisionReader = (readerKeyPacket: EncodedPacket): Promise<GPUDecodeDolbyVisionReader | null> => (
+        openGPUDecodeDolbyVisionReader(run, request, preparedVideoTrack, readerKeyPacket)
+    );
+    const dolbyVisionReader = await openDolbyVisionReader(keyPacket);
     return {
+        dolbyVisionReader,
         // Only HEVC carries HDR10+ in its packets' SEI; the queue carries the last metadata to packets without their own
         dynamicHDRMetadataQueue: preparedVideoTrack.codec === 'hevc' ?
             new HEVCDynamicHDRMetadataQueue(getHEVCNALFormat(preparedVideoTrack.decoderConfig)) :
@@ -2848,6 +2956,7 @@ async function openGPUDecodePacketQueue(
         ended: false,
         iterator,
         outgoing: [],
+        openDolbyVisionReader,
         packetReader,
         pipeline,
         // A parser parses ahead of the credits, so its workers stay busy while the page decodes
@@ -2869,7 +2978,9 @@ function postGPUDecodePicture(
     firstPicture: boolean,
     reset: boolean
 ): void {
-    const transfer: Transferable[] = [ picture.data ];
+    // A packet's first picture carries its RPUs, whose parsed buffers move to the page
+    const encodedDolbyVisionMetadata = firstPicture ? takeTransferableDolbyVisionEncodedFrameMetadata(packet.encodedDolbyVisionMetadata) : null;
+    const transfer: Transferable[] = [ picture.data, ...getDolbyVisionEncodedMetadataTransferList(encodedDolbyVisionMetadata) ];
     if (events && events.byteLength > 0) {
         transfer.push(events.buffer);
     }
@@ -2881,6 +2992,7 @@ function postGPUDecodePicture(
         ...(fields ? { fields } : {}),
         generation: run.generation,
         ...(picture.format ? { format: picture.format } : {}),
+        ...(encodedDolbyVisionMetadata ? { encodedDolbyVisionMetadata } : {}),
         ...(firstPicture && packet.HDR10PlusMetadata ? { HDR10PlusMetadata: packet.HDR10PlusMetadata } : {}),
         keyframe: packet.keyframe,
         ...(picture.maximumPictureSize ? { maximumPictureSize: picture.maximumPictureSize } : {}),
@@ -2929,6 +3041,9 @@ async function restartGPUDecodeParser(
     recovery: GPUVideoDecodeRecovery
 ): Promise<boolean> {
     queue.pipeline?.close();
+    // The RPUs read ahead were parsed past the key packet the new parser starts at, so a new reader parses them again in decode order
+    await closeGPUDecodeDolbyVisionReader(queue.dolbyVisionReader);
+    queue.dolbyVisionReader = null;
     queue.pipeline = null;
     // The packets read ahead went to the failed parser, which made nothing of them
     queue.outgoing.length = 0;
@@ -2961,6 +3076,10 @@ async function restartGPUDecodeParser(
     if (isVideoAttemptStopped(run)) {
         return false;
     }
+    queue.dolbyVisionReader = await queue.openDolbyVisionReader(keyPacket);
+    if (isVideoAttemptStopped(run)) {
+        return false;
+    }
     queue.resetPending = true;
     return true;
 }
@@ -2978,12 +3097,14 @@ async function fillGPUDecodePacketQueue(run: DecodeRun, queue: GPUDecodePacketQu
         }
         const packet = packetResult.value;
         const timestampMicroseconds = requireMicroseconds(packet.microsecondTimestamp, 'GPU decode packet timestamp');
-        const HDR10PlusMetadata = queue.dynamicHDRMetadataQueue?.processPacket(packet) ?
-            queue.dynamicHDRMetadataQueue.takeFrameMetadata(timestampMicroseconds) :
-            null;
+        const { encodedDolbyVisionMetadata, HDR10PlusMetadata } = await readGPUDecodePacketMetadata(queue, packet, timestampMicroseconds);
+        if (isVideoAttemptStopped(run)) {
+            return false;
+        }
         const outgoingPacket: GPUDecodeOutgoingPacket = {
             data: submitGPUDecodePacket(queue.pipeline, packet),
             durationMicroseconds: requireMicroseconds(Math.max(0, packet.microsecondDuration), 'GPU decode packet duration'),
+            encodedDolbyVisionMetadata,
             HDR10PlusMetadata,
             keyframe: packet.type === 'key',
             packet,
@@ -3068,6 +3189,7 @@ async function streamGPUDecodePackets(
         }
     } finally {
         queue.pipeline?.close();
+        await closeGPUDecodeDolbyVisionReader(queue.dolbyVisionReader);
     }
 }
 
