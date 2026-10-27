@@ -100,8 +100,12 @@ function demoteIRAPNALUnit(nalUnit: HEVCNALUnit): Uint8Array {
 /**
  * Muxes the x265 sample's first access unit once per entry of keyframes, length-prefixed with an hvcC: a key packet as it is, a delta packet with its IDR slice
  * retyped as a trailing picture's, which a parser stub never reads, each packet one frame duration after the one before.
+ * appendedNALUnits gives each packet, by index, NAL units that follow its picture's, such as a Dolby Vision RPU.
  */
-export async function createHEVCMatroskaWithKeyframes(keyframes: readonly boolean[]): Promise<Uint8Array> {
+export async function createHEVCMatroskaWithKeyframes(
+    keyframes: readonly boolean[],
+    appendedNALUnits: readonly (readonly Uint8Array[])[] = []
+): Promise<Uint8Array> {
     const nalUnits = parseHEVCNALUnits(new Uint8Array(readFileSync(X265_SAMPLE_PATH)), { kind: 'annex-b' });
     const secondDelimiterIndex = nalUnits.findIndex(
         (nalUnit: HEVCNALUnit, nalUnitIndex: number): boolean => nalUnitIndex > 0 && nalUnit.type === HEVC_AUD_NAL_UNIT_TYPE
@@ -113,8 +117,8 @@ export async function createHEVCMatroskaWithKeyframes(keyframes: readonly boolea
     }
     const { codedHeight, codedWidth } = parseHEVCSPS(sequenceParameterSet.data);
     const pictureNALUnits = firstAccessUnit.filter((nalUnit: HEVCNALUnit): boolean => !HEVC_PARAMETER_SET_NAL_UNIT_TYPES.includes(nalUnit.type));
-    const keyData = encodeLengthPrefixedNALUnits(pictureNALUnits.map((nalUnit: HEVCNALUnit): Uint8Array => nalUnit.data));
-    const deltaData = encodeLengthPrefixedNALUnits(pictureNALUnits.map(demoteIRAPNALUnit));
+    const keyNALUnits = pictureNALUnits.map((nalUnit: HEVCNALUnit): Uint8Array => nalUnit.data);
+    const deltaNALUnits = pictureNALUnits.map(demoteIRAPNALUnit);
     const decoderConfig: VideoDecoderConfig = {
         codec: HEVC_MAIN_10_CODEC,
         codedHeight,
@@ -128,7 +132,8 @@ export async function createHEVCMatroskaWithKeyframes(keyframes: readonly boolea
     output.addVideoTrack(source);
     await output.start();
     for (const [ packetIndex, keyframe ] of keyframes.entries()) {
-        const packet = new EncodedPacket(keyframe ? keyData : deltaData, keyframe ? 'key' : 'delta', packetIndex * FRAME_DURATION_SECONDS, FRAME_DURATION_SECONDS);
+        const data = encodeLengthPrefixedNALUnits([ ...(keyframe ? keyNALUnits : deltaNALUnits), ...(appendedNALUnits[packetIndex] ?? []) ]);
+        const packet = new EncodedPacket(data, keyframe ? 'key' : 'delta', packetIndex * FRAME_DURATION_SECONDS, FRAME_DURATION_SECONDS);
         await source.add(packet, packetIndex === 0 ? { decoderConfig } : undefined);
     }
     source.close();
