@@ -3084,10 +3084,10 @@ fn outputScalingIndices(grain: GrainPlane, plane: u32, x: u32, y: u32, samples: 
     let lumaX = x << grain.subsamplingX;
     let lumaY = y << grain.subsamplingY;
     // Luma columns lumaX and lumaX + 1, then lumaX + 2 and lumaX + 3 when subsampled
-    let firstWord = frames[getStoreWordIndex(grain.outputBuffer, PLANE_Y, lumaX, lumaY)];
+    let firstWord = readFrameWord(getStoreWordIndex(grain.outputBuffer, PLANE_Y, lumaX, lumaY));
     var averages = vec2i(vec2u(firstWord & SAMPLE_HALF_MASK, firstWord >> SAMPLE_HALF_BITS));
     if (grain.subsamplingX == 1u) {
-        let secondWord = frames[getStoreWordIndex(grain.outputBuffer, PLANE_Y, lumaX + 2u, lumaY)];
+        let secondWord = readFrameWord(getStoreWordIndex(grain.outputBuffer, PLANE_Y, lumaX + 2u, lumaY));
         let lumaColumns = vec4u(firstWord, firstWord >> SAMPLE_HALF_BITS, secondWord, secondWord >> SAMPLE_HALF_BITS) & vec4u(SAMPLE_HALF_MASK);
         let next = select(lumaColumns.xz, lumaColumns.yw, vec2u(lumaX + 1u, lumaX + 3u) < vec2u(grain.lumaWidth));
         averages = (vec2i(lumaColumns.xz) + vec2i(next) + vec2i(1)) >> vec2u(1u);
@@ -3146,7 +3146,7 @@ fn outputWriteRow(workgroup: vec3u, lane: u32) {
     if (plane == PLANE_Y || getField(flags, RECORD_FLAG_MONOCHROME, 1u) == 0u) {
         // The lane's store words; columns past the store's width repeat its last
         let wordIndex = getStoreWordIndex(outputBuffer, plane, firstX, y);
-        let words = vec2u(frames[wordIndex], frames[wordIndex + OUTPUT_LANE_STORE_WORDS - 1u]);
+        let words = vec2u(readFrameWord(wordIndex), readFrameWord(wordIndex + OUTPUT_LANE_STORE_WORDS - 1u));
         let columns = min(vec4u(firstX) + OUTPUT_SAMPLE_OFFSETS, vec4u(storeWidth - 1u)) - vec4u(firstX);
         samples = (select(vec4u(words.x), vec4u(words.y), columns >= vec4u(2u)) >> ((columns & vec4u(1u)) * SAMPLE_HALF_BITS)) & vec4u(SAMPLE_HALF_MASK);
         if (getField(flags, RECORD_FLAG_FILM_GRAIN, 1u) == 1u) {

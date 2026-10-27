@@ -33,8 +33,8 @@ export const GPU_DECODE_MAXIMUM_SCRATCH_BUFFER_BYTE_LENGTH = U32_VALUE_COUNT - 4
 export const GPU_DECODE_PACKET_RING_PACKET_COUNT = 2;
 
 /**
- * The largest packet a decoder may declare, 512 MiB: AV1's worst 4:2:2 and 4:4:4 records pass 64 MiB, which half of WebGPU's default storage binding holds.
- * Its ring of two packets must fit the device's largest storage binding, or selection skips the decoder and its session fails as 'packet-size'.
+ * The largest packet a decoder may declare for any stream, 512 MiB: AV1's worst level 6 records reach it at 8K, far past the 64 MiB that half of WebGPU's default storage binding holds.
+ * A header may size its packets by the stream, so a stream's ring of two packets must fit the device's largest storage binding, or selection skips the decoder and its session fails as 'packet-size'.
  */
 export const GPU_DECODE_MAXIMUM_PACKET_BYTE_LENGTH = 512 * MEBIBYTE;
 

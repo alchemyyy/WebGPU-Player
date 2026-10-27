@@ -85,7 +85,7 @@ A header is the source's leading lines that start with `//!`, one `name: value` 
 | `accepts` | Yes | `codec in [<codecs>]`, then optional conditions over `stream.width`, `stream.height`, `stream.bitDepth`, `picture.width`, and `picture.height`, separated by commas, which must all hold |
 | `output` | Yes | The formats it writes, one or more of `I420`, `I420P10`, `I420P12`, `I422`, `I422P10`, `I422P12`, `I444`, `I444P10`, and `I444P12` |
 | `monochrome` | No | `yes`: it decodes a 4:0:0 stream into the 4:2:0 format of the stream's depth, with the neutral value 1 << (bit depth - 1) in both chroma planes; eligibility offers a 4:0:0 stream to no decoder without it |
-| `packet` | Yes | The largest packet it reads, at most 512 MiB, which sizes the packet ring of two packets; the device's buffer limit, the smaller of its largest buffer and its largest storage binding, must hold the ring |
+| `packet` | Yes | The size of the largest packet it reads, at most 512 MiB for any stream, which sizes each session's packet ring of two packets; an expression lets the bound grow with the stream, as AV1's records do; the device's buffer limit, the smaller of its largest buffer and its largest storage binding, must hold the ring |
 | `dispatch` | Yes, repeatable | `<entry point>, <x>[, <y>[, <z>]]` workgroup counts, or `<entry point>, indirect <buffer>` |
 | `repeat` | Repeatable | `<count>, <dispatches>`: the next `<dispatches>` dispatch directives run `<count>` times, or fewer for a picture whose parser reports fewer |
 | `parser` | No | `2`: the module implements version 2 of the parser interface, and the decoder reads its pictures' records instead of the container's packets |
@@ -173,6 +173,9 @@ Every binding is in group 0.
 | 5 | `framePool` | The frame pool's slots |
 | 6 | `status` | What the engine reads back after each packet: the fatal error word and the header's stream facts, then the packet's block, its freed slots, its picture's most severe recoverable error word, and its picture fields |
 | 7 on | The `buffer` names | The scratch buffers, in declaration order |
+
+Each buffer binds whole, and the device must hold each one within its buffer limit, so a decoder whose working set can pass a device's largest storage binding spreads it over several `buffer:` lines, as AV1 spreads its frame store over two, and its WGSL picks the buffer by index.
+A device holds at least eight storage buffers per stage, the prelude's five among them, so a decoder may declare three storage scratch buffers on every device; more need a device that holds more, or the session fails as `storage-buffer-count`.
 
 | Helper | Does |
 | --- | --- |

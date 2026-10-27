@@ -111,6 +111,7 @@ Dolby Vision outside HEVC and AV1:
 Native routes decode AV1 Main at 4:2:0: VF-SDR at 8 bits, and at 10 bits VF-PQ and VF-HLG where the AV1 external keys are authorized, RAW I420P10 through the raw SDR keys, and RAW I420P10 PQ or HLG.
 AV1 outside Main 10 takes raw planes in the exact format of its raw format variant, which its Jellyfin Profile and PixelFormat name, through `av1RawFormats[variant]`, a 192x192 key and inter temporal unit decoded with `prefer-software`.
 Every AV1 stream falls back last to GPU, in its own format, when the host offers an AV1 decoder package whose header accepts it.
+The AV1 package takes pictures up to level 6.x, 16384x8704 and 35,651,584 samples, 8K included, on a device whose largest binding holds half its frame store and its packet ring: at 8192x4352 two buffers of 535 MB and a ring of 626 MB at 4:2:0 10-bit, two of 1.07 GB and a ring of 1 GiB at 4:4:4 12-bit (see [WebAssembly build](decoders.md#the-av1-parser)); eligibility skips it with the failed check otherwise.
 
 | Variant | Eligible | Route, then fallback | Evidence |
 | --- | --- | --- | --- |

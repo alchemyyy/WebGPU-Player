@@ -38,7 +38,10 @@
 #define BYTE_MASK 0xFFu
 #define FILM_GRAIN_OFFSET_MASK 0x1FFu
 #define KIBIBYTE_SHIFT 10u
-#define RECORD_PACKET_WORDS (RECORD_PACKET_BYTES / BYTES_PER_WORD)
+// The pool's coded size is the picture's rounded up to this, which the packet bound reads
+#define POOL_ALIGNMENT 64u
+// The luma samples of a 4x4 luma unit, which the packet bound counts words by
+#define LUMA_UNIT_SAMPLES 16u
 // No superblock is being parsed
 #define NO_SUPERBLOCK 0xFFFFFFFFu
 // A section without a count field: the superblocks, which the superblock grid counts
@@ -97,7 +100,7 @@ static uint32_t *reserve_record_words(AV1Parser *parser, WordBuffer *section,
                                       size_t count) {
   FrameSections *const sections = &parser->sections;
   const size_t record_words = sections->record_words + count;
-  if (record_words > RECORD_PACKET_WORDS) {
+  if (record_words > sections->packet_words) {
     fail_frame(parser, ERROR_RECORD_SIZE, to_kibibytes(record_words));
   }
   const size_t first = section->count;
@@ -175,6 +178,29 @@ void av1_record_free_sections(AV1Parser *parser) {
   sections->started = 0;
 }
 
+// The packet bound in words for the frame, av1.wgsl's packet line for a pool of its upscaled size rounded up to 64 in its output format:
+// a 4:0:0 frame decodes into 4:2:0, whose chroma planes count as such
+static size_t get_packet_words(const AV1_COMMON *common) {
+  const SequenceHeader *const sequence = common->seq_params;
+  const uint64_t alignment_mask = ~(uint64_t)(POOL_ALIGNMENT - 1u);
+  const uint64_t width = ((uint64_t)common->superres_upscaled_width + POOL_ALIGNMENT - 1u) & alignment_mask;
+  const uint64_t height = ((uint64_t)common->height + POOL_ALIGNMENT - 1u) & alignment_mask;
+  const uint64_t samples = width * height;
+  const uint32_t subsampled_x = sequence->monochrome || sequence->subsampling_x;
+  const uint32_t subsampled_y = sequence->monochrome || sequence->subsampling_y;
+  // Plane units per luma unit in quarters, 1 + 2 / (chroma divisors): 6 at 4:2:0, 8 at 4:2:2, 12 at 4:4:4
+  const uint64_t plane_unit_quarters = 4u + 8u / ((1u + subsampled_x) * (1u + subsampled_y));
+  // Words per luma unit in eighths: the unit words, then per plane unit its words and 16 coefficients of bit depth + bias bits, half a word a bit
+  const uint64_t unit_word_eighths =
+      8u * RECORD_PACKET_UNIT_WORDS +
+      plane_unit_quarters * (2u * RECORD_PACKET_PLANE_UNIT_WORDS + (uint64_t)sequence->bit_depth + RECORD_PACKET_COEFFICIENT_BIT_BIAS);
+  uint64_t bytes = samples * unit_word_eighths * BYTES_PER_WORD / (8u * LUMA_UNIT_SAMPLES) +
+                   samples / RECORD_PACKET_MARGIN_SAMPLES + RECORD_PACKET_MARGIN_BYTES;
+  if (bytes > RECORD_PACKET_MAXIMUM_BYTES) bytes = RECORD_PACKET_MAXIMUM_BYTES;
+  if (bytes < RECORD_PACKET_MINIMUM_BYTES) bytes = RECORD_PACKET_MINIMUM_BYTES;
+  return (size_t)(bytes / BYTES_PER_WORD);
+}
+
 // Sizes the frame's sections at its first hook, once libaom read the frame header
 static void start_sections(AV1Parser *parser) {
   FrameSections *const sections = &parser->sections;
@@ -201,6 +227,7 @@ static void start_sections(AV1Parser *parser) {
   sections->deblock_planes =
       get_deblock_planes(common, get_frame_filters(common).deblock);
   sections->record_words = RECORD_HEADER_WORDS;
+  sections->packet_words = get_packet_words(common);
   sections->superblock = NO_SUPERBLOCK;
   sections->superblock_wave = 0;
   sections->residual_planes = 0;
@@ -767,6 +794,10 @@ static uint32_t write_block_extensions(AV1Parser *parser, const AV1_COMMON *comm
              mode_info->palette_mode_info.palette_size[1] > 0) {
     presence |= 1u << RECORD_BLOCK_HAS_PALETTE_SHIFT;
     write_palette(parser, macroblock, mode_info);
+  }
+  // The extension word holds the offset in its low bits, which level 6's largest pictures stay within
+  if (presence != 0 && (offset >> RECORD_BLOCK_EXTENSION_OFFSET_BITS) != 0) {
+    fail_frame(parser, ERROR_RECORD_SIZE, to_kibibytes(offset));
   }
   return presence == 0 ? 0u : offset | presence;
 }

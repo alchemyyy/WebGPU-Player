@@ -320,11 +320,11 @@ fn intraLoadLatticeBoundary(origin: vec2u, plane: u32, lane: u32, targetBase: u3
         let rowBase = targetBase + (origin.y - 1u) * rowWords;
         let firstFrameWord = origin.x >> SAMPLE_PAIR_SHIFT;
         if (firstFrameWord + lane >= 1u && firstFrameWord + lane - 1u < rowWords) {
-            boundary.x = frames[rowBase + firstFrameWord + lane - 1u];
+            boundary.x = readFrameWord(rowBase + firstFrameWord + lane - 1u);
         }
         let lastWord = INTRA_LATTICE_ABOVE_WORDS - 1u;
         if (lane == 0u && firstFrameWord + lastWord - 1u < rowWords) {
-            boundary.y = frames[rowBase + firstFrameWord + lastWord - 1u];
+            boundary.y = readFrameWord(rowBase + firstFrameWord + lastWord - 1u);
         }
     }
     if (origin.x > 0u && lane < INTRA_LATTICE_LEFT_WORDS) {
@@ -332,10 +332,10 @@ fn intraLoadLatticeBoundary(origin: vec2u, plane: u32, lane: u32, targetBase: u3
         let column = (origin.x - 1u) >> SAMPLE_PAIR_SHIFT;
         let y = origin.y + (lane << SAMPLE_PAIR_SHIFT);
         if (y < planeHeight) {
-            boundary.z = frames[targetBase + y * rowWords + column] >> SAMPLE_HALF_BITS;
+            boundary.z = readFrameWord(targetBase + y * rowWords + column) >> SAMPLE_HALF_BITS;
         }
         if (y + 1u < planeHeight) {
-            boundary.z |= frames[targetBase + (y + 1u) * rowWords + column] & (SAMPLE_HALF_MASK << SAMPLE_HALF_BITS);
+            boundary.z |= readFrameWord(targetBase + (y + 1u) * rowWords + column) & (SAMPLE_HALF_MASK << SAMPLE_HALF_BITS);
         }
     }
     return boundary;
@@ -408,7 +408,7 @@ fn intraHasFlag(flags: u32, flag: u32) -> bool {
 
 // Reads a sample of a plane whose first word is planeBase, as a signed value
 fn intraReadSample(planeBase: u32, rowWords: u32, x: u32, y: u32) -> i32 {
-    let word = frames[planeBase + y * rowWords + (x >> SAMPLE_PAIR_SHIFT)];
+    let word = readFrameWord(planeBase + y * rowWords + (x >> SAMPLE_PAIR_SHIFT));
     return i32((word >> ((x & 1u) * SAMPLE_HALF_BITS)) & SAMPLE_HALF_MASK);
 }
 
@@ -581,7 +581,7 @@ fn intraLoadResidualQuad(residualBase: u32, quadIndex: u32, extent: vec4u, plane
         return vec2u(0u);
     }
     let residualIndex = residualBase + y * plane.z + (x >> SAMPLE_PAIR_SHIFT);
-    return vec2u(frames[residualIndex], frames[residualIndex + select(0u, 1u, x + (1u << SAMPLE_PAIR_SHIFT) < plane.x)]);
+    return vec2u(readFrameWord(residualIndex), readFrameWord(residualIndex + select(0u, 1u, x + (1u << SAMPLE_PAIR_SHIFT) < plane.x)));
 }
 
 // A palette color by its index: 16 bits, two per record word from colorsWord
@@ -591,7 +591,7 @@ fn paletteReadColor(colorsWord: u32, colorIndex: u32) -> i32 {
 
 // libaom's cfl_luma_subsampling_*_hbd_c() for one sample of the CFL buffer: the luma at the chroma sample, in Q3
 fn cflGetLumaQ3(lumaBase: u32, lumaRowWords: u32, lumaX: u32, lumaY: u32, subsamplingX: u32, subsamplingY: u32) -> i32 {
-    let word = frames[lumaBase + lumaY * lumaRowWords + (lumaX >> SAMPLE_PAIR_SHIFT)];
+    let word = readFrameWord(lumaBase + lumaY * lumaRowWords + (lumaX >> SAMPLE_PAIR_SHIFT));
     if (subsamplingX == 0u) {
         return i32((word >> ((lumaX & 1u) * SAMPLE_HALF_BITS)) & SAMPLE_HALF_MASK) << CFL_Q3_SHIFT_444;
     }
@@ -599,7 +599,7 @@ fn cflGetLumaQ3(lumaBase: u32, lumaRowWords: u32, lumaX: u32, lumaY: u32, subsam
     if (subsamplingY == 0u) {
         return pairSum << CFL_Q3_SHIFT_422;
     }
-    let below = frames[lumaBase + (lumaY + 1u) * lumaRowWords + (lumaX >> SAMPLE_PAIR_SHIFT)];
+    let below = readFrameWord(lumaBase + (lumaY + 1u) * lumaRowWords + (lumaX >> SAMPLE_PAIR_SHIFT));
     return (pairSum + i32(below & SAMPLE_HALF_MASK) + i32(below >> SAMPLE_HALF_BITS)) << CFL_Q3_SHIFT_420;
 }
 
@@ -1141,7 +1141,7 @@ fn intraRunJob(job: vec4u, details: vec4u, plane: u32, lane: u32, planeBases: ve
             let secondWord = select(0u, 1u, x + (1u << SAMPLE_PAIR_SHIFT) < planeWidth);
             var targetWords = vec2u(0u);
             if (kind != RECORD_INTRA_JOB_KIND_TRANSFORM) {
-                targetWords = vec2u(frames[wordIndex], frames[wordIndex + secondWord]);
+                targetWords = vec2u(readFrameWord(wordIndex), readFrameWord(wordIndex + secondWord));
             }
             var residuals = vec4<i32>(0);
             if (hasResidual) {
@@ -1160,7 +1160,7 @@ fn intraRunJob(job: vec4u, details: vec4u, plane: u32, lane: u32, planeBases: ve
                     }
                     default: {
                         let residualIndex = residualBase + y * rowWords + (x >> SAMPLE_PAIR_SHIFT);
-                        residualWords = vec2u(frames[residualIndex], frames[residualIndex + secondWord]);
+                        residualWords = vec2u(readFrameWord(residualIndex), readFrameWord(residualIndex + secondWord));
                     }
                 }
                 residuals = intraUnpackResiduals(residualWords);
@@ -1272,9 +1272,9 @@ fn intraRunJob(job: vec4u, details: vec4u, plane: u32, lane: u32, planeBases: ve
                     interBlendInterIntra(blockIndex, plane, column + 3u, row, interSamples.w, u32(predictions.w))));
             }
             let values = vec4u(clamp(predictions + residuals, vec4<i32>(0), sampleMaxima));
-            frames[wordIndex] = values.x | (values.y << SAMPLE_HALF_BITS);
+            writeFrameWord(wordIndex, values.x | (values.y << SAMPLE_HALF_BITS));
             if (secondWord != 0u) {
-                frames[wordIndex + 1u] = values.z | (values.w << SAMPLE_HALF_BITS);
+                writeFrameWord(wordIndex + 1u, values.z | (values.w << SAMPLE_HALF_BITS));
             }
             if (usesLattice) {
                 intraWriteLattice(x - lattice.x, y - lattice.y, values);

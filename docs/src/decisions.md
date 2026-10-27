@@ -383,6 +383,7 @@ These were settled on stock Chrome on Windows, with a Chromium 153 source audit.
   Raising the bound to the largest rounded pool of a legal picture, 8192x1152, would have offered the package level 6 sizes such as 4096x2304, so `accepts` gained facts of its own instead.
   `picture.width` and `picture.height` are the size before the rounding: the container's visible size at eligibility, and the size a session's pool is chosen for; size, state, and dispatch expressions cannot read them, so no fact means two things.
   The device's limits still judge the rounded pool.
+  Since 10-27 AV1's `accepts` bounds the pictures by level 6.x, 16384x8704 and 35,651,584 samples, on the same facts.
 - A device kept the four compiled decoders its sessions used last (10-14), until it kept one version of each package (10-15).
   A decoder's module and pipelines depend only on its package and output format, while a new session comes with each file, each seek that cannot reuse the session, and each stream change.
   Until 10-14 every session also stayed reachable from its device's lost promise after it was destroyed, which kept all its pipelines alive, so Dawn's own deduplication of identical pipelines made a second session cheap by accident and nothing bounded what stayed.
@@ -396,9 +397,11 @@ These were settled on stock Chrome on Windows, with a Chromium 153 source audit.
   On Dawn's D3D12 backend in Node on the RTX 5080, with every compile salted so the driver's cache missed and a fresh device per run, median of 5 at I420, session start fell from 3.21 to 2.62 s for AV1, 14.8 to 13.2 s for VC-1, 2.29 to 2.24 s for MPEG-2, 0.81 to 0.78 s for HEVC, and 0.62 to 0.58 s for JPEG 2000.
   Every split module of every package compiled without an error in every output format, 445 modules, and every package's vectors decode bit-exact through it.
   The VC-1 times predate its parser (10-15), which took the parse stage out of its module.
-- A header's `packet:` may declare up to 512 MiB (10-14).
+- A header's `packet:` may declare up to 512 MiB (10-14), and size it by the stream (10-27).
   The 64 MiB bound kept a ring of two packets within WebGPU's default storage binding of 128 MiB on every device.
   A record such as a lossless 2160p 4:4:4 HEVC picture's needs more, and the presenter requests the adapter's largest limits, so a header may declare up to 512 MiB; offers skip a package whose ring the device's buffer limit does not hold, and a session fails as `packet-size`.
+  AV1's worst record grows with its picture, to past 512 MiB at 8K 4:4:4 12-bit, and one fixed bound would give a 1080p stream a ring of 1 GiB and keep the package from every device whose binding holds less, so since 10-27 the size may be an expression of the stream facts, as a buffer's is, evaluated for each session.
+  AV1's is its record's worst case for the pool, at least the 64 MiB it declared before, and its parser checks each record against the same bound for its frame's size, which never passes the session's.
 - Self-test vectors run only on an explicit call (10-13).
   A package carries at most one vector per output format, in a format it writes, and `verifyGPUDecoderPackage` runs one only when a host calls it.
   Nothing caches or persists a result, because a verdict belongs to a package and a device, which the host keys itself.
@@ -613,9 +616,12 @@ These were settled on stock Chrome on Windows, with a Chromium 153 source audit.
   The WGSL then needs no syntax, no probability models, and no decode order beyond the wavefront, and every value it reads is the one libaom's own reconstruction would have used.
 - Every AV1 frame is one picture, hidden frames included (10-14).
   A temporal unit's hidden frames decode into references of their own, so the parser makes one picture per frame through parser interface 2, and the unit's last shown frame presents, as libaom and FFmpeg's libdav1d output one frame per temporal unit at operating point 0.
-  References stay in the package's own `frames` buffer, ten frame buffers the parser assigns, so the header declares `references: 0`, and only shown frames reach the frame pool.
-- AV1 reconstructs in 16-bit frame buffers at every bit depth (10-14).
+  References stay in the package's own frame store, ten frame buffers the parser assigns, so the header declares `references: 0`, and only shown frames reach the frame pool.
+- AV1 reconstructs in 16-bit frame buffers at every bit depth (10-14), in a store split over two buffers (10-27).
   Two samples per word keep every write owned by one invocation, since blocks and transforms start at multiples of 4 and no two filter footprints share a word; 8-bit streams pay twice the memory of 8-bit samples.
+  Level 6 makes the ten frame buffers of an 8192x4352 picture 1.07 GB at 4:2:0 and 2.14 GB at 4:4:4, past many devices' largest binding, and the RTX 5080's 2 GiB under Dawn holds 4:4:4 at 8192x4352 but not every legal pool rounded up to 64.
+  Bytes for 8-bit samples would halve the store, but four samples a word put two deblocking edges four samples apart into one word, which two invocations would write, so every family's sample layout and the filters' write ownership would change.
+  So since 10-27 the store spans two buffers of five frame buffers each, and one comparison against the first buffer's length picks the buffer of each word; a device whose binding holds half the store decodes it, and the fit check names the buffer a device cannot hold.
 - AV1's intra blocks reconstruct in a superblock wavefront (10-14).
   Inter blocks predict per 16x16 tile, and the transform passes add their residuals first; then a superblock waits for its left, top, and top-right neighbors in its tile (slope 2; IntraBC's delay rule needs slope 5 with 64x64 superblocks and 3 with 128x128), chroma runs one wave behind luma for CfL, and tiles run side by side.
   The parser reports each picture's wave pairs, so a frame without intra, IntraBC, or inter-intra blocks runs no wave.
