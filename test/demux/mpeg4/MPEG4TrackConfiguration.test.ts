@@ -136,6 +136,14 @@ describe('readMPEG4TrackConfiguration', () => {
         expect(await readFrames(configuration.videoTrack)).toEqual([ 1, 3, 2 ]);
     });
 
+    it('restamps a VfW track whose layer has no vol_control_parameters once its first group shows B-VOPs, as FFmpeg clears low_delay', async () => {
+        const track = await openMatroskaTrack(VFW_CODEC_ID, createVFWCodecPrivate('DIVX', CODED_WIDTH, CODED_HEIGHT, createMPEG4Extradata({ lowDelay: null, timeIncrementResolution: TIME_INCREMENT_RESOLUTION })));
+
+        const configuration = requireRead(await readConfiguration('mpeg4', track));
+
+        expect(await readFrames(configuration.videoTrack)).toEqual([ 1, 3, 2 ]);
+    });
+
     it('reads the video object layer from the first key packet of a VfW track whose extradata holds none', async () => {
         const track = await openMatroskaTrack(VFW_CODEC_ID, createVFWCodecPrivate('DX50', CODED_WIDTH, CODED_HEIGHT, new Uint8Array()), createMPEG4Extradata(B_VOP_LAYER));
 

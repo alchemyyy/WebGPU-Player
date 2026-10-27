@@ -29,8 +29,12 @@ const MILLISECONDS_PER_SECOND = 1_000;
 const TIME_INCREMENT_RESOLUTION = 25;
 const TIME_INCREMENT_BIT_COUNT = 5;
 const B_VOP_LAYER: MPEG4VideoObjectLayerFields = { lowDelay: false, timeIncrementResolution: TIME_INCREMENT_RESOLUTION };
-const B_VOP_SYNTAX: MPEG4VideoObjectLayerSyntax = { lowDelay: false, timeIncrementBitCount: TIME_INCREMENT_BIT_COUNT };
-const LOW_DELAY_SYNTAX: MPEG4VideoObjectLayerSyntax = { lowDelay: true, timeIncrementBitCount: TIME_INCREMENT_BIT_COUNT };
+const B_VOP_SYNTAX: MPEG4VideoObjectLayerSyntax = { lowDelay: false, timeIncrementBitCount: TIME_INCREMENT_BIT_COUNT, volControlParameters: true };
+const LOW_DELAY_SYNTAX: MPEG4VideoObjectLayerSyntax = { lowDelay: true, timeIncrementBitCount: TIME_INCREMENT_BIT_COUNT, volControlParameters: true };
+// An Advanced Simple layer without vol_control_parameters, which FFmpeg starts at low delay until a B-VOP clears it
+const ASSUMED_LOW_DELAY_SYNTAX: MPEG4VideoObjectLayerSyntax = { lowDelay: true, timeIncrementBitCount: TIME_INCREMENT_BIT_COUNT, volControlParameters: false };
+// video_object_type_indication of the Main object type, which FFmpeg assumes B-VOPs of
+const MAIN_OBJECT_TYPE = 4;
 
 /** A VOP of a packet in decode order: its type, whether it is coded, and its key flag. */
 type DecodeOrderVOP = Readonly<{ coded?: boolean, keyframe?: boolean, type: MPEG4VOPType }>;
@@ -83,12 +87,14 @@ async function readFrames(track: InputVideoTrack): Promise<number[]> {
 
 describe('readMPEG4VideoObjectLayerSyntax', () => {
     it.each([
-        [ 'clears low_delay in its vol_control_parameters', B_VOP_LAYER, false ],
-        [ 'sets low_delay after VBV parameters', { lowDelay: true, timeIncrementResolution: TIME_INCREMENT_RESOLUTION, vbvParameters: true }, true ],
-        // FFmpeg assumes low delay for Simple and Advanced Simple layers without vol_control_parameters
-        [ 'has no vol_control_parameters', { lowDelay: null, timeIncrementResolution: TIME_INCREMENT_RESOLUTION }, true ]
-    ])('reads a layer that %s', (_label: string, fields: MPEG4VideoObjectLayerFields, lowDelay: boolean) => {
-        expect(readMPEG4VideoObjectLayerSyntax(createMPEG4Extradata(fields))).toEqual({ lowDelay, timeIncrementBitCount: TIME_INCREMENT_BIT_COUNT });
+        [ 'clears low_delay in its vol_control_parameters', B_VOP_LAYER, false, true ],
+        [ 'sets low_delay after VBV parameters', { lowDelay: true, timeIncrementResolution: TIME_INCREMENT_RESOLUTION, vbvParameters: true }, true, true ],
+        // Without vol_control_parameters FFmpeg assumes low delay for the Simple and Advanced Simple object types alone
+        [ 'has no vol_control_parameters', { lowDelay: null, timeIncrementResolution: TIME_INCREMENT_RESOLUTION }, true, false ],
+        [ 'has no vol_control_parameters, of the Simple object type', { lowDelay: null, objectType: 1, timeIncrementResolution: TIME_INCREMENT_RESOLUTION }, true, false ],
+        [ 'has no vol_control_parameters, of the Main object type', { lowDelay: null, objectType: MAIN_OBJECT_TYPE, timeIncrementResolution: TIME_INCREMENT_RESOLUTION }, false, false ]
+    ])('reads a layer that %s', (_label: string, fields: MPEG4VideoObjectLayerFields, lowDelay: boolean, volControlParameters: boolean) => {
+        expect(readMPEG4VideoObjectLayerSyntax(createMPEG4Extradata(fields))).toEqual({ lowDelay, timeIncrementBitCount: TIME_INCREMENT_BIT_COUNT, volControlParameters });
     });
 
     it.each([
@@ -100,7 +106,7 @@ describe('readMPEG4VideoObjectLayerSyntax', () => {
     ])('counts the time increment bits of a resolution of %i as FFmpeg does: %i', (timeIncrementResolution: number, timeIncrementBitCount: number) => {
         const fields: MPEG4VideoObjectLayerFields = { extendedAspectRatio: true, lowDelay: false, objectLayerIdentifier: true, timeIncrementResolution };
 
-        expect(readMPEG4VideoObjectLayerSyntax(createMPEG4VideoObjectLayer(fields))).toEqual({ lowDelay: false, timeIncrementBitCount });
+        expect(readMPEG4VideoObjectLayerSyntax(createMPEG4VideoObjectLayer(fields))).toEqual({ lowDelay: false, timeIncrementBitCount, volControlParameters: true });
     });
 
     it('reads no layer from bytes without one, or of a zero time increment resolution, which FFmpeg refuses', () => {
@@ -135,9 +141,37 @@ describe('getMPEG4PictureOrder', () => {
 
 describe('createMPEG4PresentationOrderTrack', () => {
     it('returns the track itself for a low-delay layer, which outputs each VOP at once', async () => {
+        const { input, track } = await openDecodeOrderTrack([ { type: 'I' }, { type: 'B' }, { type: 'P' } ]);
+        try {
+            expect(await createMPEG4PresentationOrderTrack(track, LOW_DELAY_SYNTAX)).toBe(track);
+        } finally {
+            input.dispose();
+        }
+    });
+
+    it('returns the track itself for an Advanced Simple layer without vol_control_parameters whose first group has no B-VOP', async () => {
+        const { input, track } = await openDecodeOrderTrack([ { type: 'I' }, { type: 'P' }, { type: 'P' }, { type: 'I' }, { type: 'B' } ]);
+        try {
+            expect(await createMPEG4PresentationOrderTrack(track, ASSUMED_LOW_DELAY_SYNTAX)).toBe(track);
+        } finally {
+            input.dispose();
+        }
+    });
+
+    it('restamps an Advanced Simple layer without vol_control_parameters at its B-VOPs, at which FFmpeg clears low_delay', async () => {
+        const { input, track } = await openDecodeOrderTrack([ { type: 'I' }, { type: 'P' }, { type: 'B' }, { type: 'P' }, { type: 'B' } ]);
+        try {
+            expect(await readFrames(requireTrack(await createMPEG4PresentationOrderTrack(track, ASSUMED_LOW_DELAY_SYNTAX)))).toEqual([ 1, 3, 2, 5, 4 ]);
+        } finally {
+            input.dispose();
+        }
+    });
+
+    it('restamps a layer of another object type without vol_control_parameters, for which FFmpeg assumes B-VOPs', async () => {
+        const syntax = readMPEG4VideoObjectLayerSyntax(createMPEG4Extradata({ lowDelay: null, objectType: MAIN_OBJECT_TYPE, timeIncrementResolution: TIME_INCREMENT_RESOLUTION }));
         const { input, track } = await openDecodeOrderTrack([ { type: 'I' }, { type: 'P' } ]);
         try {
-            expect(createMPEG4PresentationOrderTrack(track, LOW_DELAY_SYNTAX)).toBe(track);
+            expect(await readFrames(requireTrack(syntax && await createMPEG4PresentationOrderTrack(track, syntax)))).toEqual([ 1, 2 ]);
         } finally {
             input.dispose();
         }
@@ -150,7 +184,7 @@ describe('createMPEG4PresentationOrderTrack', () => {
         ]);
         try {
             // An anchor takes the next anchor's time, the last one its own end; B-VOPs keep theirs
-            expect(await readFrames(requireTrack(createMPEG4PresentationOrderTrack(track, B_VOP_SYNTAX)))).toEqual([ 1, 4, 2, 3, 7, 5, 6 ]);
+            expect(await readFrames(requireTrack(await createMPEG4PresentationOrderTrack(track, B_VOP_SYNTAX)))).toEqual([ 1, 4, 2, 3, 7, 5, 6 ]);
         } finally {
             input.dispose();
         }
@@ -162,7 +196,7 @@ describe('createMPEG4PresentationOrderTrack', () => {
         ]);
         try {
             // The second anchor outputs at the third, past the N-VOP, which keeps its own time
-            expect(await readFrames(requireTrack(createMPEG4PresentationOrderTrack(track, B_VOP_SYNTAX)))).toEqual([ 1, 4, 2, 3, 5 ]);
+            expect(await readFrames(requireTrack(await createMPEG4PresentationOrderTrack(track, B_VOP_SYNTAX)))).toEqual([ 1, 4, 2, 3, 5 ]);
         } finally {
             input.dispose();
         }
@@ -174,7 +208,7 @@ describe('createMPEG4PresentationOrderTrack', () => {
             { type: 'I' }, { type: 'P' }, { type: 'B' }, { type: 'I' }, { type: 'B' }, { type: 'P' }
         ]);
         try {
-            const packetReader = new PacketReader(requireTrack(createMPEG4PresentationOrderTrack(track, B_VOP_SYNTAX)));
+            const packetReader = new PacketReader(requireTrack(await createMPEG4PresentationOrderTrack(track, B_VOP_SYNTAX)));
             const timeOf = (frames: number): number => frames * FRAME_MILLISECONDS / MILLISECONDS_PER_SECOND;
 
             // The first anchor presents at 1, after the start
@@ -190,7 +224,7 @@ describe('createMPEG4PresentationOrderTrack', () => {
         }
     });
 
-    it('refuses a track whose backing reads no packets', () => {
-        expect(createMPEG4PresentationOrderTrack({ _backing: {} } as unknown as InputVideoTrack, B_VOP_SYNTAX)).toBeNull();
+    it('refuses a track whose backing reads no packets', async () => {
+        expect(await createMPEG4PresentationOrderTrack({ _backing: {} } as unknown as InputVideoTrack, B_VOP_SYNTAX)).toBeNull();
     });
 });
