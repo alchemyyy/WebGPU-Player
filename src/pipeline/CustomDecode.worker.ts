@@ -199,7 +199,7 @@ import {
     readMatroskaMPEGVideoDecoderDescription
 } from '../demux/mpeg/MatroskaMPEGVideoConfiguration';
 import { readMatroskaBlockAdditions, type MatroskaBlockAddition } from '../demux/MatroskaBlockAdditions';
-import { readContainerVideoScan, withMatroskaVideoFieldOrder } from '../demux/ContainerVideoScan';
+import { readContainerVideoScan } from '../demux/ContainerVideoScan';
 import { getScanFrameFields, type VideoFrameFields } from '../decode/video/VideoFields';
 import { readVideoChromaFormat } from '../demux/VideoChromaFormat';
 import {
@@ -3700,7 +3700,7 @@ async function decodeMedia(run: DecodeRun, request: Extract<DecodeWorkerRequest,
             return;
         }
         const input = new Input({
-            formats: withMatroskaVideoFieldOrder(CUSTOM_DECODE_INPUT_FORMATS),
+            formats: CUSTOM_DECODE_INPUT_FORMATS,
             source: openMediaSource(run, request.source)
         });
         run.input = input;

@@ -598,10 +598,12 @@ These were settled on stock Chrome on Windows, with a Chromium 153 source audit.
   A field drawn between new frames is a draw from history: no source, no upload, one encode.
 - Each frame carries its own fields, from where they are known first (10-15).
   The picture fields word is the same in WGSL and parsers: bit 0 reported, so a reported progressive picture differs from none, bit 1 interlaced, bit 2 top field first, bit 3 repeat first field (`PICTURE_FIELDS_WORD`).
-  A frame's fields are its GPU decoder's `reportPictureFields` report, else its parser's optional `parser_picture_fields` word, else its container's scan: Matroska's FlagInterlaced and FieldOrder, read while Mediabunny parses the track entry as block additions are, or an MP4 sample entry's `fiel` box.
+  A frame's fields are its GPU decoder's `reportPictureFields` report, else its parser's optional `parser_picture_fields` word, else its container's scan: Matroska's FlagInterlaced and FieldOrder, or an MP4 sample entry's `fiel` box.
+  The fork's Matroska demuxer reads FlagInterlaced and FieldOrder and reports them as the track's field order, `getFieldOrder` (branch `v2-matroska-field-order`), so the engine's format wrapper, which recorded them while Mediabunny parsed the track entry, left (10-27).
   A GPU decoder's report reaches its frame through the decoder status's per-packet block, as "Every packet's status reads back" above describes.
   The field order codes follow FFmpeg's mapping: 9 stores the top field first and shows the bottom first, and 14 the reverse.
   A file whose MuxingApp names libavformat 57.36.100 to 57.51.100 holds 9 and 14 swapped, as that muxer wrote them, so they are read swapped back, as FFmpeg's demuxer does.
+  The swap repairs what one muxer wrote rather than choosing how to present, so it moved into the fork's demuxer with the reading, and `getFieldOrder` reports the order the file means (10-27).
   A frame without fields takes the stream's scan from the host's `FieldOrder`, in ffprobe's names, else its `IsInterlaced`; an interlaced frame of unknown order presents top field first, as yadif's `parity=auto` does, and a frame of unknown scan presents as it is.
 - Eligibility refuses interlaced video only where no route presents it (10-15).
   HEVC codes interlaced video as field pictures and JPEG 2000 as a codestream per field; no decoder weaves them into the frames the pass takes, so `IsInterlaced` true refuses them.
@@ -948,7 +950,7 @@ These were settled on Firefox 157 on Windows.
   `scripts/mediabunny.mjs` builds the fork's `dist/` with its own pinned toolchain (`npm ci --ignore-scripts` in the folder, then its `tsc` and import-extension pass), stamps the commit in `dist/webgpu-player-build.json`, and skips the build while the stamp matches; the engine's typecheck, test, lint, and build scripts run it first.
   The version move from 1.52.2 removed the engine's G.711 decoder registration, which Mediabunny 1.61.5 decodes itself, and the ISO BMFF DTS sample entry mappings, which it maps itself.
   The fork follows Mediabunny v2, upstream's `v2` branch, since 10-16: its `v2` branch merges upstream's `main` (1.61.6) in one commit, then carries the six pull requests, the AVI timing, and the MPEG-TS video, ported where v2 changed their code (AVI, AIFF).
-  Branches meant for upstream's `v2` are cut from it with a `v2-` prefix: `v2-fix-matroska-laced-header-stripping`, `v2-fix-custom-decoder-close-after-failure`, `v2-url-source-read-ahead`, and `v2-matroska-block-additions`.
+  Branches meant for upstream's `v2` are cut from it with a `v2-` prefix: `v2-fix-matroska-laced-header-stripping`, `v2-fix-custom-decoder-close-after-failure`, `v2-url-source-read-ahead`, `v2-matroska-block-additions`, and `v2-matroska-field-order` (10-27).
   v2 replaces the media sinks with packet readers and cursors, so `TrackIteration.ts` gives the worker what the sinks' `packets()` and `samples()` gave: packets read about a second ahead, and decoded samples from a start time, each ending at once on `return()`.
   `VC1PresentationOrder.ts` follows v2's track backing, which writes each packet into a result value, and presents a restamped packet through Mediabunny's internal clone, which keeps where the demuxer finds the packet again.
 - The engine is an npm workspace of its host (10-02).

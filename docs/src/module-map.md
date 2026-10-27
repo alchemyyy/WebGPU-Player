@@ -120,7 +120,7 @@ All worker code unless marked.
 - `URLSourceRetention.ts`: keeps the last run's URL source for the next run over the same media, released only by the run that took it last, and sizes its read-ahead and cache by the media's bitrate.
 - `CustomDecodeInputFormats.ts`: Mediabunny's input formats with Motion JPEG 2000 added, whose JP2 signature box precedes its ftyp.
 - `MatroskaBlockAdditions.ts`: reads a packet's Matroska or WebM BlockAdditionals but alpha, such as VP9 HDR10+, from the fork's packet side data.
-- `ContainerVideoScan.ts`: a video track's scan as its container declares it: Matroska's FlagInterlaced and FieldOrder, recorded while Mediabunny's demuxer parses the track entry, or an ISO base media sample entry's `fiel` box.
+- `ContainerVideoScan.ts`: a video track's scan as its container declares it: Matroska's FlagInterlaced and FieldOrder, which the fork's Matroska demuxer reports as the track's field order, or an ISO base media sample entry's `fiel` box.
 - `CustomDecodeTrackSelection.ts`: track lookup by ordinal within one media type.
 - `CustomAudioTrackMetadata.ts`: the Matroska and ISO BMFF DTS and TrueHD tracks whose codec Mediabunny does not map (`DTS `, `mlpa`), DTS Express detection, declared-rate recovery for their sample entries, and the decoded audio timestamp tolerance.
 - `AVIIndexCoverage.ts`: whether an AVI track's indexed packets end well before its stream header's declared length, as an OpenDML file's do past its first RIFF list.

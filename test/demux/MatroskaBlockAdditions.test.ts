@@ -18,7 +18,6 @@ import {
 } from 'mediabunny';
 import { describe, expect, it } from 'vitest';
 
-import { withMatroskaVideoFieldOrder } from 'webgpu-player/demux/ContainerVideoScan';
 import { CUSTOM_DECODE_INPUT_FORMATS } from 'webgpu-player/demux/CustomDecodeInputFormats';
 import { readMatroskaBlockAdditions, type MatroskaBlockAddition } from 'webgpu-player/demux/MatroskaBlockAdditions';
 
@@ -242,7 +241,7 @@ describe('readMatroskaBlockAdditions', () => {
             it('reads them through the worker\'s input formats', async () => {
                 await withVideoTrack(
                     readVP9HDR10PlusVector(vector.fileName),
-                    withMatroskaVideoFieldOrder(CUSTOM_DECODE_INPUT_FORMATS),
+                    CUSTOM_DECODE_INPUT_FORMATS,
                     async (track: InputVideoTrack): Promise<void> => {
                         const packets = await readPackets(track);
 
