@@ -2063,6 +2063,84 @@ describe('CustomDecodeCapabilityProbe', () => {
         }
     );
 
+    it.each([
+        // libvpx pads a 3840-wide picture's coded width to 3904 and copies its visible 3840 columns
+        { codedWidth: 3_904, outputCopySupported: true, visibleWidth: 3_840 },
+        { codedWidth: 3_904, outputCopySupported: false, visibleWidth: 3_904 }
+    ])('qualifies raw output by its visible size, coded $codedWidth and visible $visibleWidth wide: $outputCopySupported', async ({
+        codedWidth,
+        outputCopySupported,
+        visibleWidth
+    }) => {
+        // The fingerprint of the zeroed planes of a 3840x2160 I420P10 copy
+        const frameFingerprint = 667_501_752;
+        class FakeVideoFrame {
+            public readonly codedHeight = 2_160;
+            public readonly codedWidth = codedWidth;
+            public readonly format = 'I420P10';
+            public readonly visibleRect = { height: 2_160, width: visibleWidth, x: 0, y: 0 };
+
+            public constructor(public readonly timestamp: number) {}
+
+            public allocationSize(): number {
+                return 24_883_200;
+            }
+
+            public close(): void {
+                return;
+            }
+
+            // The copy is the visible rectangle's, at the visible width's stride
+            public copyTo(): Promise<readonly PlaneLayout[]> {
+                return Promise.resolve([
+                    { offset: 0, stride: visibleWidth * 2 },
+                    { offset: visibleWidth * 2 * 2_160, stride: visibleWidth },
+                    { offset: visibleWidth * 2 * 2_160 * 5 / 4, stride: visibleWidth }
+                ]);
+            }
+        }
+        class FakeVideoDecoder {
+            public constructor(private readonly callbacks: VideoDecoderInit) {}
+
+            public close(): void {
+                return;
+            }
+
+            public configure(): void {
+                return;
+            }
+
+            public decode(chunk: { timestamp: number }): void {
+                this.callbacks.output(new FakeVideoFrame(chunk.timestamp) as unknown as VideoFrame);
+            }
+
+            public flush(): Promise<void> {
+                return Promise.resolve();
+            }
+        }
+        class FakeEncodedVideoChunk {
+            public readonly timestamp: number;
+
+            public constructor(init: { timestamp: number }) {
+                this.timestamp = init.timestamp;
+            }
+        }
+        vi.stubGlobal('VideoDecoder', FakeVideoDecoder);
+        vi.stubGlobal('EncodedVideoChunk', FakeEncodedVideoChunk);
+
+        const result = await createRawHDRVideoOutputProbe()?.({
+            codec: 'vp9',
+            configuration: { codec: 'vp09.02.10.10', codedHeight: 2_160, codedWidth: 3_840 },
+            encodedChunks: [ { data: new Uint8Array([ 1 ]), timestamp: 0, type: 'key' } ],
+            expectedCodedHeight: 2_160,
+            expectedCodedWidth: 3_840,
+            expectedDecodedFrames: [ { fingerprint: frameFingerprint, timestamp: 0 } ],
+            expectedFormat: 'I420P10'
+        });
+
+        expect(result).toEqual({ outputCopySupported });
+    });
+
     it('qualifies raw output where the browser rejects a non-RGB copy format, as the spec requires', async () => {
         const allocationSizeOptions: Array<VideoFrameCopyToOptions | undefined> = [];
         const copyOptions: Array<VideoFrameCopyToOptions | undefined> = [];
