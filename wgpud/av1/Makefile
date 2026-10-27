@@ -9,8 +9,10 @@ PARSER_SOURCES := $(PARSER_DIRECTORY)/av1_parser.c $(PARSER_DIRECTORY)/av1_recor
 GENERATED_DIRECTORY = $(BUILD)/generated
 RECORD_LAYOUT_HEADER = $(GENERATED_DIRECTORY)/av1_record_layout.h
 
-# libaom and the bridge optimize for speed: entropy decoding is the parser's serial cost
-PARSER_COMPILE_FLAGS := -O3 -DNDEBUG -msimd128
+# libaom and the bridge optimize for speed: entropy decoding is the parser's serial cost. libaom refuses a frame buffer past an eighth of
+# AOM_MAX_ALLOCABLE_MEMORY, 2 GiB on 32-bit targets, which a level 6 4:4:4 frame with the borders of a scaled reference passes; the
+# parser's frame buffers map no memory, and the 1 GiB instance memory still bounds every real allocation
+PARSER_COMPILE_FLAGS := -O3 -DNDEBUG -msimd128 -DAOM_MAX_ALLOCABLE_MEMORY=4294901760ULL
 # A standalone reactor without JavaScript glue, which imports its memory, up to the 1 GiB a package instance gets
 PARSER_LINK_FLAGS := -sSTANDALONE_WASM -sIMPORTED_MEMORY -sFILESYSTEM=0 -sALLOW_MEMORY_GROWTH=1 \
 	-sINITIAL_MEMORY=33554432 -sMAXIMUM_MEMORY=1073741824 -sSTACK_SIZE=1048576 -sMALLOC=emmalloc \
