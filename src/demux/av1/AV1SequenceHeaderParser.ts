@@ -99,6 +99,11 @@ class AV1BitReader {
 
     public constructor(private readonly data: Uint8Array) {}
 
+    /** The number of bits read so far. */
+    public get position(): number {
+        return this.bitOffset;
+    }
+
     /** Reads an f(n) field of up to 32 bits. */
     public readBits(bitCount: number, fieldName: string): number {
         if (this.bitOffset + bitCount > this.data.byteLength * BITS_PER_BYTE) {
@@ -332,11 +337,20 @@ function readColorConfig(reader: AV1BitReader, profile: number): AV1ColorConfig 
     };
 }
 
+/** A parsed sequence header with the bit offsets a rewriter of its color_config needs. */
+export type AV1SequenceHeaderLayout = {
+    /** The bit offset of color_config(), from the start of the payload */
+    colorConfigBitOffset: number
+    /** The bit offset of trailing_bits(), from the start of the payload */
+    trailingBitsBitOffset: number
+    sequenceHeader: AV1SequenceHeader
+};
+
 /**
- * Parses the payload of one sequence header OBU bit-exactly, through its trailing bits.
+ * Parses the payload of one sequence header OBU bit-exactly, through its trailing bits, and reports where its color_config and trailing bits start.
  * A reserved profile, a truncated field, or data after the trailing bits fails with AV1OBUParseError.
  */
-export function parseAV1SequenceHeader(payload: Uint8Array): AV1SequenceHeader {
+export function parseAV1SequenceHeaderLayout(payload: Uint8Array): AV1SequenceHeaderLayout {
     const reader = new AV1BitReader(payload);
     const profile = reader.readBits(3, 'seq_profile');
     if (profile > PROFESSIONAL_PROFILE) {
@@ -376,22 +390,36 @@ export function parseAV1SequenceHeader(payload: Uint8Array): AV1SequenceHeader {
         skipInterToolFlags(reader);
     }
     reader.skipBits(3, 'enable_superres, enable_cdef, enable_restoration');
+    const colorConfigBitOffset = reader.position;
     const colorConfig = readColorConfig(reader, profile);
     const filmGrainParametersPresent = reader.readFlag('film_grain_params_present');
+    const trailingBitsBitOffset = reader.position;
     reader.requireTrailingBits();
 
     return {
-        colorConfig,
-        decoderModelInfo,
-        filmGrainParametersPresent,
-        maximumFrameHeight,
-        maximumFrameWidth,
-        operatingPoints,
-        profile,
-        reducedStillPictureHeader,
-        stillPicture,
-        timingInfo
+        colorConfigBitOffset,
+        sequenceHeader: {
+            colorConfig,
+            decoderModelInfo,
+            filmGrainParametersPresent,
+            maximumFrameHeight,
+            maximumFrameWidth,
+            operatingPoints,
+            profile,
+            reducedStillPictureHeader,
+            stillPicture,
+            timingInfo
+        },
+        trailingBitsBitOffset
     };
+}
+
+/**
+ * Parses the payload of one sequence header OBU bit-exactly, through its trailing bits.
+ * A reserved profile, a truncated field, or data after the trailing bits fails with AV1OBUParseError.
+ */
+export function parseAV1SequenceHeader(payload: Uint8Array): AV1SequenceHeader {
+    return parseAV1SequenceHeaderLayout(payload).sequenceHeader;
 }
 
 /** Parses the first sequence header OBU of a temporal unit, or returns null when the unit has none. */
