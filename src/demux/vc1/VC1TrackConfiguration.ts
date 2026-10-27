@@ -1,8 +1,8 @@
 import type { InputVideoTrack } from 'mediabunny';
 
+import { BITMAP_INFO_HEADER_BYTE_LENGTH } from '../BitmapInfoHeader';
 import { ISO_BASE_MEDIA_VC1_SAMPLE_ENTRY, readISOBaseMediaVC1DecoderDescription } from './ISOBaseMediaVC1Configuration';
 import {
-    BITMAP_INFO_HEADER_BYTE_LENGTH,
     MATROSKA_VFW_CODEC_ID,
     readMatroskaVC1DecoderDescription,
     readMatroskaWMV3DecoderDescription,

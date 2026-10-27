@@ -1,25 +1,10 @@
 import type { InputVideoTrack } from 'mediabunny';
 
+import { BITMAP_INFO_HEADER_BYTE_LENGTH, createBitmapInfoHeaderCodecPrivate, readBitmapInfoHeaderFourCC } from '../BitmapInfoHeader';
+
 /** Matroska's codec ID of a Video for Windows track, whose CodecPrivate is a BITMAPINFOHEADER and then the codec's extradata. */
 export const MATROSKA_VFW_CODEC_ID = 'V_MS/VFW/FOURCC';
-/** The BITMAPINFOHEADER's length, which a WMV3 description's sequence header follows. */
-export const BITMAP_INFO_HEADER_BYTE_LENGTH = 40;
 const MAXIMUM_EXTRADATA_BYTE_LENGTH = 1024 * 1024;
-// The BITMAPINFOHEADER fields the descriptions read and write, little-endian
-const HEADER_SIZE_OFFSET = 0;
-const WIDTH_OFFSET = 4;
-const HEIGHT_OFFSET = 8;
-const PLANES_OFFSET = 12;
-const BIT_COUNT_OFFSET = 14;
-const COMPRESSION_OFFSET = 16;
-const FOURCC_BYTE_LENGTH = 4;
-// The header a WMV3 description carries declares one plane of 24 bits, as Video for Windows codecs do
-const WMV3_HEADER_PLANE_COUNT = 1;
-const WMV3_HEADER_BIT_COUNT = 24;
-const PRINTABLE_ASCII_FIRST = 0x20;
-const PRINTABLE_ASCII_LAST = 0x7E;
-const HEXADECIMAL_RADIX = 16;
-const HEXADECIMAL_BYTE_DIGITS = 2;
 
 // FFmpeg's vc1 decoder takes WVC1 and WMVA, the pre-standard Advanced profile, whose extradata carries the sequence header and entry point
 const VC1_FOURCCS: readonly string[] = Object.freeze([ 'WVC1', 'WMVA' ]);
@@ -31,6 +16,11 @@ export type VC1DecoderDescriptionResult =
     | Readonly<{ description: Uint8Array, status: 'read' }>
     | Readonly<{ failure: string, status: 'failed' }>;
 
+/** A Matroska VfW track's FourCC and the extradata after its BITMAPINFOHEADER, which may be empty, or the check its CodecPrivate failed, as `code: detail`. */
+export type MatroskaVFWCodecPrivateResult =
+    | Readonly<{ extradata: Uint8Array, fourCC: string, status: 'read' }>
+    | Readonly<{ failure: string, status: 'failed' }>;
+
 type MatroskaVFWInternalTrack = {
     codecPrivate?: unknown
 };
@@ -39,28 +29,15 @@ type MatroskaVFWTrackBacking = {
     internalTrack?: MatroskaVFWInternalTrack
 };
 
-type VFWExtradataResult =
-    | Readonly<{ extradata: Uint8Array, fourCC: string, status: 'read' }>
-    | Readonly<{ failure: string, status: 'failed' }>;
-
 function fail(failure: string): Readonly<{ failure: string, status: 'failed' }> {
     return { failure, status: 'failed' };
 }
 
-/** Returns a FourCC as its four characters when they are printable, else as hexadecimal bytes. */
-function readFourCC(codecPrivate: Uint8Array): string {
-    const bytes = codecPrivate.subarray(COMPRESSION_OFFSET, COMPRESSION_OFFSET + FOURCC_BYTE_LENGTH);
-    if (bytes.every((value: number): boolean => value >= PRINTABLE_ASCII_FIRST && value <= PRINTABLE_ASCII_LAST)) {
-        return String.fromCharCode(...bytes);
-    }
-    return `0x${Array.from(bytes, (value: number): string => value.toString(HEXADECIMAL_RADIX).padStart(HEXADECIMAL_BYTE_DIGITS, '0')).join('')}`;
-}
-
 /**
- * Reads the extradata after a Matroska VFW CodecPrivate's BITMAPINFOHEADER when its FourCC is one of the codec's.
+ * Reads a Matroska VFW track's FourCC, as `formatFourCC` gives it, and the extradata after its BITMAPINFOHEADER.
  * As FFmpeg's Matroska demuxer reads it, the extradata is everything after the 40-byte header, and neither the header's biSize nor its frame size is read.
  */
-function readMatroskaVFWExtradata(track: InputVideoTrack, fourCCs: readonly string[]): VFWExtradataResult {
+export function readMatroskaVFWCodecPrivate(track: InputVideoTrack): MatroskaVFWCodecPrivateResult {
     // Mediabunny preserves unsupported Matroska codecs but does not expose CodecPrivate through getDecoderConfig(), so contain the backing access here
     const backing = (track as unknown as { _backing?: MatroskaVFWTrackBacking })._backing;
     const codecPrivate = backing?.internalTrack?.codecPrivate;
@@ -68,14 +45,22 @@ function readMatroskaVFWExtradata(track: InputVideoTrack, fourCCs: readonly stri
         return fail(`codec-private-missing: ${codecPrivate === null ? 'null' : typeof codecPrivate}`);
     }
     const extradataByteLength = codecPrivate.byteLength - BITMAP_INFO_HEADER_BYTE_LENGTH;
-    if (extradataByteLength <= 0 || extradataByteLength > MAXIMUM_EXTRADATA_BYTE_LENGTH) {
+    if (extradataByteLength < 0 || extradataByteLength > MAXIMUM_EXTRADATA_BYTE_LENGTH) {
         return fail(`codec-private-size: ${codecPrivate.byteLength}`);
     }
-    const fourCC = readFourCC(codecPrivate);
-    if (!fourCCs.includes(fourCC)) {
-        return fail(`fourcc: ${fourCC}`);
+    return { extradata: codecPrivate.slice(BITMAP_INFO_HEADER_BYTE_LENGTH), fourCC: readBitmapInfoHeaderFourCC(codecPrivate), status: 'read' };
+}
+
+/** Reads the extradata after a Matroska VFW CodecPrivate's BITMAPINFOHEADER when it has any and its FourCC is one of the codec's. */
+function readMatroskaVFWExtradata(track: InputVideoTrack, fourCCs: readonly string[]): MatroskaVFWCodecPrivateResult {
+    const codecPrivate = readMatroskaVFWCodecPrivate(track);
+    if (codecPrivate.status === 'failed') {
+        return codecPrivate;
     }
-    return { extradata: codecPrivate.slice(BITMAP_INFO_HEADER_BYTE_LENGTH), fourCC, status: 'read' };
+    if (codecPrivate.extradata.byteLength === 0) {
+        return fail(`codec-private-size: ${BITMAP_INFO_HEADER_BYTE_LENGTH}`);
+    }
+    return fourCCs.includes(codecPrivate.fourCC) ? codecPrivate : fail(`fourcc: ${codecPrivate.fourCC}`);
 }
 
 /**
@@ -104,16 +89,9 @@ export function readMatroskaWMV3DecoderDescription(
     if (extradata.status === 'failed') {
         return extradata;
     }
-    const description = new Uint8Array(BITMAP_INFO_HEADER_BYTE_LENGTH + extradata.extradata.byteLength);
-    const header = new DataView(description.buffer, 0, BITMAP_INFO_HEADER_BYTE_LENGTH);
-    header.setUint32(HEADER_SIZE_OFFSET, description.byteLength, true);
-    header.setInt32(WIDTH_OFFSET, codedWidth, true);
-    header.setInt32(HEIGHT_OFFSET, codedHeight, true);
-    header.setUint16(PLANES_OFFSET, WMV3_HEADER_PLANE_COUNT, true);
-    header.setUint16(BIT_COUNT_OFFSET, WMV3_HEADER_BIT_COUNT, true);
-    for (let characterIndex = 0; characterIndex < FOURCC_BYTE_LENGTH; characterIndex += 1) {
-        description[COMPRESSION_OFFSET + characterIndex] = extradata.fourCC.charCodeAt(characterIndex);
-    }
-    description.set(extradata.extradata, BITMAP_INFO_HEADER_BYTE_LENGTH);
-    return { description, status: 'read' };
+    const headerSize = BITMAP_INFO_HEADER_BYTE_LENGTH + extradata.extradata.byteLength;
+    return {
+        description: createBitmapInfoHeaderCodecPrivate(extradata.fourCC, codedWidth, codedHeight, extradata.extradata, headerSize),
+        status: 'read'
+    };
 }
