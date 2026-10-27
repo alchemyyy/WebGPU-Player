@@ -22,6 +22,7 @@ import {
 import {
     ENHANCEMENT_UNIFORM_BYTE_LENGTH,
     FRAME_POOL_LAYOUT_BYTE_LENGTH,
+    FRAME_POOL_VISIBLE_RECTANGLE_BYTE_OFFSET,
     getEngineBindingLayout,
     getParameterByteOffset,
     getParametersByteLength,
@@ -29,6 +30,7 @@ import {
     PRESENTATION_UNIFORM_BYTE_LENGTH,
     type PresentationUniformValues,
     UNIFORM_SLOT_BYTE_LENGTH,
+    writeFramePoolVisibleRectangle,
     writePresentationUniform
 } from './PassResources';
 import type {
@@ -687,6 +689,8 @@ export class PresentationExecutor {
     private readonly enhancementView: DataView<ArrayBuffer> = new DataView(new ArrayBuffer(ENHANCEMENT_UNIFORM_BYTE_LENGTH));
     // Frame pool bind groups per layout uniform, so a pool that names each slot with its own layout buffer never creates them per frame
     private readonly framePoolBindGroups = new Map<GPUBuffer, readonly (readonly GPUBindGroup[])[]>();
+    // The visible rectangle last written into each layout uniform, so a frame whose rectangle its slot's uniform already holds writes nothing
+    private readonly framePoolVisibleRectangles = new Map<GPUBuffer, string>();
     private readonly historySaturation: number;
     private readonly ownedBuffers: GPUBuffer[] = [];
     private readonly ownedTextures: GPUTexture[] = [];
@@ -996,6 +1000,7 @@ export class PresentationExecutor {
         this.uploadedFrame = null;
         this.uploadedEnhancementFrame = null;
         this.framePoolBindGroups.clear();
+        this.framePoolVisibleRectangles.clear();
         this.framePoolBuffer = null;
         this.boundFramePoolLayout = null;
     }
@@ -1243,12 +1248,18 @@ export class PresentationExecutor {
         }
     }
 
+    /**
+     * Binds a frame pool slot and writes the frame's visible rectangle into the slot's layout uniform, to which the frame pool signal clamps its taps.
+     * A slot's frames can differ in visible rectangle, as a decoder's header replaces the container's or a picture reports its own size, so each frame writes its own.
+     */
     private prepareFramePool(frame: FramePoolFrame): void {
         if (frame.pool !== this.framePoolBuffer) {
             this.framePoolBindGroups.clear();
+            this.framePoolVisibleRectangles.clear();
             this.framePoolBuffer = frame.pool;
             this.boundFramePoolLayout = null;
         }
+        this.writeFramePoolVisibleRectangle(frame);
         if (frame.layout === this.boundFramePoolLayout) {
             return;
         }
@@ -1269,6 +1280,18 @@ export class PresentationExecutor {
             }
         }
         this.boundFramePoolLayout = frame.layout;
+    }
+
+    private writeFramePoolVisibleRectangle(frame: FramePoolFrame): void {
+        const rectangle = frame.visibleRectangle;
+        const key = `${rectangle.x},${rectangle.y},${rectangle.width},${rectangle.height}`;
+        if (this.framePoolVisibleRectangles.get(frame.layout) === key) {
+            return;
+        }
+        const data = new ArrayBuffer(FRAME_POOL_LAYOUT_BYTE_LENGTH - FRAME_POOL_VISIBLE_RECTANGLE_BYTE_OFFSET);
+        writeFramePoolVisibleRectangle(new DataView(data), rectangle);
+        this.device.queue.writeBuffer(frame.layout, FRAME_POOL_VISIBLE_RECTANGLE_BYTE_OFFSET, data);
+        this.framePoolVisibleRectangles.set(frame.layout, key);
     }
 
     private preparePlanes(

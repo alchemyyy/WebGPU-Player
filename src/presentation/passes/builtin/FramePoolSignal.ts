@@ -50,19 +50,37 @@ fn framePoolLoadSample(planeIndex: u32, position: vec2i) -> f32 {
     return f32((framePool[byteAddress >> 2u] >> ((byteAddress & 3u) * 8u)) & sampleMask);
 }`;
 
-// The raw YUV signal's manual bilinear sample, with the plane's size from the layout uniform in place of textureDimensions
-const SAMPLE_PLANE_WGSL = `
+// The samples of a plane that lie in the frame's visible picture, first and last on each axis: the visible rectangle in luma samples, widened to whole
+// samples of a subsampled plane, which no tap leaves, so a picture whose size is not a multiple of the pool's padding, or whose decoder writes rows it
+// crops, reads its own edge samples there, as the raw route's texture of the picture and FFmpeg's scaler after cropping do
+const PLANE_BOUNDS_WGSL = `
+fn framePoolPlaneBounds(planeIndex: u32) -> vec4i {
+    let lumaSize = vec2u(framePoolLayout.planes[0].width, framePoolLayout.planes[0].height);
+    let planeSize = vec2u(framePoolLayout.planes[planeIndex].width, framePoolLayout.planes[planeIndex].height);
+    let divisor = (lumaSize + planeSize - vec2u(1u)) / planeSize;
+    let visibleEnd = framePoolLayout.visibleOrigin + framePoolLayout.visibleSize;
+    let minimumPosition = min(framePoolLayout.visibleOrigin / divisor, planeSize - vec2u(1u));
+    let maximumPosition = clamp((visibleEnd + divisor - vec2u(1u)) / divisor, minimumPosition + vec2u(1u), planeSize) - vec2u(1u);
+    return vec4i(vec2i(minimumPosition), vec2i(maximumPosition));
+}`;
+
+// The raw YUV signal's manual bilinear sample, with the plane's size from the layout uniform in place of textureDimensions and its taps clamped to the
+// visible picture's samples in place of the texture's
+const SAMPLE_PLANE_WGSL = `${PLANE_BOUNDS_WGSL}
+
 fn framePoolSamplePlane(planeIndex: u32, textureCoordinate: vec2f) -> f32 {
     let plane = framePoolLayout.planes[planeIndex];
     let dimensions = vec2f(f32(plane.width), f32(plane.height));
     let samplePosition = textureCoordinate * dimensions - vec2f(0.5);
     let basePosition = vec2i(floor(samplePosition));
     let fraction = fract(samplePosition);
-    let maximumPosition = vec2i(i32(plane.width), i32(plane.height)) - vec2i(1);
-    let topLeft = framePoolLoadSample(planeIndex, clamp(basePosition, vec2i(0), maximumPosition));
-    let topRight = framePoolLoadSample(planeIndex, clamp(basePosition + vec2i(1, 0), vec2i(0), maximumPosition));
-    let bottomLeft = framePoolLoadSample(planeIndex, clamp(basePosition + vec2i(0, 1), vec2i(0), maximumPosition));
-    let bottomRight = framePoolLoadSample(planeIndex, clamp(basePosition + vec2i(1), vec2i(0), maximumPosition));
+    let bounds = framePoolPlaneBounds(planeIndex);
+    let minimumPosition = bounds.xy;
+    let maximumPosition = bounds.zw;
+    let topLeft = framePoolLoadSample(planeIndex, clamp(basePosition, minimumPosition, maximumPosition));
+    let topRight = framePoolLoadSample(planeIndex, clamp(basePosition + vec2i(1, 0), minimumPosition, maximumPosition));
+    let bottomLeft = framePoolLoadSample(planeIndex, clamp(basePosition + vec2i(0, 1), minimumPosition, maximumPosition));
+    let bottomRight = framePoolLoadSample(planeIndex, clamp(basePosition + vec2i(1), minimumPosition, maximumPosition));
     return mix(mix(topLeft, topRight, fraction.x), mix(bottomLeft, bottomRight, fraction.x), fraction.y);
 }`;
 
@@ -162,6 +180,7 @@ function createFramePoolPlanes(format: GPUDecoderOutputFormat, metadata: InputCo
 const SAMPLE_INTERLACED_CHROMA_WGSL = createInterlacedChromaReadWGSL(
     'framePoolSampleInterlacedChroma(planeIndex: u32, textureCoordinate: vec2f) -> f32',
     'vec2i(i32(framePoolLayout.planes[planeIndex].width), i32(framePoolLayout.planes[planeIndex].height))',
+    'framePoolPlaneBounds(planeIndex)',
     'i32(framePoolLayout.planes[0].height)',
     (column: string, row: string): string => `framePoolLoadSample(planeIndex, vec2i(${column}, ${row}))`
 );

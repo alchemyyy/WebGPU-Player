@@ -551,29 +551,33 @@ export const INTERLACED_SIGNAL_CONDITION = `(presentation.fieldState & ${PRESENT
  * every other row of the plane, at the field's own siting, MPEG-2's for interlaced 4:2:0: the top field's chroma lies a quarter of a field row below its
  * luma rows, the bottom field's three quarters, so a still frame's chroma sits where a progressive frame's does.
  * The horizontal read is the progressive one, so its coordinate carries the location's horizontal shift alone, and the vertical siting stays MPEG-2's
- * whatever the stream declares; dimensions, lumaHeight, and the load are WGSL expressions of the plane it reads.
+ * whatever the stream declares; dimensions, bounds, lumaHeight, and the load are WGSL expressions of the plane it reads, bounds a vec4i of the first (xy) and
+ * last (zw) samples its taps may read, within which each field keeps its own rows.
  */
 export function createInterlacedChromaReadWGSL(
     signature: string,
     dimensions: string,
+    bounds: string,
     lumaHeight: string,
     load: (column: string, row: string) => string
 ): string {
     return `
 fn ${signature} {
     let dimensions = ${dimensions};
+    let bounds = ${bounds};
     let lumaHeight = ${lumaHeight};
     let lumaRow = clamp(i32(floor(textureCoordinate.y * f32(lumaHeight))), 0, lumaHeight - 1);
     let field = lumaRow & 1;
-    let lastFieldRow = max((dimensions.y - field + 1) / 2 - 1, 0);
+    let firstFieldRow = (bounds.y - field + 1) / 2;
+    let lastFieldRow = max((bounds.w - field) / 2, firstFieldRow);
     let fieldPosition = (f32(lumaRow >> 1u) - 0.25 - 0.5 * f32(field)) * 0.5;
     let fieldRow = i32(floor(fieldPosition));
     let rowFraction = fieldPosition - floor(fieldPosition);
-    let topRow = min(clamp(fieldRow, 0, lastFieldRow) * 2 + field, dimensions.y - 1);
-    let bottomRow = min(clamp(fieldRow + 1, 0, lastFieldRow) * 2 + field, dimensions.y - 1);
+    let topRow = clamp(clamp(fieldRow, firstFieldRow, lastFieldRow) * 2 + field, bounds.y, bounds.w);
+    let bottomRow = clamp(clamp(fieldRow + 1, firstFieldRow, lastFieldRow) * 2 + field, bounds.y, bounds.w);
     let columnPosition = textureCoordinate.x * f32(dimensions.x) - 0.5;
-    let leftColumn = clamp(i32(floor(columnPosition)), 0, dimensions.x - 1);
-    let rightColumn = clamp(i32(floor(columnPosition)) + 1, 0, dimensions.x - 1);
+    let leftColumn = clamp(i32(floor(columnPosition)), bounds.x, bounds.z);
+    let rightColumn = clamp(i32(floor(columnPosition)) + 1, bounds.x, bounds.z);
     let columnFraction = fract(columnPosition);
     let topLeft = ${load('leftColumn', 'topRow')};
     let topRight = ${load('rightColumn', 'topRow')};
@@ -590,6 +594,7 @@ function createTextureInterlacedChromaReadWGSL(functionName: string, textureName
     return createInterlacedChromaReadWGSL(
         `${functionName}(textureCoordinate: vec2f) -> ${valueType}`,
         `vec2i(textureDimensions(${textureName}))`,
+        `vec4i(vec2i(0), vec2i(textureDimensions(${textureName})) - vec2i(1))`,
         LUMA_TEXTURE_HEIGHT,
         (column: string, row: string): string => `${valueType}(textureLoad(${textureName}, vec2i(${column}, ${row}), 0)${channels})`
     );
