@@ -2,17 +2,21 @@
 """Generate the AVI demux test vectors, or verify them with --check.
 
 Each vector is a short FFmpeg encode muxed by FFmpeg's AVI muxer, which writes an idx1 index and, for these small files, no AVIX list.
+Two are then rewritten into layouts FFmpeg writes only for longer files or other encoders (avi_rewriting.py): one into OpenDML RIFF lists, one into DivX's packed bitstream.
 Together they cover what the engine reads from AVI through Mediabunny:
 - H.264 High with B-frames in a B-pyramid, stamped in decode order as AVI is, beside variable-bitrate MP3 timed per frame;
 - H.264 without B-frames beside constant-bitrate MP3 timed by bytes, whose first frame FFmpeg drops into an empty chunk;
 - VP8 with 16-bit PCM, VP9 with AAC and its AudioSpecificConfig, and AV1 with AC-3 (WAVE_FORMAT_DVM, 0x2000);
 - HEVC with B-frames under the HEVC fourcc and under the zero tag FFmpeg's muxer writes without one, which FFmpeg reads back as uncompressed video, and MPEG-4 Part 2 under XVID, which has no route;
 - 5.1 24-bit and 32-bit float PCM and 5.1 FLAC, which FFmpeg writes as WAVE_FORMAT_EXTENSIBLE with a channel mask, and FLAC and Vorbis with their headers in the format's extradata.
-- three-channel PCM as 2.1 (mask 0x0B) and as 3.0 with a back center (mask 0x103), whose third channel is not the front center a count of three otherwise means.
+- three-channel PCM as 2.1 (mask 0x0B) and as 3.0 with a back center (mask 0x103), whose third channel is not the front center a count of three otherwise means;
+- VP9 with AAC in three RIFF lists, which only the OpenDML indexes cover past the first, as FFmpeg writes a file past 1 GiB;
+- MPEG-4 Part 2 with B-frames under DX50, packed as DivX 5 writes them, which Mediabunny unpacks as FFmpeg's mpeg4_unpack_bframes does.
 The multichannel vectors give each channel its own level, so a decode in the wrong channel order shows.
 
 The encoders' bytes depend on the FFmpeg build, so the generator refuses any but the pinned one, and an existing vector is only compared, never replaced.
 Before writing, it checks each file's streams with FFprobe: the codec, the codec tag, and the packet count.
+FFmpeg must decode a rewritten vector's video to the same frames as the encode it was rewritten from.
 """
 
 from __future__ import annotations
@@ -23,8 +27,9 @@ import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final, Sequence
+from typing import Callable, Final, Sequence
 
+from avi_rewriting import pack_DivX_B_frames, split_into_OpenDML_RIFF_lists
 from engine_layout import CODEC_VECTOR_ASSETS_DIRECTORY
 from generated_output import GeneratedOutputError, install_or_check_output
 from media_tools import (
@@ -58,11 +63,15 @@ THREE_POINT_ZERO_BACK_ARGUMENTS: Final = ("-af", "pan=3.0(back)|FL=c0|FR=0.8*c0|
 PLAIN_VP9_ARGUMENTS: Final = ("-c:v", "libvpx-vp9", "-b:v", "300k", "-row-mt", "0", *SINGLE_THREAD_ARGUMENTS)
 # x265 on one thread without wavefronts, so its encodes are deterministic too, with B-frames in a pyramid
 HEVC_PARAMETERS: Final = "info=0:pools=none:frame-threads=1:wpp=0:log-level=error:scenecut=0:bframes=3:b-pyramid=1"
+AAC_ARGUMENTS: Final = ("-c:a", "aac", "-b:a", "96k")
+# A RIFF list limit that leaves the first RIFF list one video frame past its header and puts the second key frame in the
+# first AVIX list, where FFmpeg's muxer opens a new RIFF list past 1 GiB
+OPENDML_MAXIMUM_RIFF_SIZE: Final = 12_000
 
 
 @dataclass(frozen=True)
 class AVIVector:
-    """One AVI vector: its file name, the encoder arguments of each stream, and what FFprobe must read back."""
+    """One AVI vector: its file name, the encoder arguments of each stream, what FFprobe must read back, and a rewrite of the muxed file."""
 
     file_name: str
     video_arguments: tuple[str, ...]
@@ -70,6 +79,7 @@ class AVIVector:
     video_codec_name: str
     video_codec_tag: str
     audio_codec_name: str
+    rewrite: Callable[[bytes], bytes] | None = None
 
 
 AVI_VECTORS: Final = (
@@ -99,8 +109,8 @@ AVI_VECTORS: Final = (
     ),
     AVIVector(
         "vp9-aac.avi",
-        ("-c:v", "libvpx-vp9", "-b:v", "300k", "-row-mt", "0", *SINGLE_THREAD_ARGUMENTS),
-        ("-c:a", "aac", "-b:a", "96k"),
+        PLAIN_VP9_ARGUMENTS,
+        AAC_ARGUMENTS,
         "vp9",
         "VP90",
         "aac",
@@ -144,6 +154,24 @@ AVI_VECTORS: Final = (
     AVIVector("vp9-vorbis.avi", PLAIN_VP9_ARGUMENTS, ("-c:a", "libvorbis", "-q:a", "3", "-ac", STEREO_CHANNEL_COUNT), "vp9", "VP90", "vorbis"),
     AVIVector("vp9-pcm_s16le-2.1.avi", PLAIN_VP9_ARGUMENTS, ("-c:a", "pcm_s16le", *TWO_POINT_ONE_ARGUMENTS), "vp9", "VP90", "pcm_s16le"),
     AVIVector("vp9-pcm_s16le-3.0-back.avi", PLAIN_VP9_ARGUMENTS, ("-c:a", "pcm_s16le", *THREE_POINT_ZERO_BACK_ARGUMENTS), "vp9", "VP90", "pcm_s16le"),
+    AVIVector(
+        "vp9-aac-opendml.avi",
+        PLAIN_VP9_ARGUMENTS,
+        AAC_ARGUMENTS,
+        "vp9",
+        "VP90",
+        "aac",
+        lambda data: split_into_OpenDML_RIFF_lists(data, OPENDML_MAXIMUM_RIFF_SIZE),
+    ),
+    AVIVector(
+        "mpeg4-packed-bframes-mp3.avi",
+        ("-c:v", "mpeg4", "-tag:v", "DX50", "-bf", "1", "-q:v", "5", *SINGLE_THREAD_ARGUMENTS),
+        ("-c:a", "libmp3lame", "-b:a", "64k"),
+        "mpeg4",
+        "DX50",
+        "mp3",
+        pack_DivX_B_frames,
+    ),
 )
 
 
@@ -189,6 +217,23 @@ def verify_vector(tools: MediaTools, vector: AVIVector, path: Path) -> None:
         raise VectorGenerationError(f"{vector.file_name} holds {video_stream['nb_read_packets']} video packets")
 
 
+def decode_video_frame_hashes(tools: MediaTools, path: Path) -> str:
+    """Returns FFmpeg's frame hashes of a file's decoded video."""
+
+    return execute_tool(tools.FFmpeg_path, [
+        "-hide_banner", "-loglevel", "error", "-i", str(path), "-map", "0:v", "-f", "framemd5", "-",
+    ])
+
+
+def rewrite_vector(tools: MediaTools, vector: AVIVector, encoded_path: Path, rewrite: Callable[[bytes], bytes]) -> None:
+    """Rewrites an encode in place, requiring FFmpeg to decode the rewrite's video to the same frames as the encode's."""
+
+    encoded_frames = decode_video_frame_hashes(tools, encoded_path)
+    encoded_path.write_bytes(rewrite(encoded_path.read_bytes()))
+    if decode_video_frame_hashes(tools, encoded_path) != encoded_frames:
+        raise VectorGenerationError(f"FFmpeg decodes {vector.file_name} to other frames than its encode")
+
+
 def main(command_arguments: Sequence[str] | None = None) -> int:
     arguments = parse_arguments(command_arguments)
     tools = MediaTools(resolve_FFmpeg_tool("ffmpeg", arguments.ffmpeg), resolve_FFmpeg_tool("ffprobe", arguments.ffprobe))
@@ -198,6 +243,8 @@ def main(command_arguments: Sequence[str] | None = None) -> int:
             for vector in AVI_VECTORS:
                 encoded_path = Path(temporary_directory) / vector.file_name
                 encode_vector(tools, vector, encoded_path)
+                if vector.rewrite is not None:
+                    rewrite_vector(tools, vector, encoded_path, vector.rewrite)
                 verify_vector(tools, vector, encoded_path)
                 written = install_or_check_output(
                     VECTOR_DIRECTORY / vector.file_name,
