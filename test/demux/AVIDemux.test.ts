@@ -43,8 +43,18 @@ const FLAC_DESCRIPTION_BYTE_LENGTH = 42;
 // Where the stream header of the first stream list keeps dwLength: after RIFF, hdrl, avih, the strl list, and strh's own header
 const STREAM_HEADER_FOURCC = 'strh';
 const STREAM_HEADER_LENGTH_OFFSET = 8 + 32;
-// A declared length far past the indexed frames, as an OpenDML file's first RIFF list declares
-const OPENDML_DECLARED_FRAME_COUNT = 10_000;
+// A declared length far past the indexed frames, as the stream header of a truncated file, or of one whose OpenDML index cannot be read, declares
+const TRUNCATED_DECLARED_FRAME_COUNT = 10_000;
+// The VP9 encode rewritten into three RIFF lists, whose second key frame only the OpenDML indexes reach
+// The generator's encodes: twelve frames in two groups of six
+const VIDEO_FRAME_COUNT = 12;
+const KEY_FRAME_INTERVAL = 6;
+const OPENDML_FILE_NAME = 'vp9-aac-opendml.avi';
+const ONE_RIFF_FILE_NAME = 'vp9-aac.avi';
+// An MPEG-4 Part 2 encode with B-frames packed as DivX 5 packs them, which the demuxer unpacks to one VOP per packet
+const PACKED_FILE_NAME = 'mpeg4-packed-bframes-mp3.avi';
+const VOP_START_CODE = [ 0x00, 0x00, 0x01, 0xB6 ];
+const B_VOP_CODING_TYPE = 2;
 const ROUNDING_TOLERANCE_MICROSECONDS = 1;
 // A Matroska vector, whose tracks the AVI index check leaves alone
 const MATROSKA_VECTOR_PATH = join(CODEC_VECTOR_ASSETS_DIRECTORY, 'hdr10plus-vp9', 'hdr10plus.mkv');
@@ -78,7 +88,9 @@ const AVI_VECTORS: readonly AVIVectorExpectation[] = [
     { audioCodec: 'pcm-f32', audioDecoderCodec: 'pcm-f32', fileName: 'vp9-pcm_f32le-5.1.avi', videoCodec: 'vp9', videoDecoderCodec: 'vp09.00.10.08.01.02.02.02.00' },
     { audioCodec: 'flac', audioDecoderCodec: 'flac', fileName: 'vp9-flac-5.1.avi', videoCodec: 'vp9', videoDecoderCodec: 'vp09.00.10.08.01.02.02.02.00' },
     { audioCodec: 'flac', audioDecoderCodec: 'flac', fileName: 'vp9-flac.avi', videoCodec: 'vp9', videoDecoderCodec: 'vp09.00.10.08.01.02.02.02.00' },
-    { audioCodec: 'vorbis', audioDecoderCodec: 'vorbis', fileName: 'vp9-vorbis.avi', videoCodec: 'vp9', videoDecoderCodec: 'vp09.00.10.08.01.02.02.02.00' }
+    { audioCodec: 'vorbis', audioDecoderCodec: 'vorbis', fileName: 'vp9-vorbis.avi', videoCodec: 'vp9', videoDecoderCodec: 'vp09.00.10.08.01.02.02.02.00' },
+    { audioCodec: 'aac', audioDecoderCodec: 'mp4a.40.2', fileName: OPENDML_FILE_NAME, videoCodec: 'vp9', videoDecoderCodec: 'vp09.00.10.08.01.02.02.02.00' },
+    { audioCodec: 'mp3', audioDecoderCodec: 'mp3', fileName: PACKED_FILE_NAME, videoCodec: 'mpeg4', videoDecoderCodec: 'mp4v' }
 ];
 
 function readAVIVector(fileName: string): Uint8Array {
@@ -115,6 +127,22 @@ function expectContiguousAudio(packets: readonly EncodedPacket[], getSampleCount
         samplesBefore += sampleCount;
     }
     expect(packets.length).toBeGreaterThan(0);
+}
+
+/** Returns the positions of a packet's VOP start codes. */
+function findVOPStartCodes(data: Uint8Array): number[] {
+    const positions: number[] = [];
+    for (let position = 0; position + VOP_START_CODE.length <= data.length; position += 1) {
+        if (VOP_START_CODE.every((byte: number, offset: number): boolean => data[position + offset] === byte)) {
+            positions.push(position);
+        }
+    }
+    return positions;
+}
+
+/** Returns a packet's fields a decoder sees, with its bytes as an array, so packets compare by value. */
+function describePacket(packet: EncodedPacket): { data: number[], duration: number, timestamp: number, type: string } {
+    return { data: [ ...packet.data ], duration: packet.duration, timestamp: packet.timestamp, type: packet.type };
 }
 
 async function readTrackPair(fileName: string): Promise<{ audioPackets: EncodedPacket[], input: Input, videoPackets: EncodedPacket[] }> {
@@ -238,10 +266,42 @@ describe('AVI through the fork\'s demuxer', () => {
         }
     });
 
-    it('marks a video track whose declared length outruns its idx1 index, as an OpenDML file\'s does', async () => {
+    it('reads an OpenDML file past its first RIFF list through its indx and ix## indexes, as the one-RIFF encode holds it', async () => {
+        const openDML = await readTrackPair(OPENDML_FILE_NAME);
+        const oneRIFF = await readTrackPair(ONE_RIFF_FILE_NAME);
+        try {
+            expect(openDML.videoPackets.map(describePacket)).toEqual(oneRIFF.videoPackets.map(describePacket));
+            expect(openDML.audioPackets.map(describePacket)).toEqual(oneRIFF.audioPackets.map(describePacket));
+            expect(openDML.videoPackets.filter((packet: EncodedPacket): boolean => packet.type === 'key')).toHaveLength(VIDEO_FRAME_COUNT / KEY_FRAME_INTERVAL);
+        } finally {
+            openDML.input.dispose();
+            oneRIFF.input.dispose();
+        }
+    });
+
+    it('unpacks DivX packed B-frames to one VOP per packet, each in its chunk\'s frame slot', async () => {
+        const { input, videoPackets } = await readTrackPair(PACKED_FILE_NAME);
+        try {
+            expect(videoPackets).toHaveLength(VIDEO_FRAME_COUNT);
+            videoPackets.forEach((packet: EncodedPacket, packetIndex: number): void => {
+                expect(findVOPStartCodes(packet.data)).toHaveLength(1);
+                expect(toMicroseconds(packet.timestamp)).toBe(toMicroseconds(packetIndex / VIDEO_FRAME_RATE));
+            });
+            // The N-VOP slots after each packed pair carry the B-VOPs, so B-frames remain, in decode order
+            const BVOPCount = videoPackets.filter((packet: EncodedPacket): boolean => {
+                const [ position ] = findVOPStartCodes(packet.data);
+                return packet.data[position + VOP_START_CODE.length] >> 6 === B_VOP_CODING_TYPE;
+            }).length;
+            expect(BVOPCount).toBeGreaterThan(0);
+        } finally {
+            input.dispose();
+        }
+    });
+
+    it('marks a video track whose declared length outruns its index, as a truncated file\'s does', async () => {
         const bytes = readAVIVector('vp8-pcm_s16le.avi');
         const streamHeaderOffset = Buffer.from(bytes).indexOf(STREAM_HEADER_FOURCC);
-        new DataView(bytes.buffer, bytes.byteOffset).setUint32(streamHeaderOffset + STREAM_HEADER_LENGTH_OFFSET, OPENDML_DECLARED_FRAME_COUNT, true);
+        new DataView(bytes.buffer, bytes.byteOffset).setUint32(streamHeaderOffset + STREAM_HEADER_LENGTH_OFFSET, TRUNCATED_DECLARED_FRAME_COUNT, true);
 
         const input = openAVI(bytes);
         try {
