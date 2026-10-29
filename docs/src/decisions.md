@@ -1087,6 +1087,8 @@ These were settled on Firefox 157 on Windows.
   The order is the MSE bridge, then the engine's own decoders (WebCodecs and Mediabunny's PCM), then the first package whose manifest accepts the codec, so AC-3 without MSE needs a package.
   Eligibility checks only the codec's input channel counts and rate, because a package reports every block's speaker mask, which the engine checks before it mixes, and the decoded format is authoritative anyway.
   The profile, rate, and layout rules that gated the bundled decoders on their qualification vectors therefore no longer apply: a stream the package cannot decode, such as DTS-UHD, fails its attempt as `decode-failed` and renegotiates.
+  A package may instead drop every packet without an error, as the `truehd` package drops each packet FFmpeg's decoder refuses as invalid data, so the attempt waited for its first PCM until the 20 s startup bound (10-29).
+  `PackageSoftwareAudioDecoder` now fails the attempt as `decode-failed` once the packets the package dropped since its last output span 2 s of media; a packet before a sync point counts as no drop, since a stream may take that long to reach one, and a package that drops a few packets and then decodes plays on.
   Every start and seek runs on a new instance of the package's module, so a decoder never sees a jump in its packets.
 - Audio packages take codec private data, and WMA plays from Matroska, AVI, and ASF (10-28).
   FFmpeg's WMA decoders need the stream's WAVEFORMATEX before they open, as `ff_get_wav_header` hands its rate, channels, average bytes per second, block alignment, and extradata to them, while the AC-3, E-AC-3, DTS, MLP, and TrueHD decoders find everything in their packets.

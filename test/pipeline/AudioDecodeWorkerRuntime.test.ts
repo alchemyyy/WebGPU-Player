@@ -116,6 +116,12 @@ const PACKET_BYTE_LENGTH = 16;
 const DROPPED_SAMPLE_FAILURE = 'The audio worklet dropped a decoded sample';
 const INPUT_CREDIT_FAILURE = 'Decoded audio input exceeded its credits';
 const INPUT_KIND_FAILURE = 'Decoded audio input does not match the attempt decoder';
+// Three seconds of packets one tone sample apart, in batches that fit an attempt's initial input credits
+const SPACED_PACKET_COUNT = 150;
+const SPACED_PACKETS_PER_BATCH = 50;
+// The packets from the first dropped one up to the one 2 s after it, which fails the attempt
+const DROPPED_PACKET_BOUND_COUNT = 101;
+const LEADING_DROPPED_PACKET_COUNT = 5;
 
 /** The decode worker's end of a channel to a runtime, which records every response */
 class RuntimeChannel {
@@ -347,6 +353,40 @@ function createTonePacketBatches(): AudioDecodeWorkerPacketBatch[] {
         });
     }
     return batches;
+}
+
+/** Batches packets one tone sample apart from the start, a few batches to an attempt, as the decode worker batches a track's packets. */
+function createSpacedPacketBatches(packetCount: number): AudioDecodeWorkerPacketBatch[] {
+    const batches: AudioDecodeWorkerPacketBatch[] = [];
+    for (let firstPacketIndex = 0; firstPacketIndex < packetCount; firstPacketIndex += SPACED_PACKETS_PER_BATCH) {
+        const packetTimestampsMicroseconds: Microseconds[] = [];
+        for (let packetIndex = firstPacketIndex; packetIndex < Math.min(packetCount, firstPacketIndex + SPACED_PACKETS_PER_BATCH); packetIndex += 1) {
+            packetTimestampsMicroseconds.push((packetIndex * SAMPLE_DURATION_MICROSECONDS) as Microseconds);
+        }
+        batches.push({
+            data: new ArrayBuffer(PACKET_BYTE_LENGTH * packetTimestampsMicroseconds.length),
+            kind: 'packets',
+            packetByteLengths: packetTimestampsMicroseconds.map((): number => PACKET_BYTE_LENGTH),
+            packetTimestampsMicroseconds
+        });
+    }
+    return batches;
+}
+
+/** Scripts each packet to decode to the tone sample of its position, as one stereo block at the sample's time. */
+function createSpacedTonePackets(packetCount: number): ScriptedAudioPacket[] {
+    return Array.from({ length: packetCount }, (_value: unknown, sampleIndex: number): ScriptedAudioPacket => {
+        const sample = createToneSample(sampleIndex);
+        return {
+            blocks: [ {
+                channelData: sample.channelData.map((plane: Float32Array): number[] => Array.from(plane)),
+                channelMask: CUSTOM_WAVE_CHANNEL_MASK_STEREO,
+                sampleRate: sample.sampleRate,
+                timestampMicroseconds: sample.mediaTimeMicroseconds
+            } ],
+            kind: 'decoded'
+        };
+    });
 }
 
 /** Runs an attempt on a runtime of its own until it finishes, fed the batches, with the decoder the overrides choose. */
@@ -716,6 +756,48 @@ describe('the audio decode worker runtime', () => {
             message: PACKAGE_FAILURE,
             type: 'attempt-failed'
         });
+    });
+
+    it('fails a package attempt as a decode failure once its package dropped every packet across 2 s of media, without waiting for the rest', async () => {
+        const droppingPackage = new ScriptedAudioDecoderModule({ manifest: PACKAGE_MANIFEST, packets: [ { kind: 'dropped' } ] });
+        const channel = openRuntime();
+        const { attachment } = openWorklet();
+        channel.send(createOpenRequest({
+            audioOutput: attachment,
+            decoderBackend: PACKAGE_BACKEND,
+            packageDecoder: { codec: PACKAGE_ROUTE_CODEC, source: droppingPackage.source },
+            routeCodec: PACKAGE_ROUTE_CODEC
+        }), [ attachment.port ]);
+
+        for (const batch of createSpacedPacketBatches(SPACED_PACKET_COUNT)) {
+            sendBatch(channel, batch);
+        }
+
+        await vi.waitFor(() => {
+            expect(getFailures(channel)).toEqual([ expect.objectContaining({ ...ATTEMPT_KEY, failureKind: 'decode-failed', type: 'attempt-failed' }) ]);
+        }, WAIT_OPTIONS);
+        // The packet 2 s after the first dropped one fails the attempt, and no packet after it reaches the package
+        expect(droppingPackage.sentPackets).toHaveLength(DROPPED_PACKET_BOUND_COUNT);
+    });
+
+    it.each([
+        [ 'a package that drops its first packets, then decodes', [ ...Array.from({ length: LEADING_DROPPED_PACKET_COUNT }, (): ScriptedAudioPacket => ({ kind: 'dropped' })) ] ],
+        // Packets before a sync point decode to nothing for as long as the stream takes to reach one
+        [ 'a package that waits for a sync point across the bound, then decodes', [ ...Array.from({ length: DROPPED_PACKET_BOUND_COUNT }, (): ScriptedAudioPacket => ({ kind: 'awaiting-sync' })) ] ]
+    ])('plays %s', async (_description: string, leadingPackets: readonly ScriptedAudioPacket[]) => {
+        const decodingPackage = new ScriptedAudioDecoderModule({
+            manifest: PACKAGE_MANIFEST,
+            packets: [ ...leadingPackets, ...createSpacedTonePackets(SPACED_PACKET_COUNT).slice(leadingPackets.length) ]
+        });
+
+        const { channel } = await runAttempt(createSpacedPacketBatches(SPACED_PACKET_COUNT), {
+            decoderBackend: PACKAGE_BACKEND,
+            packageDecoder: { codec: PACKAGE_ROUTE_CODEC, source: decodingPackage.source },
+            routeCodec: PACKAGE_ROUTE_CODEC
+        });
+
+        expect(getFailures(channel)).toEqual([]);
+        expect(decodingPackage.sentPackets).toHaveLength(SPACED_PACKET_COUNT);
     });
 
     it('configures each package attempt\'s decoder once with the track\'s codec private data, before its first packet', async () => {
