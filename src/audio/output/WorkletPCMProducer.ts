@@ -5,10 +5,11 @@ import {
 } from '../../TimeMath';
 import type PCMChannelPool from '../processing/PCMChannelPool';
 import { requirePositiveSafeInteger } from '../SafeIntegerValidation';
-import type {
-    AudioWorkletEnqueueMessage,
-    AudioWorkletReleaseReason,
-    AudioWorkletReleasedMessage
+import {
+    AUDIO_WORKLET_LEADING_GAP_FAILURE,
+    type AudioWorkletEnqueueMessage,
+    type AudioWorkletReleaseReason,
+    type AudioWorkletReleasedMessage
 } from './AudioWorkletProtocol';
 
 const CLOSED_MESSAGE = 'The decoded audio output is closed';
@@ -17,7 +18,6 @@ const DISCONTINUITY_MESSAGE = 'Decoded audio timestamps contain a gap or overlap
 const SHAPE_MESSAGE = 'Decoded audio does not match the worklet output layout';
 const TRANSFER_MESSAGE = 'Unable to transfer decoded audio to the worklet';
 const DROPPED_MESSAGE = 'The audio worklet dropped a decoded sample';
-const LEADING_GAP_MESSAGE = 'The first decoded audio starts too far after its start position, over the audio worklet\'s leading gap bound';
 const UNKNOWN_RELEASE_MESSAGE = 'The audio worklet released a sample it was never sent';
 const CREDIT_MESSAGE = 'Unable to replenish decoded audio credits';
 
@@ -234,7 +234,7 @@ export default class WorkletPCMProducer {
         const [ pendingChunk ] = this.pendingChunks.splice(pendingChunkIndex, 1);
         this.pendingFrameCount -= pendingChunk.frameCount;
         if (value.reason !== 'consumed') {
-            this.reportFailure(value.reason === 'leading-gap' ? LEADING_GAP_MESSAGE : DROPPED_MESSAGE);
+            this.reportFailure(value.reason === 'leading-gap' ? AUDIO_WORKLET_LEADING_GAP_FAILURE : DROPPED_MESSAGE);
             return;
         }
         this.consumedChunkCount += 1;

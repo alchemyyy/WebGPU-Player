@@ -210,7 +210,7 @@ class JellyfinCustomAudioOutputProcessor extends AudioWorkletProcessor {
                 // The gap stays pending, so the chunks after it are refused too until the next flush
                 this.droppedFrames += frameCount;
                 this.releaseChannelData(message.channelData, producerPort, message.sequence, 'leading-gap');
-                this.postTelemetry('overflow', message.sequence);
+                this.postTelemetry('leading-gap', message.sequence);
                 return;
             }
             // Only the first accepted chunk after a flush defines the gap, since later chunks continue it

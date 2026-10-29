@@ -607,7 +607,7 @@ describe('AudioWorkletProcessorSource', () => {
             deliverChunk(pastBoundProcessor, 2, 30_001_000, [ 1, 2, 3, 4 ]);
 
             expect(pastBoundProcessor).toMatchObject({ chunkCount: 0, droppedFrames: 4, leadingGapFrames: 0, leadingGapPending: true });
-            expect(pastBoundProcessor.port.postedMessages.at(-1)).toMatchObject({ reason: 'overflow' });
+            expect(pastBoundProcessor.port.postedMessages.at(-1)).toMatchObject({ reason: 'leading-gap' });
 
             const atBoundProcessor = createLeadingGapProcessor();
             deliverFlush(atBoundProcessor, 2, 0);
