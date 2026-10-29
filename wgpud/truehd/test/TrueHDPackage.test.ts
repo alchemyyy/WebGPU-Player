@@ -75,6 +75,12 @@ const SECOND_MAJOR_SYNC_ACCESS_UNIT = 128;
 const ACCESS_UNITS_PER_PACKET = 6;
 const ACCESS_UNIT_FRAME_COUNT = 40;
 const MICROSECONDS_PER_SECOND = 1_000_000;
+// Our 5.1(side) stream in one substream (vectors/PROVENANCE.txt), which FFmpeg's decoder refuses, and the SHA-256 of the 24-bit samples
+// it encodes, interleaved FL FR FC LFE SL SR as little-endian int32: one tone per channel, 300 access units of 40 frames
+const SINGLE_SUBSTREAM_VECTOR_FILE = 'single-substream-5.1.thd';
+const SINGLE_SUBSTREAM_FRAME_COUNT = 12_000;
+const SINGLE_SUBSTREAM_CHANNEL_COUNT = 6;
+const SINGLE_SUBSTREAM_SAMPLES_SHA256 = '7896a57596a8b4cc4bf79bdc98c4e32daa26baf2f94913e884fd49a4efdb628e';
 
 type AtmosPacket = Readonly<{
     data: Uint8Array
@@ -521,6 +527,71 @@ describe('the TrueHD package on hand-made access units', () => {
                 expect(masks).not.toContain(SEVEN_POINT_ONE_POINT_FOUR_MASK);
             }
         });
+        instance.close();
+    });
+});
+
+describe('single-substream TrueHD in the TrueHD package', () => {
+    /** Joins blocks' planar float samples back into interleaved 24-bit integers, which a lossless decode reproduces exactly. */
+    function interleaveSamples(blocks: readonly AudioDecoderPackageBlock[], channelCount: number): Int32Array {
+        const frameCount = sumFrameCounts(blocks);
+        const samples = new Int32Array(frameCount * channelCount);
+        let firstFrame = 0;
+        for (const block of blocks) {
+            for (let frame = 0; frame < block.frameCount; frame += 1) {
+                for (let channel = 0; channel < channelCount; channel += 1) {
+                    samples[(firstFrame + frame) * channelCount + channel] = block.channelData[channel][frame] * TWENTY_FOUR_BIT_FULL_SCALE;
+                }
+            }
+            firstFrame += block.frameCount;
+        }
+        return samples;
+    }
+
+    it('decodes 5.1 that one substream carries, which FFmpeg refuses, sample for sample as encoded, in WAVE order', async () => {
+        const packets = readAtmosPackets(SINGLE_SUBSTREAM_VECTOR_FILE);
+        const instance = await AudioDecoderPackageInstance.create(source, TRUEHD_CODEC);
+
+        const blocks = decodeAtmosPackets(instance, packets);
+
+        expect(blocks.map(block => block.timestampMicroseconds)).toEqual(packets.map(packet => packet.timestampMicroseconds));
+        expect(sumFrameCounts(blocks)).toBe(SINGLE_SUBSTREAM_FRAME_COUNT);
+        expect(blocks.every(block => (
+            block.channelMask === FIVE_POINT_ONE_SIDE_MASK
+            && block.channelData.length === SINGLE_SUBSTREAM_CHANNEL_COUNT
+            && block.attributes.get(BITS_PER_SAMPLE_ATTRIBUTE) === TWENTY_FOUR_BITS_PER_SAMPLE
+        ))).toBe(true);
+        const samples = interleaveSamples(blocks, SINGLE_SUBSTREAM_CHANNEL_COUNT);
+        expect(createHash('sha256').update(new Uint8Array(samples.buffer)).digest('hex')).toBe(SINGLE_SUBSTREAM_SAMPLES_SHA256);
+        instance.close();
+    });
+
+    it('awaits the next major sync after clear, then decodes from it', async () => {
+        const accessUnits = readAccessUnits(SINGLE_SUBSTREAM_VECTOR_FILE);
+        const instance = await AudioDecoderPackageInstance.create(source, TRUEHD_CODEC);
+        const [ majorSyncAccessUnit, dependentAccessUnit ] = accessUnits;
+        requireDecodedBlocks(instance.decode(majorSyncAccessUnit, 0));
+
+        instance.clear();
+
+        // The decode is still the single-substream one, which has no major sync to start from
+        expect(instance.decode(dependentAccessUnit, 0)).toEqual({ kind: 'awaiting-sync' });
+        expect(requireDecodedBlocks(instance.decode(majorSyncAccessUnit, 0))).toHaveLength(1);
+        instance.close();
+    });
+
+    it('decodes a stream FFmpeg decodes with FFmpeg again from the first major sync that describes it', async () => {
+        const [ singleSubstreamAccessUnit ] = readAccessUnits(SINGLE_SUBSTREAM_VECTOR_FILE);
+        const atmosPackets = readAtmosPackets(CHANNEL_BED_VECTOR_FILE);
+        const instance = await AudioDecoderPackageInstance.create(source, TRUEHD_CODEC);
+
+        const [ singleSubstreamBlock ] = requireDecodedBlocks(instance.decode(singleSubstreamAccessUnit, 0));
+        const atmosBlocks = decodeAtmosPackets(instance, atmosPackets);
+
+        expect(singleSubstreamBlock.channelMask).toBe(FIVE_POINT_ONE_SIDE_MASK);
+        // FFmpeg's stock decode of the Atmos stream is its 7.1 presentation
+        expect(atmosBlocks.every(block => block.channelMask === SEVEN_POINT_ONE_MASK)).toBe(true);
+        expect(sumFrameCounts(atmosBlocks)).toBe(CHANNEL_BED_VECTOR_FRAME_COUNT);
         instance.close();
     });
 });

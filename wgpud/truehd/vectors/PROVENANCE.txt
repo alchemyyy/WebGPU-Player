@@ -1,4 +1,4 @@
-TrueHD Dolby Atmos test vector provenance
+TrueHD test vector provenance
 
 fba_atmos_obj.mlp and fba_atmos_cbi.mlp are copied unmodified from truehd/tests/assets/ of https://github.com/truehdd/truehdd at commit 77ddc52e6ab41c59d8964cfe8e44140afa82342c.
 LICENSE is the license file of that commit: the Apache License, Version 2.0, Copyright 2025 Rainbaby.
@@ -14,3 +14,24 @@ fba_atmos_obj.mlp holds 140 access units; its 16-channel presentation is an obje
 whose object audio metadata arrives in the Evolution frames of access units 0, 38, 76, and 115.
 fba_atmos_cbi.mlp holds 136 access units; its 16-channel presentation is a channel bed without object metadata,
 L R C LFE Ls Rs Lb Rb Tfl Tfr Tsl Tsr Tbl Tbr Lw Rw, and its 8-channel presentation is 7.1.
+
+single-substream-5.1.thd is ours: a raw TrueHD stream of 300 48 kHz access units of 40 samples, 5.1(side) in one substream,
+the layout FFmpeg's decoder refuses (every restart header fails "Assignment of matrix channel 0 to invalid output channel").
+FFmpeg's TrueHD encoder writes a multichannel stream as two substreams, so it was encoded by FFmpeg a59498db085e3d635532397128550141ab87408a,
+the engine's pinned FFmpeg, built with Emscripten with only the TrueHD encoder and decoder, after three changes to libavcodec/mlpenc.c:
+
+  -        ctx->num_substreams = 1 + (avctx->ch_layout.nb_channels > 2);
+  +        ctx->num_substreams = 1;
+  -            ctx->thd_substream_info  = 0x3C;
+  +            ctx->thd_substream_info  = 0x04;
+  -        rh->max_channel        = FFMIN(avctx->ch_layout.nb_channels, 2) - 1;
+  +        rh->max_channel        = avctx->ch_layout.nb_channels - 1;
+
+so its substream 0 carries all six channels and the major sync names it as the 6-channel presentation's only substream.
+The input is 12000 samples per channel of S32P at 24 bits, a sine at a quarter of full scale per channel, rounded with lrint:
+440 Hz on FL, 554 Hz on FR, 660 Hz on FC, 55 Hz on LFE, 784 Hz on SL, and 988 Hz on SR, sample n of frequency f being sin(2 pi f n / 48000).
+Its 24-bit samples, interleaved FL FR FC LFE SL SR as little-endian int32, have the SHA-256 the package test checks its decode against,
+which the stream's own lossless checks agree with.
+
+  4b3100572810872ff5c06611d7ba03ece68feeb6f6b862f9cbbb66700bb28945  single-substream-5.1.thd
+  7896a57596a8b4cc4bf79bdc98c4e32daa26baf2f94913e884fd49a4efdb628e  its input samples

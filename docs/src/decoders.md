@@ -103,7 +103,7 @@ It is a minimal project that builds one package and runs nowhere on its own.
 | `vc1` | VC-1 Advanced and WMV3 (Simple, Main, and Complex), on the GPU | The Rust parser in `parser/` | The VC-1 Advanced stream in `src/capability/vectors/qualification/vc1/` | None, MIT |
 | `uncompressed` | Uncompressed planar packets, on the GPU | None | None | None, MIT; the template of a WGSL-only decoder |
 | `eac3` | AC-3 and E-AC-3, and the Dolby Atmos objects of E-AC-3 with joint object coding | FFmpeg's AC-3 and E-AC-3 decoders, our JOC decoder, and the shared object renderer in `wgpud/atmos/` | None; its tests decode the media in `vectors/`, two to FFmpeg's known answers | FFmpeg, LGPL-2.1-or-later; our JOC decoder, MIT |
-| `truehd` | MLP and TrueHD, and the objects of TrueHD Dolby Atmos | FFmpeg's MLP and TrueHD decoders, our decoder of the 16-channel presentation, and the object renderer in `wgpud/atmos/` | None; its tests decode the Atmos streams in `vectors/` | FFmpeg, LGPL-2.1-or-later, which `truehd_presentation.c`, a port of FFmpeg's MLP decoder, is too |
+| `truehd` | MLP and TrueHD, and the objects of TrueHD Dolby Atmos | FFmpeg's MLP and TrueHD decoders, our decoder of the 16-channel presentation and of single-substream streams FFmpeg refuses, and the object renderer in `wgpud/atmos/` | None; its tests decode the streams in `vectors/` | FFmpeg, LGPL-2.1-or-later, which `truehd_presentation.c`, a port of FFmpeg's MLP decoder, and `truehd_substream.c` are too |
 | `wma` | WMA 1, WMA 2, WMA Pro, WMA Lossless, and WMA Voice | FFmpeg's `wmav1`, `wmav2`, `wmapro`, `wmalossless`, and `wmavoice` decoders | None; its tests decode the media in `vectors/` to FFmpeg's known answers | FFmpeg, LGPL-2.1-or-later |
 | `dts` | DTS core, DTS-HD High Resolution, and DTS-HD Master Audio | libdcadec | None | [dcadec](https://github.com/foo86/dcadec), LGPL-2.1-or-later |
 
@@ -353,9 +353,15 @@ A rendered packet is one block at the packet's timestamp, with the target's mask
 Binaural rendering delays its output by 128 frames, so the module exports `audio_decoder_drain`, which renders that tail after the last packet; a stock decode drains nothing.
 `audio_decoder_clear` resets both decoders and the renderer.
 
+FFmpeg also refuses a TrueHD stream whose one substream carries more than two channels, such as 5.1 coded without a separate 2-channel substream: its `read_major_sync` names the channels of a single substream only for a stereo or mono stream, so every restart header fails its channel assignment (`Assignment of matrix channel 0 to invalid output channel -22`) and no access unit decodes, which also leaves the server unable to transcode the track.
+`truehd_substream.c` decodes such a stream with `truehd_presentation.c`, whose presentation 0 is that substream, and lays its channels out as FFmpeg lays out a stream it decodes: the major sync's 8- or 6-channel arrangement with the decoded channel count names them in TrueHD order, and the block takes them in WAVE order under that arrangement's WAVE mask, or in TrueHD order under mask 0 when a channel has no WAVE name.
+Each packet's first major sync decides which decode plays until the next one, and the decode that takes over starts at that major sync, so FFmpeg never sees such a stream and a stream that changes back plays FFmpeg's decode again.
+A packet whose access units do not all decode is dropped, and its block is one block at the packet's timestamp, with `bitsPerSample` 24 and the `pcmFingerprint` of FFmpeg's packing.
+
 `truehd_presentation.c` decodes every presentation of the eight TrueHD streams among the truehd crate's test assets and of the engine's three TrueHD vectors bit for bit as truehdd (commit `77ddc52`) does, the three 16-channel presentations included, and presentations 0 to 2 bit for bit as FFmpeg does wherever FFmpeg's `downmix` option can select them, with every lossless check passing.
 To repeat that, build truehdd natively, decode with `truehdd decode --presentation <n>`, and compare its 24-bit samples with a native build of `truehd_presentation.c`; neither the oracle nor the harness enters the repository.
-The `wgpud/truehd/vectors/` streams, copied from the truehd crate's test assets, carry that crate's Apache-2.0 license and `PROVENANCE.txt`.
+The `wgpud/truehd/vectors/` streams copied from the truehd crate's test assets carry that crate's Apache-2.0 license and `PROVENANCE.txt`.
+`single-substream-5.1.thd`, ours, is 5.1 in one substream, which FFmpeg's TrueHD encoder writes only after the three changes `PROVENANCE.txt` gives; the package decodes it to the encoded samples exactly, which its own lossless checks confirm, and stock FFmpeg refuses every access unit of it.
 
 After a change, from the engine root:
 
@@ -445,7 +451,7 @@ npm run decoders -- eac3 truehd            # The packages that compile these sou
   The vendored `dolby_vision` crate is MIT too and keeps its own `LICENSE`.
 - FFmpeg and libdcadec are LGPL-2.1-or-later, and only the `eac3`, `truehd`, `wma`, and `dts` packages contain them.
   `wgpud/licenses/` holds their license texts.
-  `wgpud/truehd/truehd_presentation.c` and its header, a port of FFmpeg's MLP decoder, are LGPL-2.1-or-later too.
+  `wgpud/truehd/truehd_presentation.c` and its header, a port of FFmpeg's MLP decoder, are LGPL-2.1-or-later too, and so are `truehd_substream.c` and its header, which build on it.
   The `eac3` package's JOC sources (`eac3_emdf.c`, `eac3_joc.c`, `eac3_qmf.c`, `eac3_joc_tables.c`) are our own code, MIT; the tables are facts of ETSI TS 103 420.
 - libaom is BSD-2-Clause with the Alliance for Open Media Patent License 1.0, and only the `av1` package contains it.
   `wgpud/licenses/` holds its `LICENSE` and `PATENTS` as `libaom-LICENSE` and `libaom-PATENTS`.
