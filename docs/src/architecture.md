@@ -335,7 +335,7 @@ Every stale callback is dropped by a generation or revision check:
 - A deinterlaced native frame's chroma is the browser's progressive upsampling, which blends the two fields' chroma rows; only the raw and frame-pool routes read chroma within each field.
 - Worker track indices are container ordinals, not Jellyfin `MediaStream.Index`; the streams Jellyfin lists for external files (`IsExternal`) take none.
 - Every time the page and the worker exchange is a playback time, which starts at 0 where the host's positions start.
-  A container on a program clock, MPEG-TS and M2TS, stamps its packets past zero, 600 s on a Blu-ray title, so the worker counts a run's times from the first timestamp of the tracks it plays (`demux/PlaybackTimelineOrigin.ts`).
+  A container on a program clock, MPEG-TS, M2TS, or an MPEG program stream, stamps its packets past zero, 600 s on a Blu-ray title, so the worker counts a run's times from the first timestamp of the tracks it plays (`demux/PlaybackTimelineOrigin.ts`).
   It adds that origin to the start and every resync target before it reads the tracks, and takes it off every frame, packet, decoded PCM input, native audio fragment, startup progress report, and container duration it posts.
   The audio decode worker and the worklet run on the playback timeline; the queues the worker keys by packet timestamps, the Dolby Vision RPU and HDR10+ queues and the EL pairing, keep container times.
 - Every seek, audio switch, and paused repaint starts a new run in the session's worker, and each run opens its input again, over the last run's URL source when it reads the same URL (`demux/URLSourceRetention.ts`).

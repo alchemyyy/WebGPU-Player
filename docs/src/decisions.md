@@ -905,12 +905,13 @@ These were settled on Firefox 157 on Windows.
   After the first preparation over a source, the worker pins its cache, the container's header and index among it, and sizes its read-ahead to 5 s of media and its cache to 15 s, at the media's size over the server's duration, else the container's, within 8 to 64 MiB and 32 to 192 MiB.
   The server's duration reaches the worker in the start request, whose absence asks for the container's in the ready response.
   Each run still opens its own input, because a canceled read rejects promises a kept demuxer could have memoized.
-- MPEG-TS and M2TS play on a timeline that starts at their first timestamp (10-29).
+- MPEG-TS, M2TS, and MPEG program streams play on a timeline that starts at their first timestamp (10-29).
   A transport stream stamps its packets with a program clock that need not start at zero: a Blu-ray title starts at 600 s, and broadcast recordings a fraction of a second or more in.
+  A program stream carries the clock of the source it was cut from the same way; a DVD-Video title starts a fraction of a second in, and a VOB cut from later in a title at its own time.
   Mediabunny returns those timestamps as they are, and the host's positions and durations count from FFprobe's `start_time`, so a run started at 0 found its first key packet 600 s ahead: video waited ten minutes with its credits held, the worklet rendered the gap as silence the clock ran on, and nothing stalled or fell back.
   The worker now computes each run's origin once its tracks are prepared, the first timestamp of the tracks it plays, truncated to whole microseconds as Mediabunny truncates packet times, and works in container time inside and playback time at its boundary.
   The tracks a run plays, rather than all of a file's, set the origin, so a stream the run never reads, which may start late or hold no packets, costs no read; a run without its audio track may start the timeline a few milliseconds later than FFprobe's `start_time`.
-  `hasProgramClockTimestamps` names the containers that take an origin, MPEG-TS and M2TS; every other container's tracks start where the host's positions start, and keep their times.
+  `hasProgramClockTimestamps` names the containers that take an origin, MPEG-TS and M2TS and MPEG program streams; every other container's tracks start where the host's positions start, and keep their times.
 - A container without a video track fails as soon as its metadata is read (10-29).
   An unfinalized Matroska file, whose Segment size mkvmerge left at 0, gave Mediabunny no tracks after a read of every cluster, and the worker then reported a missing track ordinal.
   The worker now fails a container whose metadata names no video track as `source-unsupported` with its own message, so renegotiation names the cause; how long the metadata read takes is the demuxer's.
