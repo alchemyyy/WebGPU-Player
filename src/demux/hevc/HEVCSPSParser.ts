@@ -188,7 +188,6 @@ type VUIColorDescriptionCodes = {
 };
 
 type VUIColorDescriptionOffsets = {
-    fullRange: number
     matrix: number
     primaries: number
     transfer: number
@@ -403,7 +402,6 @@ function parseVUI(reader: BoundedBitReader): ParsedVUI {
     let signaledFullRange = false;
     if (reader.readFlag('video_signal_type_present_flag')) {
         reader.skipBits(3, 'video_format');
-        const fullRangeOffset = reader.getBitOffset();
         const fullRange = reader.readFlag('video_full_range_flag');
         signaledFullRange = fullRange;
         if (reader.readFlag('colour_description_present_flag')) {
@@ -420,7 +418,6 @@ function parseVUI(reader: BoundedBitReader): ParsedVUI {
                 transfer: transferValue
             };
             colorDescriptionOffsets = {
-                fullRange: fullRangeOffset,
                 matrix: matrixOffset,
                 primaries: primariesOffset,
                 transfer: transferOffset
@@ -862,8 +859,9 @@ function provesHDRTransfer(
 }
 
 /**
- * Rewrites an existing VUI color description without changing coded video syntax.
- * An expected HDR route requires limited range, BT.2020 primaries, the BT.2020 non-constant-luminance matrix, and the route's transfer.
+ * Rewrites an existing VUI color description to BT.709 primaries, transfer, and matrix without changing coded video syntax.
+ * The range flag stays, so the decoder converts at the stream's own range and the codes the presenter recovers keep their meaning.
+ * An expected HDR route requires BT.2020 primaries, the BT.2020 non-constant-luminance matrix, and the route's transfer, at either range.
  * The access unit's preferred_transfer_characteristics, from an alternative transfer characteristics SEI, overrides the VUI transfer.
  */
 export function rewriteHEVCSPSColorDescriptionToBT709(
@@ -878,16 +876,14 @@ export function rewriteHEVCSPSColorDescriptionToBT709(
         throw new TypeError('The HEVC SPS has no VUI color description to rewrite');
     }
     if (expectedHDRTransfer !== undefined && (
-        codes.fullRange
-        || codes.primaries !== BT2020_COLOR_PRIMARIES
+        codes.primaries !== BT2020_COLOR_PRIMARIES
         || codes.matrix !== BT2020_NCL_MATRIX_COEFFICIENTS
         || !provesHDRTransfer(codes.transfer, expectedHDRTransfer, preferredTransferCharacteristics)
     )) {
-        throw new TypeError('The HEVC SPS does not match the expected limited-range BT.2020 HDR route');
+        throw new TypeError('The HEVC SPS does not match the expected BT.2020 HDR route');
     }
     if (
-        !codes.fullRange
-        && codes.matrix === BT709_MATRIX_COEFFICIENTS
+        codes.matrix === BT709_MATRIX_COEFFICIENTS
         && codes.primaries === BT709_COLOR_PRIMARIES
         && codes.transfer === BT709_TRANSFER_CHARACTERISTICS
     ) {
@@ -895,7 +891,6 @@ export function rewriteHEVCSPSColorDescriptionToBT709(
     }
 
     const rewrittenRBSP = parsedSPS.RBSP.slice();
-    writeBits(rewrittenRBSP, offsets.fullRange, 1, 0);
     writeBits(rewrittenRBSP, offsets.primaries, 8, BT709_COLOR_PRIMARIES);
     writeBits(rewrittenRBSP, offsets.transfer, 8, BT709_TRANSFER_CHARACTERISTICS);
     writeBits(rewrittenRBSP, offsets.matrix, 8, BT709_MATRIX_COEFFICIENTS);

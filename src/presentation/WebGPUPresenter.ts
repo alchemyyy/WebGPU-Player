@@ -162,6 +162,8 @@ const UNKNOWN_PLAN_DIMENSION = 1;
 // The native and identity SDR route: the browser's own conversion, presented as it is, of a stream whose color is unknown until one is configured
 const EXTERNAL_IDENTITY_CHAIN_CONFIGURATION: BuiltinChainConfiguration = { metadata: null, route: 'external-identity' };
 const NEUTRAL_BT709_COLOR_DESCRIPTION = 'bt709:bt709:bt709:limited';
+// Neutralized HEVC keeps its stream's range; the recovery then yields the codes' limited-range equivalents, which the limited metadata presents exactly
+const NEUTRAL_BT709_FULL_RANGE_COLOR_DESCRIPTION = 'bt709:bt709:bt709:full';
 // Names a preset pass whose header failed before it declared a name, followed by its preset position
 const UNNAMED_PRESET_PASS_PREFIX = 'pass ';
 // Marks a compile error in engine-generated code, whose line is in the generated module rather than in a pass source
@@ -992,10 +994,18 @@ function getDecodedFrameColorFailure(frame: VideoFrame, metadata: InputColorMeta
     return actualColor === expectedColor ? null : `color: ${actualColor}, expected ${expectedColor}`;
 }
 
-/** Returns how a decoded frame differs from the neutralized BT.709 limited-range description, or null when it matches. */
-function getNeutralBT709FrameColorFailure(frame: VideoFrame): string | null {
+/**
+ * Returns how a decoded frame differs from the neutralized BT.709 limited-range description, or with `fullRangeAllowed` from either range's, or null when it matches.
+ */
+function getNeutralBT709FrameColorFailure(frame: VideoFrame, fullRangeAllowed = false): string | null {
     const actualColor = describeVideoFrameColor(frame);
-    return actualColor === NEUTRAL_BT709_COLOR_DESCRIPTION ? null : `color: ${actualColor}, expected ${NEUTRAL_BT709_COLOR_DESCRIPTION}`;
+    if (actualColor === NEUTRAL_BT709_COLOR_DESCRIPTION || (fullRangeAllowed && actualColor === NEUTRAL_BT709_FULL_RANGE_COLOR_DESCRIPTION)) {
+        return null;
+    }
+    const expectedColor = fullRangeAllowed ?
+        `${NEUTRAL_BT709_COLOR_DESCRIPTION} or ${NEUTRAL_BT709_FULL_RANGE_COLOR_DESCRIPTION}` :
+        NEUTRAL_BT709_COLOR_DESCRIPTION;
+    return `color: ${actualColor}, expected ${expectedColor}`;
 }
 
 function isExternalInputMode(inputMode: PresentationInputMode): boolean {
@@ -3721,7 +3731,7 @@ export default class WebGPUPresenter {
             case 'external-hdr': {
                 const metadata = this.activeInputColorMetadata;
                 const frameFailure = metadata ?
-                    getNeutralBT709FrameColorFailure(frame)
+                    getNeutralBT709FrameColorFailure(frame, true)
                         ?? prefixFailure('authorization', this.getActiveExternalHDRAuthorizationFailure(metadata)) :
                     'metadata: none configured';
                 if (frameFailure !== null) {

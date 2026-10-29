@@ -25,6 +25,10 @@ const MAIN10_PQ_SPS = createBytesFromHex(
 const MAIN10_BT2020_10_SPS = createBytesFromHex(
     '42010102200000030090000003000003003fa005020171f2b6595952930bc05a848704820000030002000003003010'
 );
+// A Main10 PQ SPS that sets video_full_range_flag
+const MAIN10_FULL_RANGE_PQ_SPS = createBytesFromHex(
+    '42010102200000030090000003000003003fa005020171f2b6595952930bc05b848804820000030002000003003010'
+);
 // An old x265 build's Main 10 SDR SPS without default_display_window_flag, and the SPS FFmpeg's reading of it implies
 const X265_MISSING_DEFAULT_DISPLAY_WINDOW_SPS = createBytesFromHex(
     '420101022000000300900000030000030096a001e0200649f4d96666924c2e02000007d20000bb8010'
@@ -489,8 +493,17 @@ describe('OwnedNativeHEVCVideoDecoder', () => {
             1 / 24,
             1 / 24,
             1
-        ))).toThrow('expected limited-range BT.2020 HDR route');
+        ))).toThrow('expected BT.2020 HDR route');
         expect(harness.packets).toHaveLength(1);
+        decoder.close();
+    });
+
+    it('decodes a full-range PQ SPS on the PQ route, neutralized at its own range', async () => {
+        const harness = createHarness();
+        const decoder = createNeutralizingDecoder(harness, 'pq');
+        await decoder.init();
+        expect(decoder.decode(createPacket(encodeAnnexBNALUnits([ MAIN10_FULL_RANGE_PQ_SPS, createNALUnit(19, [ 1 ]) ]), 0))).toBe(true);
+        expect(parseHEVCSPS(getFirstAnnexBNALUnit(harness.packets[0].data)).colorSpace).toEqual({ ...NEUTRAL_COLOR_SPACE, fullRange: true });
         decoder.close();
     });
 
@@ -523,7 +536,7 @@ describe('OwnedNativeHEVCVideoDecoder', () => {
         expect(() => mismatchedTransferDecoder.decode(createPacket(
             encodeAnnexBNALUnits([ MAIN10_PQ_SPS, createNALUnit(19, [ 1 ]) ]),
             0
-        ))).toThrow('expected limited-range BT.2020 HDR route');
+        ))).toThrow('expected BT.2020 HDR route');
         expect(mismatchedTransferHarness.packets).toHaveLength(0);
         mismatchedTransferDecoder.close();
     });
@@ -563,7 +576,7 @@ describe('OwnedNativeHEVCVideoDecoder', () => {
         await pqDecoder.init();
 
         expect(() => hlgDecoder.decode(createPacket(accessUnit, 0)))
-            .toThrow('expected limited-range BT.2020 HDR route');
+            .toThrow('expected BT.2020 HDR route');
         expect(hlgHarness.packets).toHaveLength(0);
         expect(pqDecoder.decode(createPacket(accessUnit, 0))).toBe(true);
         expect(pqHarness.packets).toHaveLength(1);
@@ -588,7 +601,7 @@ describe('OwnedNativeHEVCVideoDecoder', () => {
 
         expect(hlgDecoder.decode(createPacket(accessUnit, 0))).toBe(true);
         expect(() => pqDecoder.decode(createPacket(accessUnit, 0)))
-            .toThrow('expected limited-range BT.2020 HDR route');
+            .toThrow('expected BT.2020 HDR route');
         hlgDecoder.close();
         pqDecoder.close();
     });
