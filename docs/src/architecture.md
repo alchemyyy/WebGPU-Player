@@ -41,7 +41,8 @@ The engine's sources follow the stages a custom session runs: `src/demux/` reads
   An audio track that ends before the video hands the clock to the `MediaClock` once its tail has played out.
 
 Video is pulled: each rAF draws the newest frame at or before the clock, and hands the presenter its timestamp and the clock's rate, from which it measures the display's refresh rate.
-Queued frames hold off video starvation only while one can present: frames whose earliest is more than the 2 s decode lag bound past the clock, while they hold every video credit of the route, count as starvation, so the stall bound falls back instead of waiting for the clock to reach them.
+Queued frames hold off video starvation, except before a generation or a resync takes its first frame: then frames whose earliest is more than the 2 s decode lag bound past the clock, while they hold every video credit of the route, count as starvation, so the stall bound falls back instead of waiting for the clock to reach them.
+After the first frame, frames that far ahead are a real gap in the video, such as a still or a slideshow, which the last frame holds as before.
 While a plan deinterlaces, each rAF takes frames one frame ahead of the clock, the presenter shows the frame before the newest, and a tick that takes no frame draws a held frame's next field from history (see [Presentation](#presentation)).
 While a plan holds a display-rate pass, each rAF takes frames one refresh ahead of the clock, and a tick that takes no frame redraws from history at its clock time.
 

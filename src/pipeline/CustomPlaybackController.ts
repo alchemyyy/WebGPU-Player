@@ -544,6 +544,8 @@ export default class CustomPlaybackController {
     /** Set while the video decoder is released for a hidden page */
     private videoSuspended = false;
     private waitingForVideoFrame = false;
+    /** Set once the current generation took its first frame for presentation */
+    private videoFrameTakenInGeneration = false;
     private videoStarvationAnchorMediaTimeMicroseconds: Microseconds | null = null;
     private videoStarvationAnchorMonotonicTimeMicroseconds: Microseconds | null = null;
     private worstFrameLagMicroseconds: Microseconds = ZERO_MICROSECONDS;
@@ -1122,6 +1124,7 @@ export default class CustomPlaybackController {
                 return null;
             }
             this.awaitingPostSeekVideoFrame = false;
+            this.videoFrameTakenInGeneration = true;
             this.videoDecodeLagWaitActive = false;
             this.videoFrameMissStartedAtMicroseconds = null;
             this.pendingPresentationFrames.add(presentationFrame);
@@ -1381,6 +1384,7 @@ export default class CustomPlaybackController {
         this.lateFrameCount = 0;
         this.worstFrameLagMicroseconds = ZERO_MICROSECONDS;
         this.awaitingPostSeekVideoFrame = phase === 'seeking';
+        this.videoFrameTakenInGeneration = false;
         this.resetDrainAndStarvationState();
         this.playCount += 1;
         this.audioPath = options.audioTrackIndex === null ? 'disabled' : 'pending';
@@ -2641,14 +2645,16 @@ export default class CustomPlaybackController {
     }
 
     /**
-     * Reports queued frames that cannot keep video from starving: the earliest is past the target by more than the decode lag bound, and the page
-     * holds every video credit of the route, so the worker decodes nothing that would present sooner.
+     * Reports queued frames that cannot keep video from starving before the generation or a resync presented its first frame: the earliest is past the
+     * target by more than the decode lag bound, and the page holds every video credit of the route, so the worker decodes nothing that would present sooner.
      * Such a queue waits for the clock to reach it, which a gap the audio renders as silence may let run for minutes, so the miss counts as starvation.
+     * Once a frame presented, a frame that far ahead is a real gap in the video, such as a still, and the queue holds the wait off as before.
      */
     private isVideoQueueStranded(decodeTelemetry: CustomDecodeSessionTelemetry, targetTimeMicroseconds: Microseconds): boolean {
         const earliestQueuedFrameMediaTimeMicroseconds = decodeTelemetry.earliestQueuedFrameMediaTimeMicroseconds;
         const videoOutputMode = this.currentSource?.videoOutputMode;
-        if (earliestQueuedFrameMediaTimeMicroseconds === null
+        if ((this.videoFrameTakenInGeneration && !this.videoResyncPending)
+            || earliestQueuedFrameMediaTimeMicroseconds === null
             || videoOutputMode === undefined
             || earliestQueuedFrameMediaTimeMicroseconds - targetTimeMicroseconds <= this.maximumVideoDecodeLagMicroseconds) {
             return false;
