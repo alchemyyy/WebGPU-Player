@@ -1,4 +1,4 @@
-import { MpegTsInputFormat, type Input, type InputFormat, type InputTrack } from 'mediabunny';
+import { MpegPsInputFormat, MpegTsInputFormat, type Input, type InputFormat, type InputTrack } from 'mediabunny';
 
 import { MICROSECONDS_PER_SECOND, type Microseconds } from '../MediaTime';
 import { requireMicroseconds } from '../TimeMath';
@@ -7,11 +7,11 @@ const ZERO_ORIGIN = 0 as Microseconds;
 
 /**
  * Whether a container stamps its packets on a program clock, which need not start at zero: MPEG-TS and M2TS carry a broadcaster's or a disc's
- * 90 kHz clock, which a Blu-ray title starts at 600 s.
+ * 90 kHz clock, which a Blu-ray title starts at 600 s, and an MPEG program stream, an MPG or a DVD-Video VOB, the clock of the source it was cut from.
  * Every other container Mediabunny reads starts its tracks where the host's positions start.
  */
 export function hasProgramClockTimestamps(inputFormat: InputFormat): boolean {
-    return inputFormat instanceof MpegTsInputFormat;
+    return inputFormat instanceof MpegTsInputFormat || inputFormat instanceof MpegPsInputFormat;
 }
 
 /**
