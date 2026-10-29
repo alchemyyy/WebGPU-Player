@@ -601,6 +601,21 @@ describe('AudioWorkletProcessorSource', () => {
             }));
         });
 
+        it('refuses a first chunk past the leading gap bound, and takes one at the bound', () => {
+            const pastBoundProcessor = createLeadingGapProcessor();
+            deliverFlush(pastBoundProcessor, 2, 0);
+            deliverChunk(pastBoundProcessor, 2, 30_001_000, [ 1, 2, 3, 4 ]);
+
+            expect(pastBoundProcessor).toMatchObject({ chunkCount: 0, droppedFrames: 4, leadingGapFrames: 0, leadingGapPending: true });
+            expect(pastBoundProcessor.port.postedMessages.at(-1)).toMatchObject({ reason: 'overflow' });
+
+            const atBoundProcessor = createLeadingGapProcessor();
+            deliverFlush(atBoundProcessor, 2, 0);
+            deliverChunk(atBoundProcessor, 2, 30_000_000, [ 1, 2, 3, 4 ]);
+
+            expect(atBoundProcessor).toMatchObject({ chunkCount: 1, leadingGapFrames: 30_000, leadingGapPending: false });
+        });
+
         it('holds the leading gap while playback is paused', () => {
             const processor = createLeadingGapProcessor();
             deliverFlush(processor, 2, 0);
