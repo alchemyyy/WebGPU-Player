@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
     parseHEVCSPS,
     readHEVCSPSChroma,
+    repairHEVCSPSDefaultDisplayWindow,
     rewriteHEVCSPSColorDescriptionToBT709
 } from 'webgpu-player/demux/hevc/HEVCSPSParser';
 
@@ -46,6 +47,24 @@ const MAIN10_BT2020_CONSTANT_LUMINANCE_HLG_SPS = createBytesFromHex(
 // Byte 30 clears vui_parameters_present_flag and sps_extension_present_flag, then holds the RBSP stop bit
 const MAIN10_SPS_WITHOUT_VUI = createBytesFromHex(
     '42010102200000030090000003000003003fa005020171f2b6595952930b20'
+);
+// An old x265 build's Main 10 SPS whose VUI omits default_display_window_flag: 69 bits remain before the stop bit at the flag's RBSP bit 214,
+// and its timing info follows; FFmpeg's hevc/ps.c detects it and decodes its frames as with the flag inserted as 0
+const X265_MISSING_DEFAULT_DISPLAY_WINDOW_SPS = createBytesFromHex(
+    '420101022000000300900000030000030096a001e0200649f4d96666924c2e02000007d20000bb8010'
+);
+const X265_REPAIRED_DEFAULT_DISPLAY_WINDOW_SPS = createBytesFromHex(
+    '420101022000000300900000030000030096a001e0200649f4d96666924c2e0100000303e900005dc008'
+);
+// The same SPS cut to 68 and to 67 bits after the flag, each closed by a new stop bit, at and below FFmpeg's bound
+const MISSING_DEFAULT_DISPLAY_WINDOW_68_BIT_SPS = createBytesFromHex(
+    '420101022000000300900000030000030096a001e0200649f4d96666924c2e02000007d20000bb8020'
+);
+const REPAIRED_DEFAULT_DISPLAY_WINDOW_68_BIT_SPS = createBytesFromHex(
+    '420101022000000300900000030000030096a001e0200649f4d96666924c2e0100000303e900005dc010'
+);
+const MISSING_DEFAULT_DISPLAY_WINDOW_67_BIT_SPS = createBytesFromHex(
+    '420101022000000300900000030000030096a001e0200649f4d96666924c2e02000007d20000bb8040'
 );
 const UHD_CODED_WIDTH = 3_840;
 const UHD_CODED_HEIGHT = 2_160;
@@ -397,6 +416,34 @@ describe('rewriteHEVCSPSColorDescriptionToBT709', () => {
     it('rejects an SPS without VUI, which has no color description to rewrite', () => {
         expect(() => rewriteHEVCSPSColorDescriptionToBT709(MAIN10_SPS_WITHOUT_VUI, 'hlg'))
             .toThrow('no VUI color description');
+    });
+});
+
+describe('repairHEVCSPSDefaultDisplayWindow', () => {
+    it('inserts the missing flag as 0, moves the rest one bit, and closes the RBSP with a new stop bit', () => {
+        expect(repairHEVCSPSDefaultDisplayWindow(X265_MISSING_DEFAULT_DISPLAY_WINDOW_SPS)).toEqual(X265_REPAIRED_DEFAULT_DISPLAY_WINDOW_SPS);
+        expect(repairHEVCSPSDefaultDisplayWindow(X265_REPAIRED_DEFAULT_DISPLAY_WINDOW_SPS)).toBeNull();
+        // The repair changes nothing the parser reads
+        expect(parseHEVCSPS(X265_REPAIRED_DEFAULT_DISPLAY_WINDOW_SPS)).toEqual(parseHEVCSPS(X265_MISSING_DEFAULT_DISPLAY_WINDOW_SPS));
+    });
+
+    it('needs at least 68 bits from the flag to the stop bit, as FFmpeg does', () => {
+        expect(repairHEVCSPSDefaultDisplayWindow(MISSING_DEFAULT_DISPLAY_WINDOW_68_BIT_SPS)).toEqual(REPAIRED_DEFAULT_DISPLAY_WINDOW_68_BIT_SPS);
+        expect(repairHEVCSPSDefaultDisplayWindow(MISSING_DEFAULT_DISPLAY_WINDOW_67_BIT_SPS)).toBeNull();
+    });
+
+    it('leaves an SPS with the flag, without VUI, or that the parser refuses', () => {
+        for (const sequenceParameterSet of [
+            MAIN_SPS,
+            MAIN10_PQ_SPS,
+            MAIN10_HLG_SPS,
+            X265_MAIN10_BOTTOM_SPS,
+            X265_MAIN444_12_TOP_LEFT_SPS,
+            MAIN10_SPS_WITHOUT_VUI,
+            X265_MAIN12_TOP_SPS.subarray(0, TRUNCATED_SPS_BYTE_LENGTH)
+        ]) {
+            expect(repairHEVCSPSDefaultDisplayWindow(sequenceParameterSet)).toBeNull();
+        }
     });
 });
 

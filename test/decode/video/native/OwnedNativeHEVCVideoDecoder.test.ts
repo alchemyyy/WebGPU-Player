@@ -25,6 +25,13 @@ const MAIN10_PQ_SPS = createBytesFromHex(
 const MAIN10_BT2020_10_SPS = createBytesFromHex(
     '42010102200000030090000003000003003fa005020171f2b6595952930bc05a848704820000030002000003003010'
 );
+// An old x265 build's Main 10 SDR SPS without default_display_window_flag, and the SPS FFmpeg's reading of it implies
+const X265_MISSING_DEFAULT_DISPLAY_WINDOW_SPS = createBytesFromHex(
+    '420101022000000300900000030000030096a001e0200649f4d96666924c2e02000007d20000bb8010'
+);
+const X265_REPAIRED_DEFAULT_DISPLAY_WINDOW_SPS = createBytesFromHex(
+    '420101022000000300900000030000030096a001e0200649f4d96666924c2e0100000303e900005dc008'
+);
 const ALTERNATIVE_TRANSFER_CHARACTERISTICS_PAYLOAD_TYPE = 147;
 const HLG_TRANSFER_CHARACTERISTICS = 18;
 const PQ_TRANSFER_CHARACTERISTICS = 16;
@@ -293,6 +300,42 @@ describe('OwnedNativeHEVCVideoDecoder', () => {
 
         expect(harness.transferableData).toEqual([ true, false, true ]);
         expect(harness.packets[1]).toBe(unchangedPacket);
+        decoder.close();
+    });
+
+    it('restores a missing default_display_window_flag in the HVCC and in band without HDR neutralization', async () => {
+        const harness = createHarness();
+        const createDescription = (sequenceParameterSet: Uint8Array): Uint8Array => {
+            const description = createSPSFreeHVCCDescription();
+            return Uint8Array.from([
+                ...description.subarray(0, 22),
+                1,
+                0x80 | 33,
+                0,
+                1,
+                0,
+                sequenceParameterSet.byteLength,
+                ...sequenceParameterSet
+            ]);
+        };
+        const decoder = new OwnedNativeHEVCVideoDecoder(
+            { codec: 'hvc1.2.4.L150.B0', description: createDescription(X265_MISSING_DEFAULT_DISPLAY_WINDOW_SPS) },
+            { kind: 'annex-b' },
+            { onError: vi.fn(), onFrame: vi.fn(), onProgress: vi.fn() },
+            harness.dependencies
+        );
+        await decoder.init();
+        expect(harness.decoder.configure).toHaveBeenCalledWith({
+            codec: 'hvc1.2.4.L150.B0',
+            description: createDescription(X265_REPAIRED_DEFAULT_DISPLAY_WINDOW_SPS)
+        });
+
+        const picture = createNALUnit(19, [ 1 ]);
+        expect(decoder.decode(createPacket(encodeAnnexBNALUnits([ X265_MISSING_DEFAULT_DISPLAY_WINDOW_SPS, picture ]), 0))).toBe(true);
+        const packetWithIntactSPS = createPacket(encodeAnnexBNALUnits([ MAIN10_PQ_SPS, createNALUnit(21, [ 2 ]) ]), 1);
+        expect(decoder.decode(packetWithIntactSPS)).toBe(true);
+        expect(harness.packets[0].data).toEqual(encodeAnnexBNALUnits([ X265_REPAIRED_DEFAULT_DISPLAY_WINDOW_SPS, picture ]));
+        expect(harness.packets[1]).toBe(packetWithIntactSPS);
         decoder.close();
     });
 

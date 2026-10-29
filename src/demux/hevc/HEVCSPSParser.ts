@@ -12,6 +12,10 @@ const CHROMA_FORMAT_444 = 3;
 // bit_depth_luma_minus8 and bit_depth_chroma_minus8 reach 8 in the range extensions, 16-bit planes, as FFmpeg reads them; the bounded parser reads at most 6
 const MAXIMUM_BIT_DEPTH_MINUS8 = 8;
 const MAXIMUM_BOUNDED_BIT_DEPTH_MINUS8 = 6;
+// FFmpeg's test for a VUI without default_display_window_flag: the bits left from the flag before rbsp_stop_one_bit, and the 21 bits that follow it
+const MISSING_DEFAULT_DISPLAY_WINDOW_MINIMUM_BIT_COUNT = 68;
+const MISSING_DEFAULT_DISPLAY_WINDOW_PATTERN_BIT_LENGTH = 21;
+const MISSING_DEFAULT_DISPLAY_WINDOW_PATTERN = 0x10_0000;
 const MAIN_PROFILE_BASE_DPB_PICTURE_COUNT = 6;
 const HEVC_LEVEL_MAXIMUM_LUMA_PICTURE_SAMPLE_COUNTS: Readonly<Partial<Record<number, number>>> = Object.freeze({
     30: 36_864,
@@ -170,6 +174,8 @@ type ParsedVUI = {
     colorDescriptionCodes: VUIColorDescriptionCodes | null
     colorDescriptionOffsets: VUIColorDescriptionOffsets | null
     colorSpace: HEVCSPSColorSpace | null
+    /** The RBSP bit offset of default_display_window_flag, where the parse stops; null without VUI */
+    defaultDisplayWindowFlagOffset: number | null
     fieldSequence: boolean
 };
 
@@ -438,6 +444,7 @@ function parseVUI(reader: BoundedBitReader): ParsedVUI {
         colorDescriptionOffsets,
         // Full range survives an absent or wholly unspecified colour description; limited is the default anyway
         colorSpace: describedColorSpace ?? (signaledFullRange ? createFullRangeOnlyColorSpace() : null),
+        defaultDisplayWindowFlagOffset: reader.getBitOffset(),
         fieldSequence
     };
 }
@@ -691,6 +698,7 @@ function readHEVCSPSSyntax(nalUnit: Uint8Array, bounded: boolean): HEVCSPSSyntax
             colorDescriptionCodes: null,
             colorDescriptionOffsets: null,
             colorSpace: null,
+            defaultDisplayWindowFlagOffset: null,
             fieldSequence: false
         };
     if (bounded && vui.fieldSequence) {
@@ -757,6 +765,68 @@ function createNALUnitFromRBSP(nalUnit: Uint8Array, RBSP: Uint8Array): Uint8Arra
         consecutiveZeroCount = byteValue === 0 ? consecutiveZeroCount + 1 : 0;
     }
     return new Uint8Array(escapedBytes);
+}
+
+function readBit(bytes: Uint8Array, bitOffset: number): number {
+    return (bytes[Math.floor(bitOffset / 8)] >> (7 - (bitOffset % 8))) & 1;
+}
+
+/** Returns the RBSP bit offset of rbsp_stop_one_bit, the last set bit, or null for an RBSP without one. */
+function findRBSPStopBitOffset(RBSP: Uint8Array): number | null {
+    for (let byteOffset = RBSP.byteLength - 1; byteOffset >= 0; byteOffset -= 1) {
+        const byteValue = RBSP[byteOffset];
+        if (byteValue !== 0) {
+            // The lowest set bit of the last nonzero byte
+            return (byteOffset * 8) + 7 - Math.log2(byteValue & -byteValue);
+        }
+    }
+    return null;
+}
+
+/**
+ * Returns an SPS whose VUI omits default_display_window_flag, as some old x265 builds wrote it, with the flag inserted as 0; null for any other SPS.
+ * Chromium reads the next bits as the flag and a display window that fails its crop check, so the decoder rejects the stream.
+ * The detection is FFmpeg's (hevc/ps.c): at the flag, at least 68 bits before rbsp_stop_one_bit, and the next 21 bits a set vui_timing_info_present_flag
+ * then the zero top 20 bits of vui_num_units_in_tick, which a set flag would read as an implausible left offset.
+ * Everything after the flag moves one bit, and a new stop bit and zero alignment close the RBSP.
+ */
+export function repairHEVCSPSDefaultDisplayWindow(nalUnit: Uint8Array): Uint8Array | null {
+    let syntax: HEVCSPSSyntax;
+    try {
+        syntax = readHEVCSPSSyntax(nalUnit, false);
+    } catch (error) {
+        // An SPS the parser refuses is left as it is, for the decoder to judge
+        if (error instanceof TypeError) {
+            return null;
+        }
+        throw error;
+    }
+    const flagOffset = syntax.VUI.defaultDisplayWindowFlagOffset;
+    const stopBitOffset = findRBSPStopBitOffset(syntax.RBSP);
+    if (
+        flagOffset === null
+        || stopBitOffset === null
+        || stopBitOffset - flagOffset < MISSING_DEFAULT_DISPLAY_WINDOW_MINIMUM_BIT_COUNT
+    ) {
+        return null;
+    }
+    let patternValue = 0;
+    for (let bitIndex = 0; bitIndex < MISSING_DEFAULT_DISPLAY_WINDOW_PATTERN_BIT_LENGTH; bitIndex += 1) {
+        patternValue = (patternValue * 2) + readBit(syntax.RBSP, flagOffset + bitIndex);
+    }
+    if (patternValue !== MISSING_DEFAULT_DISPLAY_WINDOW_PATTERN) {
+        return null;
+    }
+
+    // The data bits, one more for the inserted flag, and the stop bit; zero-filled, so the flag and the alignment are already 0
+    const repairedRBSP = new Uint8Array(Math.ceil((stopBitOffset + 2) / 8));
+    for (let bitOffset = 0; bitOffset < stopBitOffset; bitOffset += 1) {
+        if (readBit(syntax.RBSP, bitOffset) === 1) {
+            writeBits(repairedRBSP, bitOffset < flagOffset ? bitOffset : bitOffset + 1, 1, 1);
+        }
+    }
+    writeBits(repairedRBSP, stopBitOffset + 1, 1, 1);
+    return createNALUnitFromRBSP(nalUnit, repairedRBSP);
 }
 
 /** Parses the bounded SPS fields of a Main or Main 10 stream: geometry, bit depth, profile, level, DPB size, and color description. */
