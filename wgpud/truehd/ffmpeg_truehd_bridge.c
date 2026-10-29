@@ -6,6 +6,8 @@
  * a TrueHD Atmos stream whose target layout has speakers FFmpeg's presentation lacks, or binaural rendering.
  * Then truehd_objects.c decodes the stream's 16-channel presentation and renders it into the target, packet by packet,
  * once a major sync and the object metadata have arrived; until then the stock decode plays.
+ * A TrueHD stream whose one substream carries more than two channels, which FFmpeg refuses, decodes through truehd_substream.c
+ * instead, from the major sync that describes it until one describes another stream.
  */
 
 #include <emscripten.h>
@@ -22,6 +24,7 @@
 
 #include "audio_decoder_interface.h"
 #include "truehd_objects.h"
+#include "truehd_substream.h"
 
 /* The codecs in the manifest's `accepts:` order */
 enum TrueHDCodec {
@@ -62,8 +65,12 @@ enum TrueHDError {
 /* Which decode the current block is */
 enum TrueHDBlock {
     TRUEHD_BLOCK_STOCK = 0,
-    TRUEHD_BLOCK_RENDERED = 1
+    TRUEHD_BLOCK_RENDERED = 1,
+    TRUEHD_BLOCK_SUBSTREAM = 2
 };
+
+/* The sample depth TrueHD codes, which FFmpeg reports as every TrueHD stream's */
+#define TRUEHD_BITS_PER_SAMPLE 24
 
 typedef struct TrueHDDecoder {
     AVCodecContext *codec_context;
@@ -79,6 +86,12 @@ typedef struct TrueHDDecoder {
     int has_render_target;
     uint32_t render_channel_mask;
     int render_binaural;
+    /* The single-substream decode, for the TrueHD codec only: whether the latest major sync named a stream FFmpeg refuses,
+     * and the decoded block waiting for receive */
+    TrueHDSubstream *substream;
+    int decodes_substream;
+    int substream_pending;
+    double substream_timestamp;
     /* Whether the latest packet rendered objects, and the rendered block waiting for receive */
     int renders_objects;
     int rendered_pending;
@@ -99,6 +112,7 @@ static void free_decoder(TrueHDDecoder *decoder) {
     av_packet_free(&decoder->packet);
     avcodec_free_context(&decoder->codec_context);
     truehd_objects_destroy(decoder->objects);
+    truehd_substream_destroy(decoder->substream);
     free(decoder->planes);
     free(decoder);
 }
@@ -229,9 +243,10 @@ TrueHDDecoder *audio_decoder_create(int codec) {
     decoder->frame = av_frame_alloc();
     if (codec == TRUEHD_CODEC_TRUEHD) {
         decoder->objects = truehd_objects_create();
+        decoder->substream = truehd_substream_create();
     }
     if (decoder->codec_context == NULL || decoder->packet == NULL || decoder->frame == NULL
-            || (codec == TRUEHD_CODEC_TRUEHD && decoder->objects == NULL)) {
+            || (codec == TRUEHD_CODEC_TRUEHD && (decoder->objects == NULL || decoder->substream == NULL))) {
         free_decoder(decoder);
         return NULL;
     }
@@ -298,6 +313,24 @@ int audio_decoder_set_option(TrueHDDecoder *decoder, uint32_t key, double value)
     return AUDIO_DECODER_SUCCESS;
 }
 
+/* Decodes a packet of a stream FFmpeg refuses through the single-substream decode; FFmpeg never sees it */
+static int send_substream_packet(TrueHDDecoder *decoder, uint32_t byte_length, double timestamp) {
+    const enum TrueHDSubstreamResult result = truehd_substream_decode(decoder->substream, decoder->packet->data, byte_length);
+    av_packet_unref(decoder->packet);
+    switch (result) {
+        case TRUEHD_SUBSTREAM_DECODED:
+            decoder->substream_pending = 1;
+            decoder->substream_timestamp = timestamp;
+            return AUDIO_DECODER_SEND_ACCEPTED;
+        case TRUEHD_SUBSTREAM_AWAITING_SYNC:
+            return AUDIO_DECODER_SEND_AWAITING_SYNC;
+        case TRUEHD_SUBSTREAM_INVALID:
+            return AUDIO_DECODER_SEND_DROPPED;
+        default:
+            return fail(decoder, TRUEHD_ERROR_OUTPUT, byte_length);
+    }
+}
+
 EMSCRIPTEN_KEEPALIVE
 int audio_decoder_send(TrueHDDecoder *decoder, uint32_t byte_length, double timestamp) {
     if (decoder->packet->data == NULL || byte_length == 0 || byte_length > (uint32_t) decoder->packet->size) {
@@ -307,6 +340,21 @@ int audio_decoder_send(TrueHDDecoder *decoder, uint32_t byte_length, double time
     decoder->packet->pts = (int64_t) timestamp;
     decoder->packet->dts = (int64_t) timestamp;
     decoder->rendered_pending = 0;
+    decoder->substream_pending = 0;
+    if (decoder->substream != NULL) {
+        // A major sync decides the decode until the next one, which starts over at it
+        const int stock_refuses = truehd_substream_stock_refuses(decoder->packet->data, byte_length);
+        if (stock_refuses >= 0 && stock_refuses != decoder->decodes_substream) {
+            decoder->decodes_substream = stock_refuses;
+            truehd_substream_reset(decoder->substream);
+            avcodec_flush_buffers(decoder->codec_context);
+        }
+        if (decoder->decodes_substream) {
+            truehd_objects_reset(decoder->objects);
+            decoder->renders_objects = 0;
+            return send_substream_packet(decoder, byte_length, timestamp);
+        }
+    }
     const int result = avcodec_send_packet(decoder->codec_context, decoder->packet);
     // FFmpeg has read the packet's first access unit, so its profile and output layout are current
     if (result == 0 && needs_objects(decoder)) {
@@ -329,6 +377,11 @@ int audio_decoder_send(TrueHDDecoder *decoder, uint32_t byte_length, double time
 
 EMSCRIPTEN_KEEPALIVE
 int audio_decoder_receive(TrueHDDecoder *decoder) {
+    if (decoder->substream_pending) {
+        decoder->substream_pending = 0;
+        decoder->block = TRUEHD_BLOCK_SUBSTREAM;
+        return AUDIO_DECODER_RECEIVE_READY;
+    }
     if (decoder->rendered_pending) {
         decoder->rendered_pending = 0;
         if (discard_stock_frames(decoder) != AUDIO_DECODER_SUCCESS) {
@@ -368,6 +421,9 @@ uint32_t audio_decoder_frame_count(TrueHDDecoder *decoder) {
     if (decoder->block == TRUEHD_BLOCK_RENDERED) {
         return truehd_objects_frame_count(decoder->objects);
     }
+    if (decoder->block == TRUEHD_BLOCK_SUBSTREAM) {
+        return truehd_substream_frame_count(decoder->substream);
+    }
     return (uint32_t) decoder->frame->nb_samples;
 }
 
@@ -376,6 +432,9 @@ uint32_t audio_decoder_sample_rate(TrueHDDecoder *decoder) {
     if (decoder->block == TRUEHD_BLOCK_RENDERED) {
         return truehd_objects_sample_rate(decoder->objects);
     }
+    if (decoder->block == TRUEHD_BLOCK_SUBSTREAM) {
+        return truehd_substream_sample_rate(decoder->substream);
+    }
     return (uint32_t) decoder->frame->sample_rate;
 }
 
@@ -383,6 +442,9 @@ EMSCRIPTEN_KEEPALIVE
 uint32_t audio_decoder_channel_count(TrueHDDecoder *decoder) {
     if (decoder->block == TRUEHD_BLOCK_RENDERED) {
         return truehd_objects_channel_count(decoder->objects);
+    }
+    if (decoder->block == TRUEHD_BLOCK_SUBSTREAM) {
+        return truehd_substream_channel_count(decoder->substream);
     }
     return (uint32_t) decoder->frame->ch_layout.nb_channels;
 }
@@ -393,6 +455,9 @@ uint32_t audio_decoder_channel_mask(TrueHDDecoder *decoder) {
     if (decoder->block == TRUEHD_BLOCK_RENDERED) {
         return truehd_objects_channel_mask(decoder->objects);
     }
+    if (decoder->block == TRUEHD_BLOCK_SUBSTREAM) {
+        return truehd_substream_channel_mask(decoder->substream);
+    }
     return stock_channel_mask(&decoder->frame->ch_layout);
 }
 
@@ -400,6 +465,9 @@ EMSCRIPTEN_KEEPALIVE
 float *audio_decoder_channel_pointer(TrueHDDecoder *decoder, uint32_t channel) {
     if (decoder->block == TRUEHD_BLOCK_RENDERED) {
         return truehd_objects_channel_pointer(decoder->objects, channel);
+    }
+    if (decoder->block == TRUEHD_BLOCK_SUBSTREAM) {
+        return truehd_substream_channel_pointer(decoder->substream, channel);
     }
     if (decoder->planes == NULL || channel >= (uint32_t) decoder->frame->ch_layout.nb_channels) {
         return NULL;
@@ -412,6 +480,9 @@ double audio_decoder_timestamp(TrueHDDecoder *decoder) {
     if (decoder->block == TRUEHD_BLOCK_RENDERED) {
         return decoder->rendered_timestamp;
     }
+    if (decoder->block == TRUEHD_BLOCK_SUBSTREAM) {
+        return decoder->substream_timestamp;
+    }
     return decoder->frame->pts == AV_NOPTS_VALUE ? AUDIO_DECODER_NO_TIMESTAMP : (double) decoder->frame->pts;
 }
 
@@ -419,12 +490,15 @@ EMSCRIPTEN_KEEPALIVE
 double audio_decoder_attribute(TrueHDDecoder *decoder, uint32_t key) {
     switch (key) {
         case TRUEHD_ATTRIBUTE_BITS_PER_SAMPLE:
-            return (double) decoder->codec_context->bits_per_raw_sample;
+            return decoder->decodes_substream ? TRUEHD_BITS_PER_SAMPLE : (double) decoder->codec_context->bits_per_raw_sample;
         case TRUEHD_ATTRIBUTE_PROFILE:
             return (double) decoder->codec_context->profile;
         case TRUEHD_ATTRIBUTE_PCM_FINGERPRINT:
-            return decoder->computes_pcm_fingerprint && decoder->block == TRUEHD_BLOCK_STOCK ?
-                (double) decoder->pcm_fingerprint : AUDIO_DECODER_NO_ATTRIBUTE;
+            if (!decoder->computes_pcm_fingerprint || decoder->block == TRUEHD_BLOCK_RENDERED) {
+                return AUDIO_DECODER_NO_ATTRIBUTE;
+            }
+            return decoder->block == TRUEHD_BLOCK_SUBSTREAM ?
+                (double) truehd_substream_pcm_fingerprint(decoder->substream) : (double) decoder->pcm_fingerprint;
         case TRUEHD_ATTRIBUTE_LIBRARY_VERSION:
             return (double) avcodec_version();
         case TRUEHD_ATTRIBUTE_OBJECT_COUNT:
@@ -442,8 +516,12 @@ void audio_decoder_clear(TrueHDDecoder *decoder) {
     if (decoder->objects != NULL) {
         truehd_objects_reset(decoder->objects);
     }
+    if (decoder->substream != NULL) {
+        truehd_substream_reset(decoder->substream);
+    }
     decoder->renders_objects = 0;
     decoder->rendered_pending = 0;
+    decoder->substream_pending = 0;
     decoder->block = TRUEHD_BLOCK_STOCK;
 }
 
