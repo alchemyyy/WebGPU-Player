@@ -1261,6 +1261,8 @@ These were settled on Firefox 157 on Windows.
   A seek back into a group that playback or an earlier seek had read then read the file up to that group, up to 395 MB of a 743 MB Matroska file in one seek, and stalled for seconds over the network.
   A retry now starts from the later of the stepped entry and the cue point that entry won over, and a step past the first entry stops at it.
   v2 replaces the media sinks with packet readers and cursors, so `TrackIteration.ts` gives the worker what the sinks' `packets()` and `samples()` gave: packets read about a second ahead, and decoded samples from a start time, each ending at once on `return()`.
+  One case differed (10-29): a start before a track's first key packet, as in a file that opens on leading pictures, where `samples()` fell back to the first key packet and v2's cursor started its decode on no packet and failed an assertion.
+  The fork's cursor now starts at the first key packet decoding can start at, and rejects with `The track has no key packet that decoding can start at.` when there is none, which the worker reports as `source-unsupported`, so renegotiation names the source.
   `VC1PresentationOrder.ts` follows v2's track backing, which writes each packet into a result value, and presents a restamped packet through Mediabunny's internal clone, which keeps where the demuxer finds the packet again.
 - The engine is an npm workspace of its host (10-02).
   npm installs the engine's dependencies, so the host lists only what it uses directly.
