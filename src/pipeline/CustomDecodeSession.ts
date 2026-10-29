@@ -211,6 +211,8 @@ export type CustomDecodeSessionTelemetry = {
     /** The channel count the audio decoder produces, null until the first decoded output */
     decodedAudioSourceChannelCount: number | null
     droppedFrameCount: number
+    /** The media time of the earliest frame queued for presentation, which the next take presents first, or null with none queued */
+    earliestQueuedFrameMediaTimeMicroseconds: Microseconds | null
     failureKind: CustomDecodeFailureKind | null
     firstFrameMediaTimeMicroseconds: Microseconds | null
     /** The frame-pool route's GPU decoder, or null on the routes that decode in the worker */
@@ -359,6 +361,7 @@ function createTelemetry(): CustomDecodeSessionTelemetry {
         decodedAudioOutputLayout: null,
         decodedAudioSourceChannelCount: null,
         droppedFrameCount: 0,
+        earliestQueuedFrameMediaTimeMicroseconds: null,
         failureKind: null,
         firstFrameMediaTimeMicroseconds: null,
         gpuVideoDecode: null,
@@ -866,6 +869,7 @@ export default class CustomDecodeSession {
     public getTelemetry(): CustomDecodeSessionTelemetry {
         return {
             ...this.telemetry,
+            earliestQueuedFrameMediaTimeMicroseconds: this.queuedFrames[0]?.presentationFrame.mediaTimeMicroseconds ?? null,
             // A failed frame-pool generation keeps showing its GPU decoder, whose failure names the check
             gpuVideoDecode: this.telemetryFramePool ? this.gpuVideoDecodeFeed?.getTelemetry() ?? null : null,
             queuedFrameCount: this.queuedFrames.length

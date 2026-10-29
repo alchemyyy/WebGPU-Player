@@ -17,6 +17,7 @@ const DISCONTINUITY_MESSAGE = 'Decoded audio timestamps contain a gap or overlap
 const SHAPE_MESSAGE = 'Decoded audio does not match the worklet output layout';
 const TRANSFER_MESSAGE = 'Unable to transfer decoded audio to the worklet';
 const DROPPED_MESSAGE = 'The audio worklet dropped a decoded sample';
+const LEADING_GAP_MESSAGE = 'The first decoded audio starts too far after its start position, over the audio worklet\'s leading gap bound';
 const UNKNOWN_RELEASE_MESSAGE = 'The audio worklet released a sample it was never sent';
 const CREDIT_MESSAGE = 'Unable to replenish decoded audio credits';
 
@@ -74,6 +75,7 @@ function isReleaseReason(value: unknown): value is AudioWorkletReleaseReason {
     switch (value) {
         case 'consumed':
         case 'invalid':
+        case 'leading-gap':
         case 'overflow':
         case 'stale-generation':
             return true;
@@ -232,7 +234,7 @@ export default class WorkletPCMProducer {
         const [ pendingChunk ] = this.pendingChunks.splice(pendingChunkIndex, 1);
         this.pendingFrameCount -= pendingChunk.frameCount;
         if (value.reason !== 'consumed') {
-            this.reportFailure(DROPPED_MESSAGE);
+            this.reportFailure(value.reason === 'leading-gap' ? LEADING_GAP_MESSAGE : DROPPED_MESSAGE);
             return;
         }
         this.consumedChunkCount += 1;

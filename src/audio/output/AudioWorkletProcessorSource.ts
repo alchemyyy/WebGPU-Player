@@ -1,4 +1,9 @@
 export const CUSTOM_AUDIO_WORKLET_PROCESSOR_NAME = 'jellyfin-custom-audio-output-v1';
+/**
+ * The longest silence the processor renders from a flush position up to the first chunk, as when an audio track starts after the video.
+ * A first chunk further on is refused, since a gap that long is a timeline fault, such as container times the worker did not rebase, which silence would hide.
+ */
+export const CUSTOM_AUDIO_WORKLET_MAXIMUM_LEADING_GAP_SECONDS = 30;
 
 // This self-contained module is loaded through AudioWorklet.addModule().
 // It receives PCM in transferable ArrayBuffers, so it needs no shared memory.
@@ -6,6 +11,7 @@ export const CUSTOM_AUDIO_WORKLET_PROCESSOR_NAME = 'jellyfin-custom-audio-output
 const CUSTOM_AUDIO_WORKLET_SOURCE = `'use strict';
 
 const MICROSECONDS_PER_SECOND = 1000000;
+const MAXIMUM_LEADING_GAP_SECONDS = ${CUSTOM_AUDIO_WORKLET_MAXIMUM_LEADING_GAP_SECONDS};
 
 class JellyfinCustomAudioOutputProcessor extends AudioWorkletProcessor {
     constructor(options) {
@@ -196,12 +202,19 @@ class JellyfinCustomAudioOutputProcessor extends AudioWorkletProcessor {
         }
 
         if (this.leadingGapPending) {
-            // Only the first accepted chunk after a flush defines the gap, since later chunks continue it
-            this.leadingGapPending = false;
             const leadingGapFrames = Math.round(
                 ((message.timestampMicroseconds - this.leadingGapStartMicroseconds) * sampleRate)
                     / MICROSECONDS_PER_SECOND
             );
+            if (leadingGapFrames > MAXIMUM_LEADING_GAP_SECONDS * sampleRate) {
+                // The gap stays pending, so the chunks after it are refused too until the next flush
+                this.droppedFrames += frameCount;
+                this.releaseChannelData(message.channelData, producerPort, message.sequence, 'leading-gap');
+                this.postTelemetry('overflow', message.sequence);
+                return;
+            }
+            // Only the first accepted chunk after a flush defines the gap, since later chunks continue it
+            this.leadingGapPending = false;
             // A chunk at or before the flush position plays at once
             this.leadingGapFrames = leadingGapFrames > 0 ? leadingGapFrames : 0;
         }

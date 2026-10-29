@@ -31,8 +31,8 @@ export type AudioWorkletAttachProducerMessage = {
     type: 'attach-producer'
 };
 
-/** Why the processor returned a producer's chunk: played to its end, or dropped at enqueue */
-export type AudioWorkletReleaseReason = 'consumed' | 'invalid' | 'overflow' | 'stale-generation';
+/** Why the processor returned a producer's chunk: played to its end, or dropped at enqueue, a first chunk past the leading gap bound among them */
+export type AudioWorkletReleaseReason = 'consumed' | 'invalid' | 'leading-gap' | 'overflow' | 'stale-generation';
 
 /** Returns one chunk to its producer with its channel buffers; a consumed chunk returns its credit */
 export type AudioWorkletReleasedMessage = {

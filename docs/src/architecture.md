@@ -33,6 +33,7 @@ The engine's sources follow the stages a custom session runs: `src/demux/` reads
 
 - Decoded PCM: the worklet's render time, corrected to physical output time by `BrowserCustomAudioOutput` through `getOutputTimestamp`, re-anchors a `performance.now` `MediaClock`.
   After each flush the worklet renders silence from the flush position up to the first chunk's timestamp, so an audio track that starts later than the video still clocks from the start position.
+  A first chunk more than 30 s on is refused as `leading-gap`, which fails the attempt as `audio-output-failed`, since a gap that long is a timeline fault that silence would hide.
   When the output starts, the clock holds its start for the output's estimated latency, so video moves when the first sample is heard.
 - Native-media audio: `<audio>.currentTime`.
   A first fragment more than 40 ms after the start position parks the element at the fragment, and `play()` waits out the gap while the `MediaClock` runs alone.
@@ -40,6 +41,7 @@ The engine's sources follow the stages a custom session runs: `src/demux/` reads
   An audio track that ends before the video hands the clock to the `MediaClock` once its tail has played out.
 
 Video is pulled: each rAF draws the newest frame at or before the clock, and hands the presenter its timestamp and the clock's rate, from which it measures the display's refresh rate.
+Queued frames hold off video starvation only while one can present: frames whose earliest is more than the 2 s decode lag bound past the clock, while they hold every video credit of the route, count as starvation, so the stall bound falls back instead of waiting for the clock to reach them.
 While a plan deinterlaces, each rAF takes frames one frame ahead of the clock, the presenter shows the frame before the newest, and a tick that takes no frame draws a held frame's next field from history (see [Presentation](#presentation)).
 While a plan holds a display-rate pass, each rAF takes frames one refresh ahead of the clock, and a tick that takes no frame redraws from history at its clock time.
 

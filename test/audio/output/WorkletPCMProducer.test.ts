@@ -239,6 +239,18 @@ describe('WorkletPCMProducer', () => {
         expectSubmitFailure(harness.producer, createChunk(CONTINUOUS_CHUNK_TIME_MICROSECONDS), DROPPED_FAILURE);
     });
 
+    it('fails on a first chunk the processor refused past its leading gap bound, apart from a dropped one, without returning its credit', () => {
+        const harness = createProducer();
+        harness.producer.submit(createChunk(FIRST_CHUNK_TIME_MICROSECONDS));
+
+        harness.port.deliverRelease(FIRST_SEQUENCE, 'leading-gap');
+
+        expect(harness.onFailure).toHaveBeenCalledOnce();
+        expect(harness.onCreditsReleased).not.toHaveBeenCalled();
+        expect(harness.producer.failure).not.toBeNull();
+        expect(harness.producer.failure).not.toBe(DROPPED_FAILURE);
+    });
+
     it('reports a release it never sent and a credit callback that throws', () => {
         const unknownReleaseHarness = createProducer();
         unknownReleaseHarness.port.deliverRelease(UNSENT_SEQUENCE, 'consumed');

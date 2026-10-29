@@ -26,10 +26,12 @@ import CustomDecodeAudioBridge from '../audio/output/CustomDecodeAudioBridge';
 import CustomDecodeSession, {
     type CustomDecodeAudioBridgeFactory,
     type CustomDecodeNativeAudioBridgeFactory,
-    type CustomDecodeSessionEvent
+    type CustomDecodeSessionEvent,
+    type CustomDecodeSessionTelemetry
 } from './CustomDecodeSession';
 import {
     getDolbyVisionRawFrameLayerCount,
+    getVideoCreditLimit,
     isDolbyVisionProfile,
     isRawVideoFrameFormat,
     type CustomDecodeAudioOutputMode,
@@ -1105,7 +1107,7 @@ export default class CustomPlaybackController {
 
         const presentationFrame = this.videoDecodeSession.takeFrame(addMicroseconds(targetTimeMicroseconds, lookaheadMicroseconds));
         if (!presentationFrame && this.state === 'playing') {
-            this.handleMissingVideoFrame(generation);
+            this.handleMissingVideoFrame(generation, addMicroseconds(targetTimeMicroseconds, lookaheadMicroseconds));
         } else if (presentationFrame) {
             // The session drops replaced epochs, so any frame completes a resync
             this.videoResyncPending = false;
@@ -2597,7 +2599,7 @@ export default class CustomPlaybackController {
         this.emitTimeUpdateIfDue();
     }
 
-    private handleMissingVideoFrame(generation: number): void {
+    private handleMissingVideoFrame(generation: number, targetTimeMicroseconds: Microseconds): void {
         if (this.hasVideoTrackEnded()) {
             this.videoFrameMissStartedAtMicroseconds = null;
             this.endVideoFrameWait(generation);
@@ -2606,7 +2608,7 @@ export default class CustomPlaybackController {
 
         const decodeTelemetry = this.videoDecodeSession.getTelemetry();
         if (
-            decodeTelemetry.queuedFrameCount > 0
+            (decodeTelemetry.queuedFrameCount > 0 && !this.isVideoQueueStranded(decodeTelemetry, targetTimeMicroseconds))
             || decodeTelemetry.pendingFrameCount > 0
             || this.pendingPresentationFrames.size > 0
             || this.pendingEndedGeneration === generation
@@ -2634,6 +2636,26 @@ export default class CustomPlaybackController {
         }
 
         this.beginVideoFrameWait(generation, monotonicTimeMicroseconds);
+    }
+
+    /**
+     * Reports queued frames that cannot keep video from starving: the earliest is past the target by more than the decode lag bound, and the page
+     * holds every video credit of the route, so the worker decodes nothing that would present sooner.
+     * Such a queue waits for the clock to reach it, which a gap the audio renders as silence may let run for minutes, so the miss counts as starvation.
+     */
+    private isVideoQueueStranded(decodeTelemetry: CustomDecodeSessionTelemetry, targetTimeMicroseconds: Microseconds): boolean {
+        const earliestQueuedFrameMediaTimeMicroseconds = decodeTelemetry.earliestQueuedFrameMediaTimeMicroseconds;
+        const videoOutputMode = this.currentSource?.videoOutputMode;
+        if (earliestQueuedFrameMediaTimeMicroseconds === null
+            || videoOutputMode === undefined
+            || earliestQueuedFrameMediaTimeMicroseconds - targetTimeMicroseconds <= this.maximumVideoDecodeLagMicroseconds) {
+            return false;
+        }
+        // The frame-pool route's credits are packets, which wait on the page for its GPU decoder
+        const heldCreditCount = videoOutputMode === 'frame-pool' ?
+            decodeTelemetry.gpuVideoDecode?.queuedPacketCount ?? 0 :
+            decodeTelemetry.queuedFrameCount + decodeTelemetry.pendingFrameCount;
+        return heldCreditCount >= getVideoCreditLimit(videoOutputMode);
     }
 
     private handleStaleVideoFrame(

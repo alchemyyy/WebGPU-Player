@@ -28,7 +28,7 @@ import CustomDecodeSession, {
     CustomDecodeSessionTelemetry,
     releaseIdleCustomDecodeWorker
 } from 'webgpu-player/pipeline/CustomDecodeSession';
-import type { DecodeWorkerAudioConfiguration } from 'webgpu-player/pipeline/DecodeWorkerProtocol';
+import { MAX_DECODED_FRAME_CREDITS, type DecodeWorkerAudioConfiguration } from 'webgpu-player/pipeline/DecodeWorkerProtocol';
 import { addMicroseconds, requireMicroseconds } from 'webgpu-player/TimeMath';
 import CustomPlaybackController, {
     CUSTOM_PLAYBACK_AUDIO_OUTPUT_SWITCH_LEAD_MICROSECONDS,
@@ -147,6 +147,7 @@ function createDecodeTelemetry(): CustomDecodeSessionTelemetry {
         decodedAudioOutputLayout: null,
         decodedAudioSourceChannelCount: null,
         droppedFrameCount: 0,
+        earliestQueuedFrameMediaTimeMicroseconds: null,
         failureKind: null,
         firstFrameMediaTimeMicroseconds: null,
         gpuVideoDecode: null,
@@ -280,6 +281,7 @@ class FakeVideoDecodeSession implements CustomVideoDecodeSession {
             audioResyncPending: this.audioResyncPending,
             decodedAudioObjectCount: this.decodedAudioObjectCount,
             decodedAudioSourceChannelCount: this.decodedAudioSourceChannelCount,
+            earliestQueuedFrameMediaTimeMicroseconds: this.queuedFrames[0]?.mediaTimeMicroseconds ?? null,
             lastFrameEndMediaTimeMicroseconds: this.lastFrameEndMediaTimeMicroseconds,
             lastFrameMediaTimeMicroseconds: this.lastFrameMediaTimeMicroseconds,
             nativeAudioEnded: this.nativeAudioEnded,
@@ -1558,6 +1560,49 @@ describe('CustomPlaybackController', () => {
             disposition: 'renegotiate-source',
             reason: 'playback-stalled'
         }) ]);
+    });
+
+    it('starves on queued frames stranded past the decode lag bound while they hold every frame credit, and renegotiates at the stall bound', async () => {
+        const harness = createControllerHarness(false);
+        await startReadyPlayback(harness, false);
+        // Ten minutes past the clock, as a program clock the worker did not rebase placed a transport stream's first frames
+        for (let frameIndex = 0; frameIndex < MAX_DECODED_FRAME_CREDITS; frameIndex += 1) {
+            harness.videoDecodeSession.queueFrame(createDecodedFrame(addMicroseconds(secondsToMicroseconds(605), millisecondsToMicroseconds(40 * frameIndex))));
+        }
+
+        harness.setMonotonicTime(millisecondsToMicroseconds(10_100));
+        expect(harness.controller.takeCurrentFrame()).toBeNull();
+        harness.setMonotonicTime(millisecondsToMicroseconds(10_200));
+        expect(harness.controller.takeCurrentFrame()).toBeNull();
+        expect(harness.events.filter(event => event.type === 'waiting' && event.reason === 'video-frame')).toHaveLength(1);
+        harness.setMonotonicTime(millisecondsToMicroseconds(20_200));
+
+        expect(harness.controller.takeCurrentFrame()).toBeNull();
+        expect(harness.controller.playbackState).toBe('fallback');
+        expect(harness.fallbackRequests).toEqual([ expect.objectContaining({
+            disposition: 'renegotiate-source',
+            reason: 'playback-stalled'
+        }) ]);
+    });
+
+    it.each([
+        // At the first miss the earliest frame is exactly the 2 s bound past the clock, and nearer after
+        [ 'within the decode lag bound', secondsToMicroseconds(7.1), MAX_DECODED_FRAME_CREDITS ],
+        [ 'while the worker still holds a frame credit', secondsToMicroseconds(605), MAX_DECODED_FRAME_CREDITS - 1 ]
+    ])('waits without starving on queued frames %s', async (_description: string, firstFrameMediaTimeMicroseconds: Microseconds, frameCount: number) => {
+        const harness = createControllerHarness(false);
+        await startReadyPlayback(harness, false);
+        for (let frameIndex = 0; frameIndex < frameCount; frameIndex += 1) {
+            harness.videoDecodeSession.queueFrame(createDecodedFrame(addMicroseconds(firstFrameMediaTimeMicroseconds, millisecondsToMicroseconds(40 * frameIndex))));
+        }
+
+        harness.setMonotonicTime(millisecondsToMicroseconds(10_100));
+        expect(harness.controller.takeCurrentFrame()).toBeNull();
+        harness.setMonotonicTime(millisecondsToMicroseconds(10_500));
+        expect(harness.controller.takeCurrentFrame()).toBeNull();
+
+        expect(harness.events.filter(event => event.type === 'waiting' && event.reason === 'video-frame')).toEqual([]);
+        expect(harness.controller.playbackState).toBe('playing');
     });
 
     it('discards seek preroll and recovers on the first current frame', async () => {
