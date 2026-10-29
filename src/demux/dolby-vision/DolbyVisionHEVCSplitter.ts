@@ -365,6 +365,50 @@ export function sanitizeHEVCAccessUnitForChromium(data: Uint8Array, format: HEVC
     return encodeNALUnits(retainedNALUnits, format) ?? new Uint8Array();
 }
 
+function isBaseLayerSPSHeader(data: Uint8Array, offset: number): boolean {
+    return offset + MINIMUM_NAL_UNIT_BYTE_LENGTH <= data.byteLength
+        && ((data[offset] >> 1) & 0x3F) === HEVC_SPS_NAL_UNIT_TYPE
+        && (((data[offset] & 0x01) << 5) | (data[offset + 1] >> 3)) === HEVC_BASE_LAYER_ID;
+}
+
+/** Finds a base-layer SPS behind any start code; every start code ends in 00 00 01, which escaped NAL unit payloads never contain. */
+function hasAnnexBHEVCSPS(data: Uint8Array): boolean {
+    for (let oneOffset = data.indexOf(1, 2); oneOffset !== -1; oneOffset = data.indexOf(1, oneOffset + 1)) {
+        if (data[oneOffset - 1] === 0 && data[oneOffset - 2] === 0 && isBaseLayerSPSHeader(data, oneOffset + 1)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+function hasLengthPrefixedHEVCSPS(data: Uint8Array, lengthSize: HEVCLengthSize): boolean {
+    let offset = 0;
+    while (offset + lengthSize < data.byteLength) {
+        let nalUnitByteLength = 0;
+        for (let byteIndex = 0; byteIndex < lengthSize; byteIndex += 1) {
+            nalUnitByteLength = (nalUnitByteLength * 256) + data[offset + byteIndex];
+        }
+        offset += lengthSize;
+        // Malformed framing ends the search; the rewrite that would follow an SPS walks the framing strictly
+        if (nalUnitByteLength === 0 || offset + nalUnitByteLength > data.byteLength) {
+            return false;
+        }
+        if (isBaseLayerSPSHeader(data, offset)) {
+            return true;
+        }
+        offset += nalUnitByteLength;
+    }
+    return false;
+}
+
+/**
+ * Returns whether an access unit carries a base-layer SPS, reading only its framing and NAL unit headers, so every packet can afford the check.
+ * Any access unit may carry one: a container's sync-sample table may list only IDR pictures, leaving each CRA, with its parameter sets, a delta packet.
+ */
+export function hasHEVCSPS(data: Uint8Array, format: HEVCNALFormat): boolean {
+    return format.kind === 'annex-b' ? hasAnnexBHEVCSPS(data) : hasLengthPrefixedHEVCSPS(data, format.lengthSize);
+}
+
 /**
  * Rewrites every in-band SPS to the neutral color descriptor used by external HDR.
  * The access unit's alternative transfer characteristics SEI value, when known, overrides each VUI transfer in the route check.

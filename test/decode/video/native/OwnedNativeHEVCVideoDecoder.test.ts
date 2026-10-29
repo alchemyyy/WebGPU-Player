@@ -11,6 +11,7 @@ import OwnedNativeHEVCVideoDecoder, {
     type OwnedNativeHEVCVideoDecoderDependencies
 } from 'webgpu-player/decode/video/native/OwnedNativeHEVCVideoDecoder';
 import type { NativeVideoDecoderPort } from 'webgpu-player/decode/video/native/OwnedNativeVideoDecoder';
+import { parseHEVCNALUnits } from 'webgpu-player/demux/dolby-vision/DolbyVisionHEVCSplitter';
 import { parseHEVCSPS } from 'webgpu-player/demux/hevc/HEVCSPSParser';
 
 import { createBytesFromHex } from '../../../helpers/byteArrays';
@@ -403,6 +404,50 @@ describe('OwnedNativeHEVCVideoDecoder', () => {
                 transfer: 'bt709'
             });
         expect(harness.packets[1]).toBe(packetWithoutSPS);
+        decoder.close();
+    });
+
+    it('neutralizes the SPS of a delta packet and passes a delta packet without one unchanged', async () => {
+        const harness = createHarness();
+        const decoder = createNeutralizingDecoder(harness, 'pq');
+        await decoder.init();
+        expect(decoder.decode(createPacket(encodeAnnexBNALUnits([ MAIN10_PQ_SPS, createNALUnit(19, [ 1 ]) ]), 0))).toBe(true);
+
+        // A CRA with its parameter sets that the container's sync-sample table does not list
+        const deltaPacketWithSPS = new EncodedPacket(
+            encodeAnnexBNALUnits([ createNALUnit(32, [ 1 ]), MAIN10_PQ_SPS, createNALUnit(21, [ 2 ]) ]),
+            'delta',
+            1 / 24,
+            1 / 24,
+            1
+        );
+        const deltaPacketWithoutSPS = new EncodedPacket(encodeAnnexBNALUnits([ createNALUnit(1, [ 3 ]) ]), 'delta', 2 / 24, 1 / 24, 2);
+        expect(decoder.decode(deltaPacketWithSPS)).toBe(true);
+        expect(decoder.decode(deltaPacketWithoutSPS)).toBe(true);
+
+        expect(harness.packets).toHaveLength(3);
+        expect(harness.packets[1].type).toBe('delta');
+        expect(harness.packets[1].data).not.toBe(deltaPacketWithSPS.data);
+        const rewrittenSPS = parseHEVCNALUnits(harness.packets[1].data, { kind: 'annex-b' })
+            .find(nalUnit => nalUnit.type === 33);
+        expect(rewrittenSPS && parseHEVCSPS(rewrittenSPS.data).colorSpace).toEqual(NEUTRAL_COLOR_SPACE);
+        expect(harness.packets[2]).toBe(deltaPacketWithoutSPS);
+        decoder.close();
+    });
+
+    it('refuses a delta packet whose SPS does not prove the route', async () => {
+        const harness = createHarness();
+        const decoder = createNeutralizingDecoder(harness, 'pq');
+        await decoder.init();
+        expect(decoder.decode(createPacket(encodeAnnexBNALUnits([ MAIN10_PQ_SPS, createNALUnit(19, [ 1 ]) ]), 0))).toBe(true);
+        expect(() => decoder.decode(new EncodedPacket(
+            encodeAnnexBNALUnits([ MAIN10_BT2020_10_SPS, createNALUnit(21, [ 2 ]) ]),
+            'delta',
+            1 / 24,
+            1 / 24,
+            1
+        ))).toThrow('expected limited-range BT.2020 HDR route');
+        expect(harness.packets).toHaveLength(1);
         decoder.close();
     });
 

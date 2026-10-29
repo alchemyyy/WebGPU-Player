@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
     getHEVCNALUnitLayerID,
     hasHEVCRASLPicture,
+    hasHEVCSPS,
     parseHEVCNALUnits,
     sanitizeHEVCAccessUnitForChromium,
     type HEVCNALFormat,
@@ -401,6 +402,33 @@ describe('owned native HEVC packet workarounds', () => {
             encodeAnnexBNALUnits([ createNALUnit(1, [ 1 ]) ]),
             { kind: 'annex-b' }
         )).toBe(false);
+    });
+
+    it('finds a base-layer SPS behind either start code or a length prefix, wherever it sits in the access unit', () => {
+        const sps = createNALUnit(33, [ 1, 2 ]);
+        const picture = createNALUnit(1, [ 0x42, 1 ]);
+        const annexB = { kind: 'annex-b' } as const;
+        expect(hasHEVCSPS(joinAnnexBNALUnits([ [ THREE_BYTE_START_CODE, sps ], [ FOUR_BYTE_START_CODE, picture ] ]), annexB)).toBe(true);
+        expect(hasHEVCSPS(createOffsetView(encodeAnnexBNALUnits([ createNALUnit(35, [ 1 ]), picture, sps ])), annexB)).toBe(true);
+        for (const lengthSize of [ 1, 2, 4 ] as const) {
+            const format = { kind: 'length-prefixed', lengthSize } as const;
+            expect(hasHEVCSPS(encodeLengthPrefixedNALUnits([ createNALUnit(32, [ 1 ]), sps, picture ], lengthSize), format)).toBe(true);
+            expect(hasHEVCSPS(encodeLengthPrefixedNALUnits([ picture ], lengthSize), format)).toBe(false);
+        }
+    });
+
+    it('ignores SPS bytes inside a payload, another layer\'s SPS, and malformed length framing', () => {
+        const annexB = { kind: 'annex-b' } as const;
+        // An SPS header byte after a lone 00 01 in a payload is no NAL unit
+        expect(hasHEVCSPS(encodeAnnexBNALUnits([ createNALUnit(1, [ 0, 1, 0x42, 1 ]) ]), annexB)).toBe(false);
+        expect(hasHEVCSPS(encodeAnnexBNALUnits([ createLayerNALUnit(33, SECOND_VIEW_LAYER_ID, [ 1 ]), createNALUnit(1, [ 1 ]) ]), annexB))
+            .toBe(false);
+        // A start code that ends the data has no header to read
+        expect(hasHEVCSPS(new Uint8Array([ 0, 0, 0, 1, 2, 1, 7, 0, 0, 1 ]), annexB)).toBe(false);
+        const format = { kind: 'length-prefixed', lengthSize: 2 } as const;
+        const truncated = encodeLengthPrefixedNALUnits([ createNALUnit(1, [ 1 ]), createNALUnit(33, [ 1 ]) ], 2);
+        truncated[1] = 0xFF;
+        expect(hasHEVCSPS(truncated, format)).toBe(false);
     });
 
     it('sanitizes Chromium ordering violations without rewriting valid packets', () => {

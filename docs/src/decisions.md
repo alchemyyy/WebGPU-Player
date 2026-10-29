@@ -231,7 +231,7 @@ These were settled on stock Chrome on Windows, with a Chromium 153 source audit.
   Chromium's hardware HEVC decoder takes both forms (10-27): Main 10, HDR10, and Dolby Vision Profile 8.1 streams in MPEG-TS and M2TS, unchanged packets and leading-bytes views alike, decoded every frame on the native route with the timestamps FFprobe reports.
   A buffer the engine allocated for one decode, a rebuilt BL, an AV1 temporal unit without its RPU, or a sanitized or color-neutralized access unit, moves into its `EncodedVideoChunk` through `transfer` instead of being copied.
   A packet's own bytes may share Mediabunny's read buffer, so they and any view of them are copied.
-  The native decoder's own walks stay: its RASL check reads only the leading pictures after a key packet, its Chromium sanitizing only the first packet, and its color rewrite only key packets.
+  The native decoder's own walks stay: its RASL check reads only the leading pictures after a key packet, its Chromium sanitizing only the first packet, and its color rewrite only access units whose framing and NAL unit headers show a base-layer SPS (see Native HDR neutralization below).
 - Mediabunny's Dolby Vision sample entries are mapped in the engine (10-06).
   Mediabunny 1.52.2 parses `dvh1`, `dvhe`, `dva1`, `dvav`, and `dav1` but gives them no codec.
   `ISOBaseMediaDolbyVisionSampleEntry.ts` writes the wrapped codec into the track's internal info, contained the way `MatroskaVFWVideoConfiguration.ts` is, so Mediabunny itself stays unmodified.
@@ -313,7 +313,10 @@ These were settled on stock Chrome on Windows, with a Chromium 153 source audit.
   - raw R16 and RG16 plane import, the only route to bit-exact P010 and exact P7 FEL.
 - Native HDR neutralization.
   The native external HDR route rewrites the color description to limited BT.709 so Chrome does not tone-map, and the shader recovers the YUV codes.
-  An `hvcC` without an SPS defers validation to the first key access unit (08-05).
+  An `hvcC` without an SPS defers validation to the first access unit with an SPS (08-05).
+  Every access unit with a base-layer SPS is rewritten, not only key packets (10-29).
+  An ISO BMFF sync-sample table may list only the IDR pictures, so each CRA, which repeats the VPS, SPS, and PPS, is a delta packet; Chrome then read the unrewritten PQ SPS of the first such CRA and decoded PQ frames, which the presenter's color check refused.
+  A check of the framing and NAL unit headers alone, without parsing a payload, finds the SPS, so every packet affords it; each SPS found must still prove the route's transfer, so a mismatching SPS mid-stream fails the decode.
 - AV1 color is neutralized like HEVC's (10-27).
   Until then nothing rewrote an AV1 sequence header, so HDR AV1 decoded in software to raw I420P10, which cost CPU at 4K.
   The worker now rewrites every sequence header OBU's color description and range bit-exactly, every other field kept as it was, with the OBU size recoded only when the payload length changes, and also the codecs string's color fields, an `av1C` description, and the decoder's colorSpace.
