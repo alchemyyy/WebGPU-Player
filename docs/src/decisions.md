@@ -228,7 +228,7 @@ These were settled on stock Chrome on Windows, with a Chromium 153 source audit.
   The split returns the input itself when it removes nothing, and a view of the input's leading bytes when it removes only trailing NAL units, as Dolby Vision streams carry their RPU and an interleaved EL after the BL.
   Only a removal ahead of a BL NAL unit rebuilds the BL, with four-byte start codes.
   An Annex B packet from MPEG-TS or M2TS therefore reaches the native decoder with its own three-byte start codes, and with the zero bytes Mediabunny leaves at its end when the stream puts zeros ahead of the next start code.
-  Chromium's hardware HEVC decoder takes both forms (10-27): Main 10, HDR10, and Dolby Vision Profile 8.1 streams in MPEG-TS and M2TS, unchanged packets and leading-bytes views alike, decoded every frame on the native route with the timestamps FFprobe reports.
+  Chromium's hardware HEVC decoder takes both forms (10-27): Main 10, HDR10, and Dolby Vision Profile 8.1 streams in MPEG-TS and M2TS, unchanged packets and leading-bytes views alike, decoded every frame on the native route with the timestamps FFprobe reports less its `start_time`, since the worker counts a transport stream's times from its first timestamp (see "MPEG-TS and M2TS play on a timeline that starts at their first timestamp").
   A buffer the engine allocated for one decode, a rebuilt BL, an AV1 temporal unit without its RPU, or a sanitized or color-neutralized access unit, moves into its `EncodedVideoChunk` through `transfer` instead of being copied.
   A packet's own bytes may share Mediabunny's read buffer, so they and any view of them are copied.
   The native decoder's own walks stay: its RASL check reads only the leading pictures after a key packet, its Chromium sanitizing only the first packet, and its color rewrite only access units whose framing and NAL unit headers show a base-layer SPS (see Native HDR neutralization below).
@@ -892,6 +892,12 @@ These were settled on Firefox 157 on Windows.
   After the first preparation over a source, the worker pins its cache, the container's header and index among it, and sizes its read-ahead to 5 s of media and its cache to 15 s, at the media's size over the server's duration, else the container's, within 8 to 64 MiB and 32 to 192 MiB.
   The server's duration reaches the worker in the start request, whose absence asks for the container's in the ready response.
   Each run still opens its own input, because a canceled read rejects promises a kept demuxer could have memoized.
+- MPEG-TS and M2TS play on a timeline that starts at their first timestamp (10-29).
+  A transport stream stamps its packets with a program clock that need not start at zero: a Blu-ray title starts at 600 s, and broadcast recordings a fraction of a second or more in.
+  Mediabunny returns those timestamps as they are, and the host's positions and durations count from FFprobe's `start_time`, so a run started at 0 found its first key packet 600 s ahead: video waited ten minutes with its credits held, the worklet rendered the gap as silence the clock ran on, and nothing stalled or fell back.
+  The worker now computes each run's origin once its tracks are prepared, the first timestamp of the tracks it plays, truncated to whole microseconds as Mediabunny truncates packet times, and works in container time inside and playback time at its boundary.
+  The tracks a run plays, rather than all of a file's, set the origin, so a stream the run never reads, which may start late or hold no packets, costs no read; a run without its audio track may start the timeline a few milliseconds later than FFprobe's `start_time`.
+  `hasProgramClockTimestamps` names the containers that take an origin, MPEG-TS and M2TS; every other container's tracks start where the host's positions start, and keep their times.
 
 ## Audio
 

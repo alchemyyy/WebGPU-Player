@@ -22,6 +22,7 @@ import {
 import { microsecondsToSeconds, secondsToMicroseconds, type Microseconds } from '../MediaTime';
 import { hasIncompleteAVIIndex } from '../demux/AVIIndexCoverage';
 import { iterateAudioSamples, iterateTrackPackets, iterateVideoSamples } from '../demux/TrackIteration';
+import { readPlaybackTimelineOriginMicroseconds } from '../demux/PlaybackTimelineOrigin';
 import { findUnsupportedTrackFeature } from '../demux/UnsupportedTrackFeatures';
 import { getTransportStreamVideoCodec, readTransportStreamVideoDecoderDescription } from '../demux/mpeg/MPEGTransportStreamVideoConfiguration';
 import { isDolbyVisionDualLayerProfile } from '../demux/dolby-vision/DolbyVisionProfiles';
@@ -158,7 +159,7 @@ import {
     type RawVideoFrameGeometry,
     type RawVideoFrameSource
 } from '../decode/video/RawVideoFrameCopy';
-import { requireMicroseconds } from '../TimeMath';
+import { addMicroseconds, requireMicroseconds } from '../TimeMath';
 import { GPU_DECODE_MAXIMUM_CODEC_PRIVATE_BYTE_LENGTH, MAXIMUM_GPU_DECODE_OUTPUT_EVENTS } from '../decode/video/gpu/GPUDecodeLimits';
 import {
     getGPUDecoderParserFailureRecovery,
@@ -325,6 +326,11 @@ type DecodeRun = {
     preparedGPUDecodeParser: GPUDecoderParserRemotePipeline | null
     rawFrameBufferPool: RawFrameBufferPool | null
     rawVideoFrameFormat: CustomDecodeRawVideoFrameFormat | null
+    /**
+     * Where the playback timeline starts in container time: requests name playback times, the tracks container times, and every time the run posts is a playback time.
+     * Zero until the run's tracks are prepared, and for a container whose timestamps start where the host's positions do.
+     */
+    timelineOriginMicroseconds: Microseconds
     /** Ends the current video attempt without stopping audio or the run */
     videoAttemptCancelled: boolean
     videoAttemptConsumedCreditCount: number
@@ -448,11 +454,12 @@ function postResponse(response: DecodeWorkerResponse, transfer?: Transferable[])
     workerScope.postMessage(response, transfer);
 }
 
+/** Posts the initial video attempt's startup progress, at the playback time of the packet the attempt reached. */
 function postVideoStartupProgress(
     run: DecodeRun,
     phase: CustomDecodeWorkerProgressPhase,
     packetCount: number,
-    mediaTimeMicroseconds: Microseconds | null
+    containerTimeMicroseconds: Microseconds | null
 ): void {
     // Startup progress describes only the initial attempt, not later video resyncs
     if (isVideoAttemptStopped(run) || run.videoEpoch !== 0 || packetCount > MAXIMUM_VIDEO_STARTUP_PROGRESS_PACKET_COUNT) {
@@ -460,7 +467,7 @@ function postVideoStartupProgress(
     }
     postResponse({
         generation: run.generation,
-        mediaTimeMicroseconds,
+        mediaTimeMicroseconds: containerTimeMicroseconds === null ? null : toPlaybackTime(run, containerTimeMicroseconds),
         packetCount,
         phase,
         type: 'progress'
@@ -597,6 +604,16 @@ async function waitForFrameCredit(run: DecodeRun): Promise<boolean> {
 function recordVideoAttemptFramePosted(run: DecodeRun, mediaTimeMicroseconds: Microseconds): void {
     run.videoAttemptPostedFrameCount += 1;
     recordTimingEvent('video-frame-output', { mediaTimeMicroseconds });
+}
+
+/** Converts a playback time a request names into the container time the tracks are read at. */
+function toContainerTime(run: DecodeRun, playbackTimeMicroseconds: Microseconds): Microseconds {
+    return addMicroseconds(playbackTimeMicroseconds, run.timelineOriginMicroseconds);
+}
+
+/** Converts a container time into the playback time the run posts; queues the worker keys by packet timestamps keep container times. */
+function toPlaybackTime(run: DecodeRun, containerTimeMicroseconds: Microseconds): Microseconds {
+    return requireMicroseconds(containerTimeMicroseconds - run.timelineOriginMicroseconds);
 }
 
 /** Restores credits an unwinding video attempt consumed without posting a frame. */
@@ -1691,7 +1708,7 @@ async function prepareAudioTrack(
 }
 
 /**
- * Reads the duration from the container's metadata for a source the server never probed.
+ * Reads where the media ends, in container time, from the container's metadata for a source the server never probed.
  * Only the presented video track is asked: a late-starting audio track would make Mediabunny scan for its first packet.
  */
 async function readContainerDurationMicroseconds(input: Input, videoTrack: InputVideoTrack): Promise<Microseconds | null> {
@@ -1900,11 +1917,13 @@ async function postRawVideoFrame(
     }
 
     run.outstandingRawFrameBufferCount += 1;
+    const playbackTimeMicroseconds = toPlaybackTime(run, mediaTimeMicroseconds);
+    rawFrame.timestampMicroseconds = playbackTimeMicroseconds;
     const response: MutableDecodeWorkerFrameResponse = {
         durationMicroseconds: rawFrame.durationMicroseconds ?? durationMicroseconds,
         frame: rawFrame,
         generation: run.generation,
-        mediaTimeMicroseconds,
+        mediaTimeMicroseconds: playbackTimeMicroseconds,
         outputMode: 'raw-planes',
         type: 'frame',
         videoEpoch: run.videoEpoch
@@ -1913,7 +1932,7 @@ async function postRawVideoFrame(
     attachHDR10PlusMetadata(response, HDR10PlusMetadata);
     attachVideoFrameFields(response, run.videoFrameFields);
     transferables.push(...attachDolbyVisionEncodedMetadata(response, encodedDolbyVisionMetadata));
-    recordVideoAttemptFramePosted(run, mediaTimeMicroseconds);
+    recordVideoAttemptFramePosted(run, playbackTimeMicroseconds);
     postResponse(response, transferables);
 }
 
@@ -1988,13 +2007,18 @@ async function postRawVideoFramePair(run: DecodeRun, request: RawVideoFramePairP
     }
 
     run.outstandingRawFrameBufferCount += 1;
+    const playbackTimeMicroseconds = toPlaybackTime(run, mediaTimeMicroseconds);
+    rawFramePair.baseFrame.timestampMicroseconds = playbackTimeMicroseconds;
+    if (rawFramePair.enhancementFrame) {
+        rawFramePair.enhancementFrame.timestampMicroseconds = toPlaybackTime(run, rawFramePair.enhancementFrame.timestampMicroseconds);
+    }
     const response: MutableDecodeWorkerFrameResponse = {
         durationMicroseconds: rawFramePair.baseFrame.durationMicroseconds
             ?? durationMicroseconds,
         enhancementFrame: rawFramePair.enhancementFrame,
         frame: rawFramePair.baseFrame,
         generation: run.generation,
-        mediaTimeMicroseconds,
+        mediaTimeMicroseconds: playbackTimeMicroseconds,
         outputMode: 'raw-planes',
         type: 'frame',
         videoEpoch: run.videoEpoch
@@ -2003,7 +2027,7 @@ async function postRawVideoFramePair(run: DecodeRun, request: RawVideoFramePairP
     attachHDR10PlusMetadata(response, HDR10PlusMetadata);
     attachVideoFrameFields(response, run.videoFrameFields);
     transferables.push(...attachDolbyVisionEncodedMetadata(response, encodedDolbyVisionMetadata));
-    recordVideoAttemptFramePosted(run, mediaTimeMicroseconds);
+    recordVideoAttemptFramePosted(run, playbackTimeMicroseconds);
     postResponse(response, transferables);
 }
 
@@ -2015,11 +2039,12 @@ function postTransferredVideoFrame(
     encodedDolbyVisionMetadata: DolbyVisionEncodedFrameMetadata | null,
     HDR10PlusMetadata: HDR10PlusFrameMetadata | null | undefined
 ): void {
+    const playbackTimeMicroseconds = toPlaybackTime(run, mediaTimeMicroseconds);
     const response: MutableDecodeWorkerFrameResponse = {
         durationMicroseconds,
         frame,
         generation: run.generation,
-        mediaTimeMicroseconds,
+        mediaTimeMicroseconds: playbackTimeMicroseconds,
         outputMode: 'video-frame',
         type: 'frame',
         videoEpoch: run.videoEpoch
@@ -2028,7 +2053,7 @@ function postTransferredVideoFrame(
     attachVideoFrameFields(response, run.videoFrameFields);
     const transferables: Transferable[] = [ frame as unknown as Transferable ];
     transferables.push(...attachDolbyVisionEncodedMetadata(response, encodedDolbyVisionMetadata));
-    recordVideoAttemptFramePosted(run, mediaTimeMicroseconds);
+    recordVideoAttemptFramePosted(run, playbackTimeMicroseconds);
     postResponse(response, transferables);
 }
 
@@ -2238,10 +2263,11 @@ function postDecodedAudioObjectCount(run: DecodeRun, response: AudioDecodeWorker
 }
 
 /**
- * Copies the part of a decoded sample at or after the start into planar channels the batch transfers, and closes the sample.
+ * Copies the part of a decoded sample at or after the start, a container time, into planar channels the batch transfers, at their playback time,
+ * and closes the sample.
  * A sample wholly before the start still carries its format, which the audio decode worker binds as it would any other.
  */
-function copyAudioSampleWindow(sample: AudioSample, startTimeMicroseconds: Microseconds): AudioDecodeWorkerPCMSample {
+function copyAudioSampleWindow(run: DecodeRun, sample: AudioSample, startTimeMicroseconds: Microseconds): AudioDecodeWorkerPCMSample {
     try {
         const sampleTimeMicroseconds = requireMicroseconds(sample.microsecondTimestamp, 'Decoded audio timestamp');
         // A decoded sample of any length is taken; the resampler re-chunks it within the protocol frame limit
@@ -2269,7 +2295,7 @@ function copyAudioSampleWindow(sample: AudioSample, startTimeMicroseconds: Micro
                 channelCount: sample.numberOfChannels,
                 channelData,
                 frameCount: 0,
-                mediaTimeMicroseconds: sampleTimeMicroseconds,
+                mediaTimeMicroseconds: toPlaybackTime(run, sampleTimeMicroseconds),
                 sampleRate: sample.sampleRate
             };
         }
@@ -2287,7 +2313,7 @@ function copyAudioSampleWindow(sample: AudioSample, startTimeMicroseconds: Micro
             channelCount: sample.numberOfChannels,
             channelData,
             frameCount: sampleWindow.frameCount,
-            mediaTimeMicroseconds: sampleWindow.mediaTimeMicroseconds,
+            mediaTimeMicroseconds: toPlaybackTime(run, sampleWindow.mediaTimeMicroseconds),
             sampleRate: sample.sampleRate
         };
     } finally {
@@ -3205,7 +3231,7 @@ function postGPUDecodePicture(
         ...(events ? { outputEvents: events } : {}),
         ...(picture.repeatCounts ? { repeatCounts: picture.repeatCounts } : {}),
         ...(reset ? { reset: true } : {}),
-        timestampMicroseconds: packet.timestampMicroseconds,
+        timestampMicroseconds: toPlaybackTime(run, packet.timestampMicroseconds),
         type: 'packet',
         videoEpoch: run.videoEpoch,
         ...(picture.visibleSize ? { visibleSize: picture.visibleSize } : {})
@@ -3215,9 +3241,10 @@ function postGPUDecodePicture(
 /**
  * Posts a held packet: one whose picture a parser's failure lost, which decodes nothing and whose frame repeats the last good frame at its time.
  * The first held packet of a restart carries the failure as its recovery.
+ * Returns the packet's playback time.
  */
 function postGPUDecodeHold(run: DecodeRun, packet: EncodedPacket, recovery: GPUVideoDecodeRecovery | null): Microseconds {
-    const timestampMicroseconds = requireMicroseconds(packet.microsecondTimestamp, 'GPU decode held packet timestamp');
+    const timestampMicroseconds = toPlaybackTime(run, requireMicroseconds(packet.microsecondTimestamp, 'GPU decode held packet timestamp'));
     postResponse({
         data: new ArrayBuffer(0),
         durationMicroseconds: requireMicroseconds(Math.max(0, packet.microsecondDuration), 'GPU decode held packet duration'),
@@ -3446,20 +3473,20 @@ async function postGPUDecodePictures(
         const firstPicture = pictureIndex === 0;
         postGPUDecodePicture(run, packet, picture, joinOutputEvents(firstPicture ? carriedEvents : [], picture.outputEvents), firstPicture, queue.resetPending);
         queue.resetPending = false;
-        recordVideoAttemptFramePosted(run, packet.timestampMicroseconds);
+        recordVideoAttemptFramePosted(run, toPlaybackTime(run, packet.timestampMicroseconds));
         postedCount += 1;
         postVideoStartupProgress(run, 'video-packet-started', postedCount, packet.timestampMicroseconds);
     }
     return postedCount;
 }
 
-/** Reads the next decoded sample, recording the wait as a `video-read` when a timing trace runs. */
-async function readNextVideoSample(iterator: MediaSampleIterator<VideoSample>): Promise<IteratorResult<VideoSample>> {
+/** Reads the next decoded sample, recording the wait as a `video-read` at the sample's playback time when a timing trace runs. */
+async function readNextVideoSample(run: DecodeRun, iterator: MediaSampleIterator<VideoSample>): Promise<IteratorResult<VideoSample>> {
     const readStartedAt = startTimingWait();
     const iteratorResult = await iterator.next();
     if (readStartedAt !== null) {
         recordTimingWait('video-read', readStartedAt, {
-            mediaTimeMicroseconds: iteratorResult.done ? null : secondsToMicroseconds(iteratorResult.value.timestamp),
+            mediaTimeMicroseconds: iteratorResult.done ? null : toPlaybackTime(run, secondsToMicroseconds(iteratorResult.value.timestamp)),
             source: 'sample'
         });
     }
@@ -3493,7 +3520,7 @@ async function streamVideoFrames(
     run.videoIterator = iterator;
 
     while (await waitForFrameCredit(run)) {
-        const iteratorResult = await readNextVideoSample(iterator);
+        const iteratorResult = await readNextVideoSample(run, iterator);
         if (isVideoAttemptStopped(run)) {
             iteratorResult.value?.close();
             return;
@@ -3593,7 +3620,7 @@ async function streamVideoAttempts(
             if (!control) {
                 return;
             }
-            startTimeMicroseconds = control.targetTimeMicroseconds;
+            startTimeMicroseconds = toContainerTime(run, control.targetTimeMicroseconds);
         }
 
         await runVideoAttempt(run, request, preparedVideoTrack, startTimeMicroseconds);
@@ -3654,7 +3681,8 @@ function openAudioDecodeAttempt(
         renderBinaural: run.latestBinauralHeadphones && preparedAudioTrack.outputLayout === 'stereo',
         routeCodec: preparedAudioTrack.routeCodec,
         sourceSampleRate: preparedAudioTrack.sourceSampleRate,
-        startTimeMicroseconds: request.startTimeMicroseconds,
+        // The audio decode worker, its packets, and the worklet it feeds run on the playback timeline
+        startTimeMicroseconds: toPlaybackTime(run, request.startTimeMicroseconds),
         timeResolution: preparedAudioTrack.timeResolution
     }, {
         onChange: (): void => {
@@ -3704,7 +3732,7 @@ async function forwardAudioPackets(
                 return true;
             }
             const packet = iteratorResult.value;
-            batchBuilder.add(packet.data, requireMicroseconds(packet.microsecondTimestamp, ENCODED_AUDIO_PACKET_TIMESTAMP));
+            batchBuilder.add(packet.data, toPlaybackTime(run, requireMicroseconds(packet.microsecondTimestamp, ENCODED_AUDIO_PACKET_TIMESTAMP)));
         }
         const batch = batchBuilder.take();
         if (batch) {
@@ -3741,7 +3769,7 @@ async function forwardAudioSamples(
                 }
                 return true;
             }
-            batchBuilder.add(copyAudioSampleWindow(iteratorResult.value, startTimeMicroseconds));
+            batchBuilder.add(copyAudioSampleWindow(run, iteratorResult.value, startTimeMicroseconds));
         }
         const batch = batchBuilder.take();
         if (batch) {
@@ -3864,10 +3892,11 @@ async function streamNativeAudioPackets(
                     'Encoded audio packet duration'
                 ),
                 sequenceNumber: packet.sequenceNumber,
-                timestampMicroseconds: requireMicroseconds(
+                // The fMP4 fragments the native element plays carry playback times
+                timestampMicroseconds: toPlaybackTime(run, requireMicroseconds(
                     packet.microsecondTimestamp,
                     ENCODED_AUDIO_PACKET_TIMESTAMP
-                ),
+                )),
                 type: packet.type
             });
             if (!await postNativeAudioOutput(run, remuxer.takeOutput())) {
@@ -3950,7 +3979,7 @@ async function streamAudioAttempts(
                 audioDownmixAlgorithm: control.audioDownmixAlgorithm
                     ?? request.audioDownmixAlgorithm,
                 decodedAudioOutputLayout: control.decodedAudioOutputLayout,
-                startTimeMicroseconds: control.targetTimeMicroseconds
+                startTimeMicroseconds: toContainerTime(run, control.targetTimeMicroseconds)
             };
         }
 
@@ -3995,7 +4024,8 @@ type PreparedRunTracks = Readonly<{
 }>;
 
 /**
- * Prepares a run's tracks, its container duration when the server reported none, and its first attempt's parser, then posts the run's readiness.
+ * Prepares a run's tracks, where its playback timeline starts in them, its container duration when the server reported none, and its first attempt's parser,
+ * then posts the run's readiness.
  * Returns null, having posted nothing, once the run stopped meanwhile.
  */
 async function prepareRunTracks(
@@ -4024,11 +4054,19 @@ async function prepareRunTracks(
     if (run.cancelled) {
         return null;
     }
+    run.timelineOriginMicroseconds = await readPlaybackTimelineOriginMicroseconds(
+        input,
+        preparedAudioTrack ? [ preparedVideoTrack.videoTrack, preparedAudioTrack.audioTrack ] : [ preparedVideoTrack.videoTrack ]
+    );
     // The container's field order, which Mediabunny's parse of the track already read, goes with every frame that reports none of its own
     run.videoFrameFields = getScanFrameFields(await readContainerVideoScan(preparedVideoTrack.videoTrack));
-    const containerDurationMicroseconds = request.durationMicroseconds === undefined ?
+    const containerEndMicroseconds = request.durationMicroseconds === undefined ?
         await readContainerDurationMicroseconds(input, preparedVideoTrack.videoTrack) :
         null;
+    // The container's duration is where its video ends, which the timeline counts from its origin
+    const containerDurationMicroseconds = containerEndMicroseconds === null || containerEndMicroseconds <= run.timelineOriginMicroseconds ?
+        null :
+        toPlaybackTime(run, containerEndMicroseconds);
     if (run.cancelled) {
         return null;
     }
@@ -4079,16 +4117,18 @@ async function decodeMedia(run: DecodeRun, request: Extract<DecodeWorkerRequest,
             await urlSourceRetention.settle(run.urlSource, prepared.durationMicroseconds);
         }
         run.audioStreamFinished = prepared.audioTrack === null;
+        // The streams read the tracks from the start's container time
+        const containerRequest = { ...request, startTimeMicroseconds: toContainerTime(run, request.startTimeMicroseconds) };
         const streamPromises: Array<Promise<void>> = [];
         streamPromises.push(
-            streamVideoAttempts(run, request, prepared.videoTrack).then((): void => {
+            streamVideoAttempts(run, containerRequest, prepared.videoTrack).then((): void => {
                 // Finished audio stops waiting for a resync once video is done too
                 run.videoStreamFinished = true;
                 wakeWaiters(run.wakeAudioControlWaiters);
             })
         );
         if (prepared.audioTrack) {
-            streamPromises.push(streamAudioAttempts(run, request, prepared.audioTrack));
+            streamPromises.push(streamAudioAttempts(run, containerRequest, prepared.audioTrack));
         }
         await settleConcurrentDecodeStreams(streamPromises, (): void => {
             // Preserve the first active-stream failure after cancelling siblings
@@ -4162,6 +4202,7 @@ function createDecodeRun(request: Extract<DecodeWorkerRequest, { type: 'start' }
         preparedGPUDecodeParser: null,
         rawFrameBufferPool: createRawFrameBufferPool(request.videoOutputMode),
         rawVideoFrameFormat: request.rawVideoFrameFormat,
+        timelineOriginMicroseconds: requireMicroseconds(0),
         videoAttemptCancelled: false,
         videoAttemptConsumedCreditCount: 0,
         videoAttemptPostedFrameCount: 0,

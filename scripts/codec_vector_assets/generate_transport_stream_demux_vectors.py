@@ -4,7 +4,7 @@
 Each vector is muxed by FFmpeg's MPEG-TS muxer, and its M2TS twin by the same muxer in M2TS mode, which prefixes each 188-byte packet with a 4-byte timecode.
 Together they cover the stream types Mediabunny's demuxer reads beyond H.264 and HEVC:
 - MPEG-1 video (stream type 0x01) beside MP3, an FFmpeg encode, in MPEG-TS alone;
-- MPEG-2 video (stream type 0x02) with B-frames beside AC-3, an FFmpeg encode;
+- MPEG-2 video (stream type 0x02) with B-frames beside AC-3, an FFmpeg encode, and a stereo twin whose timestamps start at 600 s, as a Blu-ray title's program clock does;
 - VC-1 Advanced profile (stream type 0xEA with its VC-1 registration descriptor), remuxed from the committed qualification vector, since FFmpeg has no VC-1 encoder,
   and in MPEG-TS a copy whose PMT the generator strips of that descriptor, as FFmpeg's demuxer reads 0xEA as VC-1 without it;
 - DTS core (stream type 0x82) in M2TS alone, as a Blu-ray program carries it, remuxed from the committed DTS test vector, since FFmpeg's DTS encoder is experimental.
@@ -63,6 +63,8 @@ PROGRAM_MAP_TABLE_ID: Final = 0x02
 REGISTRATION_DESCRIPTOR_TAG: Final = 0x05
 VC1_FORMAT_IDENTIFIER: Final = b"VC-1"
 MPEG_2_CRC_POLYNOMIAL: Final = 0x04C1_1DB7
+# FFmpeg's MPEG-TS muxer starts its first PCR 1.4 s in and delays the streams after it
+MAXIMUM_MUXER_DELAY_SECONDS: Final = 2.0
 
 
 @dataclass(frozen=True)
@@ -75,6 +77,10 @@ class EncodedVector:
     video_codec_name: str
     audio_codec_name: str
     extensions: tuple[str, ...]
+    # The muxer's own arguments, such as an offset of every timestamp
+    muxer_arguments: tuple[str, ...] = ()
+    # The format start time FFprobe must read back, in seconds, beside the muxer's delay
+    minimum_start_seconds: float = 0.0
 
 
 ENCODED_VECTORS: Final = (
@@ -94,6 +100,17 @@ ENCODED_VECTORS: Final = (
         "mpeg2video",
         "ac3",
         (TRANSPORT_STREAM_EXTENSION, M2TS_EXTENSION),
+    ),
+    # Every timestamp 600 s on, as a Blu-ray title starts its program clock, with stereo AC-3, as the native media audio route takes it
+    EncodedVector(
+        "mpeg2video-ac3-start600",
+        ("-c:v", "mpeg2video", "-q:v", "4", "-bf", "2", *SINGLE_THREAD_ARGUMENTS),
+        ("-c:a", "ac3", "-b:a", "96k", "-ac", "2"),
+        "mpeg2video",
+        "ac3",
+        (TRANSPORT_STREAM_EXTENSION, M2TS_EXTENSION),
+        ("-output_ts_offset", "600"),
+        600.0,
     ),
 )
 VC1_BASE_NAME: Final = "vc1-advanced"
@@ -124,6 +141,7 @@ def encode_vector(tools: MediaTools, vector: EncodedVector, extension: str, outp
         *vector.audio_arguments,
         "-fflags", "+bitexact", "-flags:v", "+bitexact", "-flags:a", "+bitexact",
         *get_mode_arguments(extension),
+        *vector.muxer_arguments,
         "-f", "mpegts", str(output_path),
     ])
 
@@ -296,6 +314,19 @@ def verify_audio_vector(tools: MediaTools, file_name: str, path: Path, codec_nam
         raise VectorGenerationError(f"{file_name} holds {streams[0]['nb_read_packets']} audio packets")
 
 
+def verify_start_time(tools: MediaTools, file_name: str, path: Path, minimum_start_seconds: float) -> None:
+    """Requires FFprobe's format start time to be the vector's offset plus at most the muxer's delay."""
+
+    probe = json.loads(execute_tool(tools.FFprobe_path, [
+        "-hide_banner", "-loglevel", "error",
+        "-show_entries", "format=start_time",
+        "-of", "json", str(path),
+    ]))
+    start_seconds = float(probe["format"]["start_time"])
+    if not minimum_start_seconds <= start_seconds < minimum_start_seconds + MAXIMUM_MUXER_DELAY_SECONDS:
+        raise VectorGenerationError(f"{file_name} starts at {start_seconds} s")
+
+
 def install_vector(path: Path, file_name: str, *, check: bool) -> None:
     written = install_or_check_output(VECTOR_DIRECTORY / file_name, path.read_bytes(), check=check)
     print(f"{'Wrote' if written else 'Matched'} {file_name}")
@@ -315,6 +346,7 @@ def main(command_arguments: Sequence[str] | None = None) -> int:
                     encoded_path = Path(temporary_directory) / file_name
                     encode_vector(tools, vector, extension, encoded_path)
                     verify_vector(tools, file_name, encoded_path, (vector.video_codec_name, vector.audio_codec_name), VIDEO_FRAME_COUNT)
+                    verify_start_time(tools, file_name, encoded_path, vector.minimum_start_seconds)
                     install_vector(encoded_path, file_name, check=arguments.check)
                 file_name = VC1_BASE_NAME + extension
                 remuxed_path = Path(temporary_directory) / file_name
