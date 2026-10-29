@@ -4,7 +4,9 @@ import {
     getAudioTimestampToleranceMicroseconds,
     getContainerAudioCodec,
     getDeclaredAudioSampleRate,
-    isDTSExpressTrack
+    getNativeMediaAudioChannelCount,
+    isDTSExpressTrack,
+    resolveDeclaredAudioChannelLayout
 } from 'webgpu-player/demux/CustomAudioTrackMetadata';
 
 // ISO BMFF reads a 32-bit integer rate as 16.16 fixed point
@@ -93,4 +95,57 @@ describe('CustomAudioTrackMetadata', () => {
             )).toBe(tolerance);
         }
     );
+
+    describe('the declared channel layout', () => {
+        // FL, FR, and LFE, which a 2.1 FLAC's channels follow
+        const TWO_POINT_ONE_MASK = 0x0B;
+        const FIVE_POINT_ONE_SIDE_MASK = 0x060F;
+
+        it.each([
+            // A Matroska header that declares a DTS 5.1 track's four channels, or an AC-3 track's first 3/2 syncframes' five
+            { containerCount: 4, expected: { channelCount: 6, channelMask: null, layoutID: '5.1-side' }, metadata: { channelCount: 6 } },
+            { containerCount: 5, expected: { channelCount: 5, channelMask: null, layoutID: '5.0-side' }, metadata: { channelCount: 6 } },
+            // The container's count wins whenever it has a layout
+            { containerCount: 2, expected: { channelCount: 2, channelMask: null, layoutID: 'stereo' }, metadata: { channelCount: 6 } },
+            { containerCount: 6, expected: { channelCount: 6, channelMask: null, layoutID: '5.1-side' }, metadata: null },
+            // The metadata's mask lays out a count it names, and only that count
+            { containerCount: 3, expected: { channelCount: 3, channelMask: TWO_POINT_ONE_MASK, layoutID: '2.1' }, metadata: { channelCount: 3, channelMask: TWO_POINT_ONE_MASK } },
+            { containerCount: 3, expected: { channelCount: 3, channelMask: null, layoutID: '3.0' }, metadata: { channelCount: 6, channelMask: FIVE_POINT_ONE_SIDE_MASK } }
+        ] as const)('screens $containerCount container channels with metadata $metadata as $expected.layoutID', ({ containerCount, expected, metadata }) => {
+            const result = resolveDeclaredAudioChannelLayout(containerCount, null, metadata);
+
+            expect(result.status === 'resolved' ?
+                { channelCount: result.channelCount, channelMask: result.channelMask, layoutID: result.layout.id } :
+                result).toEqual(expected);
+        });
+
+        it('lays the channels out by the container\'s mask over the metadata\'s, and refuses a container mask of another count', () => {
+            const metadata = { channelCount: 3, channelMask: TWO_POINT_ONE_MASK };
+
+            expect(resolveDeclaredAudioChannelLayout(6, FIVE_POINT_ONE_SIDE_MASK, metadata)).toMatchObject({ channelMask: FIVE_POINT_ONE_SIDE_MASK, status: 'resolved' });
+            // A zero mask declares no speakers, so the metadata's applies
+            expect(resolveDeclaredAudioChannelLayout(3, 0, metadata)).toMatchObject({ channelMask: TWO_POINT_ONE_MASK, status: 'resolved' });
+            expect(resolveDeclaredAudioChannelLayout(3, FIVE_POINT_ONE_SIDE_MASK, metadata))
+                .toEqual({ failure: 'The selected audio channel mask is unqualified: 0x60f', status: 'failed' });
+        });
+
+        it('refuses a count no layout has when the metadata gives none either', () => {
+            const unavailable = { failure: 'The selected audio channel layout is unavailable', status: 'failed' };
+
+            expect(resolveDeclaredAudioChannelLayout(4, null, null)).toEqual(unavailable);
+            expect(resolveDeclaredAudioChannelLayout(4, null, { channelCount: 4 })).toEqual(unavailable);
+            expect(resolveDeclaredAudioChannelLayout(9, null, { channelCount: 10 })).toEqual(unavailable);
+        });
+    });
+
+    it.each([
+        { declared: 2, expected: 2, metadata: null },
+        { declared: 6, expected: 6, metadata: 2 },
+        // A container that declares the 3/2 of an AC-3 track's first syncframes plays at the 5.1 the metadata declares
+        { declared: 5, expected: 6, metadata: 6 },
+        { declared: 5, expected: null, metadata: 5 },
+        { declared: 5, expected: null, metadata: null }
+    ])('plays a native media track declaring $declared channels, with metadata $metadata, at $expected', ({ declared, expected, metadata }) => {
+        expect(getNativeMediaAudioChannelCount(declared, metadata)).toBe(expected);
+    });
 });

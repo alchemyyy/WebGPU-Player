@@ -8,7 +8,6 @@ import AudioWorkletController from '../audio/output/AudioWorkletController';
 import type { AudioWorkletTelemetry } from '../audio/output/AudioWorkletProtocol';
 import { assertSupportedCustomAudioOutputLayout } from '../audio/CustomAudioOutputPolicy';
 import { selectCustomAudioOutputLayout } from '../audio/NativeMultichannelAudioOutput';
-import type { AudioDecoderPackageSelection } from '../decode/audio/AudioDecoderPackageInstance';
 import {
     assertValidAudioDownmixSettings,
     type AudioDownmixSettings
@@ -56,6 +55,7 @@ import type {
     CustomPlaybackFallbackRequest,
     CustomPlaybackHTMLFallbackHook,
     CustomPlaybackClock,
+    CustomPlaybackAudioSwitch,
     CustomPlaybackPlayOptions,
     CustomPlaybackStartResult,
     CustomPlaybackState,
@@ -396,6 +396,7 @@ function copyPlayOptions(options: CustomPlaybackPlayOptions): CustomPlaybackPlay
         ...(options.audioDecoder ? { audioDecoder: { ...options.audioDecoder } } : {}),
         audioDownmixAlgorithm: options.audioDownmixAlgorithm,
         audioDownmixSettings: options.audioDownmixSettings ? { ...options.audioDownmixSettings } : undefined,
+        audioMetadataLayout: options.audioMetadataLayout ? { ...options.audioMetadataLayout } : undefined,
         audioOutputMode: options.audioOutputMode,
         audioRendersObjects: options.audioRendersObjects,
         audioTrackIndex: options.audioTrackIndex,
@@ -799,21 +800,16 @@ export default class CustomPlaybackController {
 
     /**
      * Restarts decode generations with the selected owned audio route.
-     * The previous track's audio decoder package does not carry over: the eligibility of the new track selects its own, or none.
+     * An output mode, output layout, downmix, or binaural setting the switch omits keeps the current source's; the previous track's audio decoder package,
+     * object rendering, and metadata layout do not carry over: the eligibility of the new track selects its own, or none.
      */
     public setAudioStreamIndex(
         audioStreamIndex: number,
-        audioOutputMode: CustomDecodeAudioOutputMode =
-        this.currentSource?.audioOutputMode ?? 'decoded-pcm',
-        decodedAudioOutputLayout = this.currentSource?.decodedAudioOutputLayout,
-        audioDownmixSettings: AudioDownmixSettings | undefined =
-        this.currentSource?.audioDownmixSettings,
-        audioDecoder: AudioDecoderPackageSelection | undefined = undefined,
-        audioRendersObjects = false,
-        binauralHeadphones: boolean | undefined = this.currentSource?.binauralHeadphones
+        audioSwitch: CustomPlaybackAudioSwitch = {}
     ): Promise<CustomPlaybackStartResult> {
         this.requireUsable();
         validateTrackIndex(audioStreamIndex, 'Audio stream index');
+        const audioOutputMode = audioSwitch.audioOutputMode ?? this.currentSource?.audioOutputMode ?? 'decoded-pcm';
         if (!this.currentSource || !this.isAudioOutputModeAvailable(audioOutputMode)) {
             throw new Error('Client-side audio stream switching is unavailable');
         }
@@ -826,21 +822,17 @@ export default class CustomPlaybackController {
         const desiredPlaying = this.state === 'playing'
             || this.pendingStartup?.desiredPlaying === true;
         const switchTimeMicroseconds = this.currentTimeMicroseconds;
+        const decodedPCM = audioOutputMode === 'decoded-pcm';
         const switchOptions: CustomPlaybackPlayOptions = {
             ...this.currentSource,
-            audioDecoder: audioOutputMode === 'decoded-pcm' ?
-                audioDecoder :
-                undefined,
-            audioDownmixSettings: audioOutputMode === 'decoded-pcm' ?
-                audioDownmixSettings :
-                undefined,
+            audioDecoder: decodedPCM ? audioSwitch.audioDecoder : undefined,
+            audioDownmixSettings: decodedPCM ? audioSwitch.audioDownmixSettings ?? this.currentSource.audioDownmixSettings : undefined,
+            audioMetadataLayout: audioSwitch.audioMetadataLayout,
             audioOutputMode,
-            audioRendersObjects: audioOutputMode === 'decoded-pcm' ? audioRendersObjects : undefined,
+            audioRendersObjects: decodedPCM ? audioSwitch.audioRendersObjects ?? false : undefined,
             audioTrackIndex: audioStreamIndex,
-            binauralHeadphones: audioOutputMode === 'decoded-pcm' ? binauralHeadphones : undefined,
-            decodedAudioOutputLayout: audioOutputMode === 'decoded-pcm' ?
-                decodedAudioOutputLayout :
-                undefined,
+            binauralHeadphones: decodedPCM ? audioSwitch.binauralHeadphones ?? this.currentSource.binauralHeadphones : undefined,
+            decodedAudioOutputLayout: decodedPCM ? audioSwitch.decodedAudioOutputLayout ?? this.currentSource.decodedAudioOutputLayout : undefined,
             startTimeMicroseconds: switchTimeMicroseconds
         };
         return this.beginPlayback(switchOptions, desiredPlaying, 'seeking');
@@ -1563,6 +1555,7 @@ export default class CustomPlaybackController {
                 audioDecoder: activeOptions.audioDecoder,
                 audioDownmixAlgorithm: activeOptions.audioDownmixAlgorithm,
                 audioDownmixSettings: activeOptions.audioDownmixSettings,
+                audioMetadataLayout: activeOptions.audioMetadataLayout,
                 audioOutputMode: activeOptions.audioOutputMode,
                 audioTrackIndex: activeOptions.audioTrackIndex,
                 binauralHeadphones: activeOptions.binauralHeadphones,

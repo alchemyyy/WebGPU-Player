@@ -188,12 +188,23 @@ export type CustomDecodeFailureKind =
     | 'range-unsupported'
     | 'source-unsupported';
 
+/**
+ * The selected audio track's channel count, and the WAVE speaker mask its channels follow where the media metadata names a layout no count implies,
+ * as the host's media metadata (Jellyfin's) declares them.
+ */
+export type CustomDecodeAudioMetadataLayout = Readonly<{
+    channelCount: number
+    channelMask?: number
+}>;
+
 /** Starts a generation's run in the session's worker, which an earlier generation may have used. */
 export type DecodeWorkerStartRequest = {
     /** Applies only when decoded multichannel PCM must be presented as stereo. */
     audioDownmixAlgorithm?: CustomAudioDownmixAlgorithm
     /** Applies user channel and output gains after selecting the downmix matrix. */
     audioDownmixSettings?: AudioDownmixSettings
+    /** The selected audio track's layout as the host's media metadata declares it, which screens a track whose container declares too little; audio only */
+    audioMetadataLayout?: CustomDecodeAudioMetadataLayout
     /** Defaults to decoded-pcm. */
     audioOutputMode?: CustomDecodeAudioOutputMode
     /** The host's audio decoder package that decodes the decoded PCM route's track, and the codec it decodes it as; absent for the engine's own decoders */
@@ -1204,6 +1215,14 @@ function isAudioResyncRequest(value: Record<string, unknown>): boolean {
         && hasValidOptionalAudioDownmix(value);
 }
 
+/** Validates a metadata layout: a positive channel count, and a positive WAVE mask when it names one. */
+function isAudioMetadataLayout(value: unknown): value is CustomDecodeAudioMetadataLayout {
+    return isRecord(value)
+        && Number.isSafeInteger(value.channelCount)
+        && Number(value.channelCount) > 0
+        && (value.channelMask === undefined || (Number.isSafeInteger(value.channelMask) && Number(value.channelMask) > 0));
+}
+
 // A Node test stubs the constructor
 function isMessagePort(value: unknown): value is MessagePort {
     return typeof MessagePort === 'function' && value instanceof MessagePort;
@@ -1253,6 +1272,7 @@ export function isDecodeWorkerRequest(value: unknown): value is DecodeWorkerRequ
                 && hasValidAudioDownmixAlgorithm
                 && (value.audioPackageDecoder === undefined
                     || (hasAudioTrack && audioOutputMode === 'decoded-pcm' && isAudioDecoderPackageSelection(value.audioPackageDecoder)))
+                && (value.audioMetadataLayout === undefined || (hasAudioTrack && isAudioMetadataLayout(value.audioMetadataLayout)))
                 && (hasAudioTrack || value.audioOutputMode === undefined)
                 && hasValidAudioCredits
                 && (hasAudioTrack || Number(value.audioSampleCredits) === 0);

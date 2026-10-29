@@ -1092,13 +1092,10 @@ describe('CustomPlaybackController', () => {
         await startReadyPlayback(harness, true, { audioDecoder: FIRST_TRACK_AUDIO_DECODER });
 
         expect(harness.videoDecodeSession.starts.at(-1)?.audioDecoder).toEqual(FIRST_TRACK_AUDIO_DECODER);
-        const packageSwitchPromise = harness.controller.setAudioStreamIndex(
-            PACKAGE_DECODED_AUDIO_TRACK_INDEX,
-            'decoded-pcm',
-            undefined,
-            undefined,
-            SECOND_TRACK_AUDIO_DECODER
-        );
+        const packageSwitchPromise = harness.controller.setAudioStreamIndex(PACKAGE_DECODED_AUDIO_TRACK_INDEX, {
+            audioDecoder: SECOND_TRACK_AUDIO_DECODER,
+            audioOutputMode: 'decoded-pcm'
+        });
         await flushAsyncWork();
         expect(harness.videoDecodeSession.starts.at(-1)).toMatchObject({
             audioDecoder: SECOND_TRACK_AUDIO_DECODER,
@@ -1111,6 +1108,24 @@ describe('CustomPlaybackController', () => {
 
         await harness.controller.destroy();
         await Promise.all([ packageSwitchPromise, browserSwitchPromise ]);
+    });
+
+    it('switches audio tracks with the metadata layout given for the new track, never the previous track\'s', async () => {
+        const harness = createControllerHarness(true);
+        await startReadyPlayback(harness, true, { audioMetadataLayout: { channelCount: 6 } });
+
+        expect(harness.videoDecodeSession.starts.at(-1)?.audioMetadataLayout).toEqual({ channelCount: 6 });
+        const describedSwitchPromise = harness.controller.setAudioStreamIndex(PACKAGE_DECODED_AUDIO_TRACK_INDEX, {
+            audioMetadataLayout: { channelCount: 3, channelMask: 0x0B }
+        });
+        await flushAsyncWork();
+        expect(harness.videoDecodeSession.starts.at(-1)?.audioMetadataLayout).toEqual({ channelCount: 3, channelMask: 0x0B });
+        const undescribedSwitchPromise = harness.controller.setAudioStreamIndex(BROWSER_DECODED_AUDIO_TRACK_INDEX);
+        await flushAsyncWork();
+        expect(harness.videoDecodeSession.starts.at(-1)?.audioMetadataLayout).toBeUndefined();
+
+        await harness.controller.destroy();
+        await Promise.all([ describedSwitchPromise, undescribedSwitchPromise ]);
     });
 
     it('owns decode, PCM output, clock controls, events, and telemetry', async () => {
@@ -2428,7 +2443,7 @@ describe('CustomPlaybackController', () => {
         const firstGeneration = await startReadyPlayback(harness, true);
         harness.audioOutput?.emitTelemetry(secondsToMicroseconds(33));
 
-        const nativeSwitchPromise = harness.controller.setAudioStreamIndex(4, 'native-media');
+        const nativeSwitchPromise = harness.controller.setAudioStreamIndex(4, { audioOutputMode: 'native-media' });
         await flushAsyncWork();
         const nativeGeneration = harness.videoDecodeSession.starts.at(-1)?.generation;
         if (!nativeGeneration) {
@@ -2458,7 +2473,7 @@ describe('CustomPlaybackController', () => {
         });
 
         harness.videoDecodeSession.setNativeAudioTimeMicroseconds(secondsToMicroseconds(44));
-        const decodedSwitchPromise = harness.controller.setAudioStreamIndex(5, 'decoded-pcm');
+        const decodedSwitchPromise = harness.controller.setAudioStreamIndex(5, { audioOutputMode: 'decoded-pcm' });
         await flushAsyncWork();
         const decodedGeneration = harness.videoDecodeSession.starts.at(-1)?.generation;
         if (!decodedGeneration) {
@@ -4004,7 +4019,7 @@ describe('CustomPlaybackController live audio output reconfiguration', () => {
         const audioOutput = requireAudioOutput(harness);
 
         // The decoded output stays bound while native media audio plays
-        const nativeSwitchPromise = harness.controller.setAudioStreamIndex(4, 'native-media');
+        const nativeSwitchPromise = harness.controller.setAudioStreamIndex(4, { audioOutputMode: 'native-media' });
         await flushAsyncWork();
         const nativeGeneration = harness.videoDecodeSession.starts.at(-1)?.generation;
         if (!nativeGeneration) {
@@ -4913,7 +4928,7 @@ describe('CustomPlaybackController live audio output reconfiguration', () => {
         expect(harness.videoDecodeSession.updateAudioDownmixSettings).not.toHaveBeenCalled();
 
         // A track switch that mixes down starts with both
-        const trackSwitchPromise = harness.controller.setAudioStreamIndex(3, 'decoded-pcm', 'stereo');
+        const trackSwitchPromise = harness.controller.setAudioStreamIndex(3, { audioOutputMode: 'decoded-pcm', decodedAudioOutputLayout: 'stereo' });
         await flushAsyncWork();
         expect(harness.videoDecodeSession.starts.at(-1)).toMatchObject({
             audioDownmixAlgorithm: CUSTOM_AUDIO_DOWNMIX_ALGORITHMS.NightModeDialogue,

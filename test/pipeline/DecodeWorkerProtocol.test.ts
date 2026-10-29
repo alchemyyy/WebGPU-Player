@@ -425,6 +425,35 @@ describe('DecodeWorkerProtocol', () => {
         expect(isDecodeWorkerResponse({ ...readyResponse, containerDurationMicroseconds: -1 })).toBe(false);
     });
 
+    it('takes an audio track\'s metadata layout only with an audio track, a positive count, and a positive mask', () => {
+        const request = {
+            audioSampleCredits: 1,
+            audioTrackIndex: 0,
+            dolbyVisionProfile: null,
+            dolbyVisionRPUParserWASMURL: DOLBY_VISION_RPU_PARSER_WASM_URL,
+            frameCredits: MAX_DECODED_FRAME_CREDITS,
+            generation: 1,
+            maximumCodedHeight: 1_080,
+            maximumCodedWidth: 1_920,
+            nativeHDRTransfer: null,
+            neutralizeHDRColorMetadata: false,
+            rawVideoFrameFormat: null,
+            startTimeMicroseconds: 0,
+            type: 'start',
+            source: { kind: 'url', url: 'http://localhost/video.mkv' },
+            videoDecoderBackend: 'native',
+            videoOutputMode: 'video-frame',
+            videoTrackIndex: 0
+        } as const;
+
+        expect(isDecodeWorkerRequest({ ...request, audioMetadataLayout: { channelCount: 6 } })).toBe(true);
+        expect(isDecodeWorkerRequest({ ...request, audioMetadataLayout: { channelCount: 3, channelMask: 0x0B } })).toBe(true);
+        for (const audioMetadataLayout of [ { channelCount: 0 }, { channelCount: 2.5 }, { channelCount: 3, channelMask: 0 }, { channelMask: 0x0B }, 6 ]) {
+            expect(isDecodeWorkerRequest({ ...request, audioMetadataLayout })).toBe(false);
+        }
+        expect(isDecodeWorkerRequest({ ...request, audioMetadataLayout: { channelCount: 6 }, audioSampleCredits: 0, audioTrackIndex: null })).toBe(false);
+    });
+
     it('accepts a start request that reads a File or a non-empty URL', () => {
         const request = {
             audioSampleCredits: 0,

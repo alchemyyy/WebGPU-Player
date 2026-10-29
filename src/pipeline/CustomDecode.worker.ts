@@ -44,7 +44,6 @@ import {
     type CustomAudioChannelLayout,
     type CustomAudioOutputLayout
 } from '../audio/processing/CustomAudioChannelLayout';
-import { getQualifiedCustomWaveChannelLayout } from '../audio/processing/CustomWaveChannelLayout';
 import {
     createDefaultAudioDownmixSettings,
     type AudioDownmixSettings
@@ -63,7 +62,9 @@ import {
 import {
     getContainerAudioCodec,
     getDeclaredAudioSampleRate,
-    isDTSExpressTrack
+    getNativeMediaAudioChannelCount,
+    isDTSExpressTrack,
+    resolveDeclaredAudioChannelLayout
 } from '../demux/CustomAudioTrackMetadata';
 import { readWaveFormatAudioTrack, type WaveFormatAudioCodec } from '../demux/WaveFormatAudioConfiguration';
 import { createEngineWorker, type EngineWorkerPath } from '../EngineAssets';
@@ -89,6 +90,7 @@ import {
     MAX_DECODED_AUDIO_SAMPLE_CREDITS,
     MAX_DECODED_RAW_FRAME_CREDITS,
     MAXIMUM_VIDEO_STARTUP_PROGRESS_PACKET_COUNT,
+    type CustomDecodeAudioMetadataLayout,
     type CustomDecodeAudioOutputMode,
     type CustomDecodeDolbyVisionProfile,
     type CustomDecodeFailureKind,
@@ -403,12 +405,15 @@ type PreparedAudioTrack = {
 
 type SelectedAudioTrackMetadata = {
     audioTrack: InputAudioTrack
+    /** The count the track is screened with: its container's, or the host's metadata's where the container's has no layout */
     channelCount: number
     codec: AudioCodec | null
     decoderConfig: AudioDecoderConfig | null
-    /** The WAVE channel mask the container declares, which `inputChannelLayout` follows, or null */
+    /** The WAVE channel mask the container, or else the host's metadata, declares, which `inputChannelLayout` follows, or null */
     declaredChannelMask: number | null
     inputChannelLayout: CustomAudioChannelLayout
+    /** The channel count the host's media metadata declares, or null without one */
+    metadataChannelCount: number | null
     /** The codec private data a decoder package configures with: the WAVEFORMATEX of a track the engine reads its codec from, or null */
     packageCodecPrivate: Uint8Array | null
     sampleRate: number
@@ -1422,7 +1427,8 @@ async function findSeparateDolbyVisionEnhancementTrack(
 async function getSelectedAudioTrackMetadata(
     input: Input,
     run: DecodeRun,
-    audioTrackOrdinal: number
+    audioTrackOrdinal: number,
+    metadataLayout: CustomDecodeAudioMetadataLayout | null
 ): Promise<SelectedAudioTrackMetadata> {
     const audioTracks = await input.getAudioTracks();
     if (run.cancelled) {
@@ -1476,15 +1482,19 @@ async function getSelectedAudioTrackMetadata(
     if (!isSupportedCustomAudioSampleRate(sampleRate)) {
         throw new UnsupportedCustomDecodeSourceError('The selected audio sample rate is invalid');
     }
-    const { declaredChannelMask, inputChannelLayout } = await getDeclaredInputChannelLayout(audioTrack, channelCount);
+    const declaredLayout = resolveDeclaredAudioChannelLayout(channelCount, await audioTrack.getChannelMask(), metadataLayout);
+    if (declaredLayout.status === 'failed') {
+        throw new UnsupportedCustomDecodeSourceError(declaredLayout.failure);
+    }
 
     return {
         audioTrack,
-        channelCount,
+        channelCount: declaredLayout.channelCount,
         codec,
-        declaredChannelMask,
+        declaredChannelMask: declaredLayout.channelMask,
         decoderConfig,
-        inputChannelLayout,
+        inputChannelLayout: declaredLayout.layout,
+        metadataChannelCount: metadataLayout?.channelCount ?? null,
         packageCodecPrivate: waveFormatTrack?.waveFormat ?? null,
         sampleRate,
         timeResolution,
@@ -1492,38 +1502,14 @@ async function getSelectedAudioTrackMetadata(
     };
 }
 
-/**
- * Lays the track's channels out by the WAVE channel mask its container declares, as WAVE_FORMAT_EXTENSIBLE does, or by their count without one.
- * A mask the output stage does not qualify, or one that names more or fewer speakers than the track has channels, is refused rather than played in the wrong speakers.
- */
-async function getDeclaredInputChannelLayout(
-    audioTrack: InputAudioTrack,
-    channelCount: number
-): Promise<{ declaredChannelMask: number | null, inputChannelLayout: CustomAudioChannelLayout }> {
-    const channelMask = await audioTrack.getChannelMask();
-    // A zero mask declares no speaker positions
-    if (channelMask === null || channelMask === 0) {
-        const inputChannelLayout = getCustomAudioChannelLayout(channelCount);
-        if (!inputChannelLayout) {
-            throw new UnsupportedCustomDecodeSourceError('The selected audio channel layout is unavailable');
-        }
-        return { declaredChannelMask: null, inputChannelLayout };
-    }
-    const qualifiedLayout = getQualifiedCustomWaveChannelLayout(channelMask);
-    if (!qualifiedLayout || qualifiedLayout.channelCount !== channelCount) {
-        throw new UnsupportedCustomDecodeSourceError(`The selected audio channel mask is unqualified: 0x${channelMask.toString(16)}`);
-    }
-    return { declaredChannelMask: channelMask, inputChannelLayout: qualifiedLayout.layout };
-}
-
 function prepareNativeMediaAudioTrack(metadata: SelectedAudioTrackMetadata): PreparedAudioTrack {
     const {
         audioTrack,
-        channelCount,
+        channelCount: declaredChannelCount,
         codec,
         decoderConfig,
         declaredChannelMask,
-        inputChannelLayout,
+        metadataChannelCount,
         sampleRate,
         timeResolution
     } = metadata;
@@ -1533,8 +1519,11 @@ function prepareNativeMediaAudioTrack(metadata: SelectedAudioTrackMetadata): Pre
     const codecMatchesDecoderConfiguration =
         (codec === 'ac3' && decoderConfig.codec === 'ac-3')
         || (codec === 'eac3' && decoderConfig.codec === 'ec-3');
+    const channelCount = getNativeMediaAudioChannelCount(declaredChannelCount, metadataChannelCount);
+    const inputChannelLayout = channelCount === null ? null : getCustomAudioChannelLayout(channelCount);
     if (!codecMatchesDecoderConfiguration
-        || (channelCount !== 2 && channelCount !== 6)
+        || channelCount === null
+        || !inputChannelLayout
         || sampleRate !== 48_000) {
         throw new UnsupportedCustomDecodeSourceError(
             'The selected audio track does not match the qualified native media route'
@@ -1687,9 +1676,10 @@ async function prepareAudioTrack(
     audioTrackOrdinal: number,
     outputMode: CustomDecodeAudioOutputMode,
     decodedAudioOutputLayout: CustomAudioOutputLayout,
-    packageDecoder: AudioDecoderPackageSelection | null
+    packageDecoder: AudioDecoderPackageSelection | null,
+    metadataLayout: CustomDecodeAudioMetadataLayout | null
 ): Promise<PreparedAudioTrack> {
-    const metadata = await getSelectedAudioTrackMetadata(input, run, audioTrackOrdinal);
+    const metadata = await getSelectedAudioTrackMetadata(input, run, audioTrackOrdinal, metadataLayout);
     switch (outputMode) {
         case 'native-media':
             return prepareNativeMediaAudioTrack(metadata);
@@ -4026,7 +4016,8 @@ async function prepareRunTracks(
                 request.audioTrackIndex,
                 request.audioOutputMode ?? 'decoded-pcm',
                 request.decodedAudioOutputLayout ?? 'stereo',
-                request.audioPackageDecoder ?? null
+                request.audioPackageDecoder ?? null,
+                request.audioMetadataLayout ?? null
             )
     ];
     const [ preparedVideoTrack, preparedAudioTrack ] = await Promise.all(preparedTrackPromises);
