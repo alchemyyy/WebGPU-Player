@@ -84,6 +84,8 @@ export const MAX_DECODED_AUDIO_SAMPLE_CREDITS = 8;
 export const MAX_DECODED_AUDIO_FRAMES_PER_SAMPLE = 65_536;
 export const MAX_DECODED_AUDIO_CHANNELS = 32;
 export const MAXIMUM_VIDEO_STARTUP_PROGRESS_PACKET_COUNT = 512;
+/** The source bytes a run reads before its readiness between two `source-progress` responses: a read that moves slower than this per quiet bound looks stalled. */
+export const SOURCE_PROGRESS_REPORT_BYTE_COUNT = 256 * 1024;
 const MAXIMUM_CODEC_ASSET_URL_LENGTH = 2_048;
 
 /**
@@ -533,6 +535,16 @@ export type DecodeWorkerProgressResponse = {
     type: 'progress'
 };
 
+/**
+ * Reports the source bytes a run read before its readiness, such as a container header and the attachments ahead of its tracks,
+ * so the page sees a slow metadata read move; posted each `SOURCE_PROGRESS_REPORT_BYTE_COUNT` bytes.
+ */
+export type DecodeWorkerSourceProgressResponse = {
+    byteCount: number
+    generation: number
+    type: 'source-progress'
+};
+
 export type DecodeWorkerVideoInterruptionReason = 'decoder-reclaimed';
 
 /** Reports a recoverable video decoder loss; video waits for a resync request. */
@@ -596,6 +608,7 @@ export type DecodeWorkerResponse =
     | DecodeWorkerPacketResponse
     | DecodeWorkerProgressResponse
     | DecodeWorkerReadyResponse
+    | DecodeWorkerSourceProgressResponse
     | DecodeWorkerStoppedResponse
     | DecodeWorkerTimingTraceResponse
     | DecodeWorkerVideoEndedResponse
@@ -1457,6 +1470,8 @@ export function isDecodeWorkerResponse(value: unknown): value is DecodeWorkerRes
             return isCustomDecodeWorkerProgressPhase(value.phase)
                 && isVideoStartupProgressPacketCount(value.packetCount)
                 && (value.mediaTimeMicroseconds === null || isMicroseconds(value.mediaTimeMicroseconds));
+        case 'source-progress':
+            return isPositiveInteger(value.byteCount);
         case 'ended':
         case 'stopped':
             return true;

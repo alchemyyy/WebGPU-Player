@@ -338,7 +338,9 @@ These were settled on stock Chrome on Windows, with a Chromium 153 source audit.
   The AV1 keys have their own lossless vector and authorize on first use rather than at device creation, because only AV1 HDR items need them and the HEVC keys alone shape a host's transcode ranges.
 - Startup is bounded by progress, not by a fixed timer (10-07).
   A 72 Mbps 4K TrueHD source under six concurrent players produced no audio within a fixed 20 s bound and fell back to a server transcode that also stalled; the stage that stalled was not recorded.
-  The controller fails after 20 s without decode progress, or at 60 s regardless, and the fallback message names the counters it reached.
+  The controller fails after 20 s without progress, or at 60 s regardless, and the fallback message names the counters it reached.
+  Progress counted only decode counters until 10-29, so a slow but moving metadata read looked stalled: Matroska files that carry 100 to 146 MB of font attachments ahead of their first cluster took over 18 s to give their tracks at 8 MB/s, and failed at the quiet bound.
+  The worker now also reports the source bytes it reads before its readiness, each 256 KiB (`source-progress`), from its source's read events, and the controller counts them as progress; the 60 s ceiling still bounds a read that never ends.
   The host's 25 s setup bound ends where the controller starts, so the two bounds cannot disagree.
 - An unknown duration does not block custom playback (10-07).
   Requiring `RunTimeTicks` for eligibility sent a source the server never probed through the HTML backend, although the controller and session accept a null duration.

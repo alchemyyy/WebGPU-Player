@@ -1480,10 +1480,11 @@ export default class CustomPlaybackController {
         );
     }
 
-    /** Joins the decode counters that grow while startup makes progress */
+    /** Joins the counters that grow while startup makes progress: the source bytes read before readiness, as a slow metadata read moves, and the decode counters */
     private readStartupProgressSignature(): string {
         const telemetry = this.videoDecodeSession.getTelemetry();
         return [
+            telemetry.preparationSourceByteCount,
             telemetry.submittedVideoPacketCount,
             telemetry.receivedFrameCount,
             telemetry.receivedAudioFrameCount,
@@ -1496,7 +1497,8 @@ export default class CustomPlaybackController {
     /** Names how far startup got, so a timeout reports the stage that stalled */
     private describeStartupProgress(): string {
         const telemetry = this.videoDecodeSession.getTelemetry();
-        return `video packets ${telemetry.submittedVideoPacketCount}, `
+        return `source bytes ${telemetry.preparationSourceByteCount}, `
+            + `video packets ${telemetry.submittedVideoPacketCount}, `
             + `decoded frames ${telemetry.receivedFrameCount}, `
             + `audio frames ${telemetry.receivedAudioFrameCount}, `
             + `video phase ${telemetry.videoProgressPhase ?? 'none'}, `

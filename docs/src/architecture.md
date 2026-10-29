@@ -63,7 +63,7 @@ While a plan holds a display-rate pass, each rAF takes frames one refresh ahead 
 3. The host gives the presenter a source-less `<video>`.
    The presenter enters push mode, and the host installs the shaders and authorizes the selected route through the presenter.
 4. `controller.play` creates a generation, resets the clock, emits `waiting`, and starts the startup bound.
-   It samples the decode counters every second and fails after 20 s without progress, or at 60 s regardless.
+   It samples the source bytes the worker reads before its readiness, which `source-progress` reports each 256 KiB, and the decode counters every second, and fails after 20 s without progress, or at 60 s regardless.
    The fallback message names the counters it reached, so a timeout shows where startup stalled.
    `CustomDecodeSession.start` posts the generation's `start` to the session's decode worker, the prebuilt `libraries/webgpu-player/CustomDecode.worker.js` keyed per build with `?v=`, which the session's first start creates.
    The worker's first start with decoded PCM audio spawns its audio decode worker, the prebuilt `CustomAudioDecode.worker.js` beside it, which it keeps for its life.

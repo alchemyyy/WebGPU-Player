@@ -91,6 +91,7 @@ import {
     MAX_DECODED_AUDIO_SAMPLE_CREDITS,
     MAX_DECODED_RAW_FRAME_CREDITS,
     MAXIMUM_VIDEO_STARTUP_PROGRESS_PACKET_COUNT,
+    SOURCE_PROGRESS_REPORT_BYTE_COUNT,
     type CustomDecodeAudioMetadataLayout,
     type CustomDecodeAudioOutputMode,
     type CustomDecodeDolbyVisionProfile,
@@ -4095,6 +4096,23 @@ async function prepareRunTracks(
 }
 
 /**
+ * Posts the bytes a run's source delivers while the run prepares, each `SOURCE_PROGRESS_REPORT_BYTE_COUNT` of them, so the page's startup bound sees a slow
+ * metadata read, such as a Matroska file's attachments ahead of its tracks, move; returns the function that stops it.
+ */
+function reportPreparationSourceReads(run: DecodeRun, source: Source): () => void {
+    let byteCount = 0;
+    let reportedByteCount = 0;
+    return source.on('read', ({ end, start }): void => {
+        byteCount += end - start;
+        if (run.cancelled || byteCount - reportedByteCount < SOURCE_PROGRESS_REPORT_BYTE_COUNT) {
+            return;
+        }
+        reportedByteCount = byteCount;
+        postResponse({ byteCount, generation: run.generation, type: 'source-progress' });
+    });
+}
+
+/**
  * Runs one generation from its start to its `stopped`, which always comes last.
  * The worker outlives the run: everything the run opened is released before `stopped`, and the next run may start before it, beside the unwinding run.
  */
@@ -4112,12 +4130,16 @@ async function decodeMedia(run: DecodeRun, request: Extract<DecodeWorkerRequest,
         if (run.cancelled) {
             return;
         }
-        const input = new Input({
-            formats: ALL_FORMATS,
-            source: openMediaSource(run, request.source)
-        });
+        const source = openMediaSource(run, request.source);
+        const input = new Input({ formats: ALL_FORMATS, source });
         run.input = input;
-        const prepared = await prepareRunTracks(input, run, request);
+        const stopReportingSourceReads = reportPreparationSourceReads(run, source);
+        let prepared: PreparedRunTracks | null;
+        try {
+            prepared = await prepareRunTracks(input, run, request);
+        } finally {
+            stopReportingSourceReads();
+        }
         if (!prepared) {
             return;
         }
