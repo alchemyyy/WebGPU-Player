@@ -11,8 +11,14 @@ import {
     isMediabunnyPCMDecoderCodec,
     isSupportedCustomAudioInputLayout,
     isSupportedCustomAudioInputMetadataLayout,
-    isSupportedCustomAudioOutputLayout
+    isSupportedCustomAudioOutputLayout,
+    isSupportedCustomAudioRenderedLayout
 } from 'webgpu-player/audio/CustomAudioOutputPolicy';
+import {
+    CUSTOM_FIVE_POINT_ONE_BACK_CHANNEL_LAYOUT,
+    CUSTOM_SEVEN_POINT_ONE_POINT_FOUR_CHANNEL_LAYOUT,
+    CUSTOM_SIX_POINT_ONE_CHANNEL_LAYOUT
+} from 'webgpu-player/audio/processing/CustomAudioChannelLayout';
 
 // Any positive integer rate is well formed, including a PCM source past 192 kHz
 const DXD_SAMPLE_RATE = 352_800;
@@ -27,9 +33,13 @@ describe('CustomAudioOutputPolicy', () => {
         )).toBe(true);
         expect(isSupportedCustomAudioOutputLayout(6, 48_000)).toBe(true);
         expect(isSupportedCustomAudioOutputLayout(8, 48_000)).toBe(true);
+        expect(isSupportedCustomAudioOutputLayout(10, 48_000)).toBe(true);
+        expect(isSupportedCustomAudioOutputLayout(12, 48_000)).toBe(true);
 
         expect(isSupportedCustomAudioOutputLayout(1, 48_000)).toBe(false);
         expect(isSupportedCustomAudioOutputLayout(7, 48_000)).toBe(false);
+        expect(isSupportedCustomAudioOutputLayout(9, 48_000)).toBe(false);
+        expect(isSupportedCustomAudioOutputLayout(16, 48_000)).toBe(false);
         expect(isSupportedCustomAudioOutputLayout(2, 44_100)).toBe(false);
         expect(isSupportedCustomAudioOutputLayout('2', 48_000)).toBe(false);
         expect(isSupportedCustomAudioOutputLayout(2, '48000')).toBe(false);
@@ -37,11 +47,22 @@ describe('CustomAudioOutputPolicy', () => {
 
     it('rejects unsupported layouts with a stable diagnostic', () => {
         expect(() => assertSupportedCustomAudioOutputLayout(7, 48_000)).toThrow(
-            'Custom audio output requires 2, 6, or 8 channels at 48000 Hz'
+            'Custom audio output requires 2, 6, 8, 10, or 12 channels at 48000 Hz'
         );
     });
 
-    it('accepts mono, 3.0, and the implemented 5.1 downmix input layouts', () => {
+    it('accepts a decoded layout an E-AC-3 or TrueHD package rendered object audio into, which its input routes do not list', () => {
+        expect(isSupportedCustomAudioInputLayout('eac3', 12, 48_000)).toBe(false);
+        expect(isSupportedCustomAudioRenderedLayout('eac3', CUSTOM_SEVEN_POINT_ONE_POINT_FOUR_CHANNEL_LAYOUT, 48_000)).toBe(true);
+        expect(isSupportedCustomAudioRenderedLayout('truehd', CUSTOM_SEVEN_POINT_ONE_POINT_FOUR_CHANNEL_LAYOUT, 48_000)).toBe(true);
+        // Only the output layouts are rendered, and only by the object audio codecs' packages
+        expect(isSupportedCustomAudioRenderedLayout('eac3', CUSTOM_SIX_POINT_ONE_CHANNEL_LAYOUT, 48_000)).toBe(false);
+        expect(isSupportedCustomAudioRenderedLayout('eac3', CUSTOM_FIVE_POINT_ONE_BACK_CHANNEL_LAYOUT, 48_000)).toBe(false);
+        expect(isSupportedCustomAudioRenderedLayout('dts', CUSTOM_SEVEN_POINT_ONE_POINT_FOUR_CHANNEL_LAYOUT, 48_000)).toBe(false);
+        expect(isSupportedCustomAudioRenderedLayout('eac3', CUSTOM_SEVEN_POINT_ONE_POINT_FOUR_CHANNEL_LAYOUT, 0)).toBe(false);
+    });
+
+    it('accepts mono, 3.0, and the implemented 5.1 and 7.1 input layouts', () => {
         for (const codec of [
             'aac',
             'flac',
@@ -52,13 +73,18 @@ describe('CustomAudioOutputPolicy', () => {
                 1,
                 CUSTOM_AUDIO_OUTPUT_CHANNEL_COUNT,
                 3,
-                CUSTOM_SURROUND_INPUT_CHANNEL_COUNT
+                CUSTOM_SURROUND_INPUT_CHANNEL_COUNT,
+                8
             ]);
             expect(isSupportedCustomAudioInputLayout(codec, 1, 24_000)).toBe(true);
             expect(isSupportedCustomAudioInputLayout(codec, 3, 48_000)).toBe(true);
             expect(isSupportedCustomAudioInputLayout(codec, 6, 48_000)).toBe(true);
+            expect(isSupportedCustomAudioInputLayout(codec, 8, 48_000)).toBe(true);
             expect(isSupportedCustomAudioInputLayout(codec, 4, 48_000)).toBe(false);
+            expect(isSupportedCustomAudioInputLayout(codec, 7, 48_000)).toBe(false);
         }
+        // Mediabunny's PCM route stays at 5.1
+        expect(isSupportedCustomAudioInputLayout('pcm_s16le', 8, 48_000)).toBe(false);
         // Jellyfin reports AC-3 2/1 and 3/0 alike as 3.0, so three-channel AC-3 transcodes
         expect(getSupportedCustomAudioInputChannelCounts('ac3')).toEqual([
             1,

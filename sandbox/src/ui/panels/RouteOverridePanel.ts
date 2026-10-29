@@ -1,7 +1,10 @@
-// The route override: forces the video decoder and the frame transport, and shows the route the session plays.
+// The route override: forces the video decoder and the frame transport, sets where decoded audio plays, and shows the route the session plays.
+import type { CustomAudioSpeakerLayout } from 'webgpu-player/audio/NativeMultichannelAudioOutput';
 import {
+    DEFAULT_AUDIO_OUTPUT_SETTINGS,
     DEFAULT_ROUTE_OVERRIDE,
     type ActiveRoute,
+    type AudioOutputSettings,
     type DecoderOverride,
     type FrameTransportOverride,
     type RouteOverride,
@@ -27,6 +30,23 @@ const TRANSPORT_OVERRIDE_LABELS: Readonly<Record<FrameTransportOverride, string>
     auto: 'Auto',
     'raw-planes': 'Raw planes',
     'video-frame': 'VideoFrame'
+};
+/* eslint-disable @typescript-eslint/naming-convention -- speaker layouts take FFmpeg's names */
+const SPEAKER_LAYOUT_LABELS: Readonly<Record<CustomAudioSpeakerLayout, string>> = {
+    '5.1': '5.1',
+    '5.1.2': '5.1.2',
+    '5.1.4': '5.1.4',
+    '7.1': '7.1',
+    '7.1.2': '7.1.2',
+    '7.1.4': '7.1.4',
+    auto: 'Auto',
+    stereo: 'Stereo'
+};
+/* eslint-enable @typescript-eslint/naming-convention */
+type BinauralChoice = 'off' | 'on';
+const BINAURAL_LABELS: Readonly<Record<BinauralChoice, string>> = {
+    off: 'Off',
+    on: 'On (headphones)'
 };
 const NO_ROUTE_TEXT = 'No active route';
 const NONE_TEXT = 'none';
@@ -84,17 +104,48 @@ export function createRouteOverridePanel(context: PanelContext): Panel {
             sendOverride({ ...override, transport: DEFAULT_ROUTE_OVERRIDE.transport });
         }
     });
+    const renderAudioOutput = (settings: AudioOutputSettings): void => {
+        speakerLayoutSelect.setValue(settings.speakerLayout);
+        binauralSelect.setValue(settings.binauralHeadphones ? 'on' : 'off');
+    };
+    const sendAudioOutput = (settings: AudioOutputSettings): void => {
+        session.setAudioOutputSettings(settings).catch((error: unknown): void => {
+            reportCommandRejection(error);
+            renderAudioOutput(store.getState().audioOutput);
+        });
+    };
+    const speakerLayoutSelect = createChoiceSelect<CustomAudioSpeakerLayout>((speakerLayout: CustomAudioSpeakerLayout): void => {
+        sendAudioOutput({ ...store.getState().audioOutput, speakerLayout });
+    });
+    speakerLayoutSelect.setChoices(listRecordChoices(SPEAKER_LAYOUT_LABELS));
+    const binauralSelect = createChoiceSelect<BinauralChoice>((choice: BinauralChoice): void => {
+        sendAudioOutput({ ...store.getState().audioOutput, binauralHeadphones: choice === 'on' });
+    });
+    binauralSelect.setChoices(listRecordChoices(BINAURAL_LABELS));
+    const speakerLayoutDefaultButton = createDefaultButton(SPEAKER_LAYOUT_LABELS[DEFAULT_AUDIO_OUTPUT_SETTINGS.speakerLayout], (): void => {
+        const settings = store.getState().audioOutput;
+        if (settings.speakerLayout !== DEFAULT_AUDIO_OUTPUT_SETTINGS.speakerLayout) {
+            sendAudioOutput({ ...settings, speakerLayout: DEFAULT_AUDIO_OUTPUT_SETTINGS.speakerLayout });
+        }
+    });
     const activeRouteElement = createElement('div', { className: 'route-override-active' });
 
     const element = createElement('section', { className: 'route-override-panel' }, [
         createElement('header', { className: 'route-override-header', text: 'Route' }),
         createElement('label', { className: 'route-override-row' }, [ createElement('span', { text: 'Decoder' }), decoderSelect.element, decoderDefaultButton ]),
         createElement('label', { className: 'route-override-row' }, [ createElement('span', { text: 'Transport' }), transportSelect.element, transportDefaultButton ]),
+        createElement('label', { className: 'route-override-row' }, [
+            createElement('span', { text: 'Speakers' }),
+            speakerLayoutSelect.element,
+            speakerLayoutDefaultButton
+        ]),
+        createElement('label', { className: 'route-override-row' }, [ createElement('span', { text: 'Binaural' }), binauralSelect.element ]),
         activeRouteElement
     ]);
 
     const unsubscribers: (() => void)[] = [
         subscribeSelection(store, (state: SandboxState): RouteOverride => state.route.override, renderOverride),
+        subscribeSelection(store, (state: SandboxState): AudioOutputSettings => state.audioOutput, renderAudioOutput),
         subscribeSelection(store, (state: SandboxState): ActiveRoute | null => state.route.active, (route: ActiveRoute | null): void => {
             activeRouteElement.textContent = describeActiveRoute(route);
         })

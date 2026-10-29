@@ -542,7 +542,7 @@ describe('BrowserCustomAudioOutput', () => {
         await expect(factory({
             ...configuration,
             codec: 'flac'
-        })).rejects.toThrow('Custom audio output requires 2, 6, or 8 channels at 48000 Hz');
+        })).rejects.toThrow('Custom audio output requires 2, 6, 8, 10, or 12 channels at 48000 Hz');
         expect(FakeAudioContext.instances).toHaveLength(0);
         expect(audioWorkletMockState.create).not.toHaveBeenCalled();
     });
@@ -555,7 +555,7 @@ describe('BrowserCustomAudioOutput', () => {
             channelCount: 7,
             codec: 'ac3',
             sampleRate: 48_000
-        })).rejects.toThrow('Custom audio output requires 2, 6, or 8 channels at 48000 Hz');
+        })).rejects.toThrow('Custom audio output requires 2, 6, 8, 10, or 12 channels at 48000 Hz');
 
         // Releasing the last pooled reference suspends rather than closes the shared context
         expect(FakeAudioContext.instances[0].suspend).toHaveBeenCalledOnce();
@@ -1268,7 +1268,7 @@ describe('BrowserCustomAudioOutput', () => {
         await expect(reconfigureOutput(binding.output, {
             ...configuration,
             codec: 'flac'
-        })).rejects.toThrow('Custom audio output requires 2, 6, or 8 channels at 48000 Hz');
+        })).rejects.toThrow('Custom audio output requires 2, 6, 8, 10, or 12 channels at 48000 Hz');
 
         expect(workletController.deactivate).not.toHaveBeenCalled();
         expect(audioWorkletMockState.create).toHaveBeenCalledOnce();
@@ -1423,7 +1423,7 @@ describe('BrowserCustomAudioOutput', () => {
         );
 
         expect(await observedFailure).toEqual(new RangeError(
-            'Custom audio output requires 2, 6, or 8 channels at 48000 Hz'
+            'Custom audio output requires 2, 6, 8, 10, or 12 channels at 48000 Hz'
         ));
         expect(getBridgeOutput(surroundBridge).configuration.channelCount).toBe(6);
         expect(binding.output.generation).toBe(2);

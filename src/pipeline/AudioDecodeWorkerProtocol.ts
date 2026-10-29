@@ -4,7 +4,7 @@
 
 import type { Microseconds } from '../MediaTime';
 import { isAudioDecoderPackageSelection, type AudioDecoderPackageSelection } from '../decode/audio/AudioDecoderPackageInstance';
-import type { CustomAudioOutputChannelCount } from '../audio/processing/CustomAudioChannelLayout';
+import type { CustomAudioOutputLayout } from '../audio/processing/CustomAudioChannelLayout';
 import { getQualifiedCustomWaveChannelLayout } from '../audio/processing/CustomWaveChannelLayout';
 import type { AudioDownmixSettings } from '../audio/processing/CustomAudioDownmix';
 import {
@@ -16,7 +16,8 @@ import {
     isAudioDownmixSettings,
     isAudioOutputAttachment,
     isCustomDecodeFailureKind,
-    isDecodedAudioOutputChannelCount,
+    isDecodedAudioObjectCount,
+    isDecodedAudioOutputLayout,
     MAX_DECODED_AUDIO_CHANNELS,
     MAX_DECODED_AUDIO_FRAMES_PER_SAMPLE,
     type CustomDecodeFailureKind,
@@ -33,6 +34,8 @@ export const MAXIMUM_AUDIO_DECODE_WORKER_BATCH_INPUT_COUNT = 64;
 export const MAXIMUM_AUDIO_DECODE_WORKER_PACKET_BATCH_BYTE_LENGTH = 1024 * 1024;
 export const MAXIMUM_AUDIO_DECODE_WORKER_FAILURE_MESSAGE_LENGTH = 512;
 const MAXIMUM_ROUTE_CODEC_LENGTH = 64;
+/** Bounds the codec private data a package attempt carries, as the GPU decode route bounds a video track's */
+export const MAXIMUM_AUDIO_DECODE_WORKER_CODEC_PRIVATE_BYTE_LENGTH = 1024 * 1024;
 
 /** The decoder an attempt's input feeds: `package` takes packets for a host's audio decoder package, and `pcm` takes samples Mediabunny already decoded */
 export type AudioDecodeWorkerDecoderBackend = 'package' | 'pcm';
@@ -53,9 +56,17 @@ export type AudioDecodeWorkerOpenAttemptRequest = AudioDecodeWorkerAttemptKey & 
     /** The WAVE channel mask the container declares, which lays out the samples Mediabunny decodes; null lays them out by count */
     channelMask: number | null
     decoderBackend: AudioDecodeWorkerDecoderBackend
-    outputChannelCount: CustomAudioOutputChannelCount
+    /** The layout the attempt plays to, whose WAVE mask a package that declares `renderChannelMask` renders object audio into */
+    outputLayout: CustomAudioOutputLayout
+    /**
+     * The codec private data a `package` attempt's decoder configures with before its first packet, such as a WMA track's WAVEFORMATEX;
+     * null for a track without any, and for every other backend
+     */
+    packageCodecPrivate: Uint8Array | null
     /** The package of a `package` attempt, and null for every other backend */
     packageDecoder: AudioDecoderPackageSelection | null
+    /** Asks a package that declares `renderBinaural` for binaural headphone rendering; set only with a stereo output */
+    renderBinaural: boolean
     /** The codec name the decoded PCM route tables qualify */
     routeCodec: string
     /** The declared rate, at which live gains ramp until the first decoded output binds its own */
@@ -123,12 +134,20 @@ export type AudioDecodeWorkerUpdateDownmixSettingsRequest = {
     type: 'update-downmix-settings'
 };
 
+/** Switches the run's open attempt's binaural rendering live; a stereo attempt's package takes it before its next packet */
+export type AudioDecodeWorkerUpdateBinauralRequest = {
+    binauralHeadphones: boolean
+    generation: number
+    type: 'update-binaural'
+};
+
 export type AudioDecodeWorkerRequest =
     | AudioDecodeWorkerAttachOutputRequest
     | AudioDecodeWorkerCloseAttemptRequest
     | AudioDecodeWorkerFinishAttemptRequest
     | AudioDecodeWorkerInputRequest
     | AudioDecodeWorkerOpenAttemptRequest
+    | AudioDecodeWorkerUpdateBinauralRequest
     | AudioDecodeWorkerUpdateDownmixSettingsRequest;
 
 /** Returns the credit of a batch the attempt rendered. */
@@ -153,6 +172,12 @@ export type AudioDecodeWorkerSourceFormatResponse = AudioDecodeWorkerAttemptKey 
     type: 'source-format'
 };
 
+/** Reports a change of the `objectCount` attribute of the attempt's package blocks, which the decode worker reports as `audio-object-count` */
+export type AudioDecodeWorkerObjectCountResponse = AudioDecodeWorkerAttemptKey & {
+    objectCount: number
+    type: 'object-count'
+};
+
 /** The attempt rendered its last batch and its tails; its worklet channel stays open until the attempt closes */
 export type AudioDecodeWorkerAttemptFinishedResponse = AudioDecodeWorkerAttemptKey & {
     type: 'attempt-finished'
@@ -174,6 +199,7 @@ export type AudioDecodeWorkerResponse =
     | AudioDecodeWorkerAttemptFailedResponse
     | AudioDecodeWorkerAttemptFinishedResponse
     | AudioDecodeWorkerInputCreditResponse
+    | AudioDecodeWorkerObjectCountResponse
     | AudioDecodeWorkerProgressResponse
     | AudioDecodeWorkerSourceFormatResponse;
 
@@ -199,12 +225,19 @@ function isDecoderBackend(value: unknown): value is AudioDecodeWorkerDecoderBack
     return value === 'package' || value === 'pcm';
 }
 
-/** A `package` attempt carries its package, and no other attempt does. */
+function isPackageCodecPrivate(value: unknown): value is Uint8Array {
+    return value instanceof Uint8Array
+        && value.byteLength > 0
+        && value.byteLength <= MAXIMUM_AUDIO_DECODE_WORKER_CODEC_PRIVATE_BYTE_LENGTH;
+}
+
+/** A `package` attempt carries its package and may carry codec private data, and no other attempt carries either. */
 function hasBackendPackage(value: Record<string, unknown>): boolean {
     if (value.decoderBackend === 'package') {
-        return isAudioDecoderPackageSelection(value.packageDecoder);
+        return isAudioDecoderPackageSelection(value.packageDecoder)
+            && (value.packageCodecPrivate === null || isPackageCodecPrivate(value.packageCodecPrivate));
     }
-    return value.packageDecoder === null;
+    return value.packageDecoder === null && value.packageCodecPrivate === null;
 }
 
 function isOpenAttemptRequest(value: Record<string, unknown>): boolean {
@@ -214,7 +247,9 @@ function isOpenAttemptRequest(value: Record<string, unknown>): boolean {
         && (value.channelMask === null || getQualifiedCustomWaveChannelLayout(Number(value.channelMask)) !== null)
         && isDecoderBackend(value.decoderBackend)
         && hasBackendPackage(value)
-        && isDecodedAudioOutputChannelCount(value.outputChannelCount)
+        && isDecodedAudioOutputLayout(value.outputLayout)
+        && typeof value.renderBinaural === 'boolean'
+        && (!value.renderBinaural || value.outputLayout === 'stereo')
         && typeof value.routeCodec === 'string'
         && value.routeCodec.length > 0
         && value.routeCodec.length <= MAXIMUM_ROUTE_CODEC_LENGTH
@@ -305,6 +340,8 @@ export function isAudioDecodeWorkerRequest(value: unknown): value is AudioDecode
             return hasAttemptKey(value);
         case 'update-downmix-settings':
             return isPositiveInteger(value.generation) && isAudioDownmixSettings(value.audioDownmixSettings);
+        case 'update-binaural':
+            return isPositiveInteger(value.generation) && typeof value.binauralHeadphones === 'boolean';
         default:
             return false;
     }
@@ -328,6 +365,8 @@ export function isAudioDecodeWorkerResponse(value: unknown): value is AudioDecod
             return isPositiveInteger(value.inputCredits) && Number(value.inputCredits) <= AUDIO_DECODE_WORKER_INPUT_CREDITS;
         case 'progress':
             return isProgressResponse(value);
+        case 'object-count':
+            return isDecodedAudioObjectCount(value.objectCount);
         case 'source-format':
             return isPositiveInteger(value.channelCount)
                 && Number(value.channelCount) <= MAX_DECODED_AUDIO_CHANNELS

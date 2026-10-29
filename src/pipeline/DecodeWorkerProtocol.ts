@@ -35,7 +35,12 @@ import {
 } from '../demux/hdr/StaticHDRMetadata';
 import { isVideoFrameFields, type VideoFrameFields } from '../decode/video/VideoFields';
 import { isChromaLocation, isChromaSubsampling, type VideoChromaFormat } from '../demux/VideoChromaFormat';
-import type { CustomAudioOutputChannelCount } from '../audio/processing/CustomAudioChannelLayout';
+import {
+    CUSTOM_AUDIO_OUTPUT_LAYOUTS,
+    getCustomAudioOutputChannelCount,
+    isCustomAudioOutputLayout,
+    type CustomAudioOutputLayout
+} from '../audio/processing/CustomAudioChannelLayout';
 import {
     assertValidAudioDownmixSettings,
     type AudioDownmixSettings
@@ -46,6 +51,7 @@ import {
 } from '../audio/processing/CustomAudioDownmixAlgorithm';
 import { isSupportedCustomAudioSampleRate } from '../audio/CustomAudioSampleRate';
 import { isAudioDecoderPackageSelection, type AudioDecoderPackageSelection } from '../decode/audio/AudioDecoderPackageInstance';
+import { isAudioDecoderObjectCount } from '../decode/audio/AudioDecoderManifest';
 import { isDecoderPackageVersion, type DecoderPackageVersion } from '../decode/packages/DecoderPackageIdentity';
 import { isDolbyVisionDualLayerProfile } from '../demux/dolby-vision/DolbyVisionProfiles';
 import {
@@ -110,11 +116,13 @@ export type CustomDecodeWorkerProgressPhase =
 /**
  * Returns whether a codec's raw planes need its software decoder.
  * Chromium's hardware AV1 and VP9 decoders return opaque surfaces whose planes copyTo cannot expose, while dav1d and libvpx return copyable planes.
+ * Chromium reports H.264 beyond 8-bit 4:2:0 unsupported with prefer-hardware, while its software decoder, FFmpeg's, decodes every High profile to copyable planes.
  * Chromium has no software HEVC decoder, so HEVC keeps its hardware decoder.
  */
 function requiresSoftwareRawPlaneDecode(videoCodec: VideoCodec | null): boolean {
     switch (videoCodec) {
         case 'av1':
+        case 'avc':
         case 'vp9':
             return true;
         default:
@@ -125,7 +133,7 @@ function requiresSoftwareRawPlaneDecode(videoCodec: VideoCodec | null): boolean 
 /**
  * Matches a qualified route to the acceleration preference its capability probes measured.
  * Native routes that present the decoder's opaque hardware output prefer hardware.
- * Raw AV1 and VP9 planes prefer software.
+ * Raw AV1, H.264, and VP9 planes prefer software.
  * Every other native route qualifies with no preference, so a codec without a hardware decoder decodes in software, as VP8 does in Chromium on Windows.
  */
 export function getCustomDecodeHardwareAcceleration(
@@ -193,8 +201,13 @@ export type DecodeWorkerStartRequest = {
     audioSampleCredits: number
     /** Zero-based ordinal within input.getAudioTracks(), not a Jellyfin stream index. */
     audioTrackIndex: number | null
+    /**
+     * Asks an audio decoder package that declares `renderBinaural` to render object audio binaurally when the output is stereo;
+     * defaults to off and is valid only for decoded PCM audio.
+     */
+    binauralHeadphones?: boolean
     /** Defaults to stereo and is valid only for decoded PCM audio. */
-    decodedAudioOutputChannelCount?: CustomAudioOutputChannelCount
+    decodedAudioOutputLayout?: CustomAudioOutputLayout
     dolbyVisionProfile: CustomDecodeDolbyVisionProfile
     dolbyVisionRPUParserWASMURL: string
     /**
@@ -270,6 +283,13 @@ export type DecodeWorkerUpdateAudioDownmixSettingsRequest = {
     type: 'update-audio-downmix-settings'
 };
 
+/** Switches binaural headphone rendering of the run's decoded audio live; a stereo attempt's package takes it between packets. */
+export type DecodeWorkerUpdateAudioBinauralRequest = {
+    binauralHeadphones: boolean
+    generation: number
+    type: 'update-audio-binaural'
+};
+
 export type DecodeWorkerRecycleFrameRequest = {
     buffer: ArrayBuffer
     generation: number
@@ -309,7 +329,8 @@ export type DecodeWorkerResyncAudioRequest = {
     audioEpoch: number
     /** The new worklet's channel, whose credit window replaces the whole old one, since the replaced attempt's chunks never return credits */
     audioOutput: DecodeWorkerAudioOutputAttachment
-    decodedAudioOutputChannelCount: CustomAudioOutputChannelCount
+    binauralHeadphones?: boolean
+    decodedAudioOutputLayout: CustomAudioOutputLayout
     generation: number
     targetTimeMicroseconds: Microseconds
     type: 'resync-audio'
@@ -325,6 +346,7 @@ export type DecodeWorkerRequest =
     | DecodeWorkerStartRequest
     | DecodeWorkerStopRequest
     | DecodeWorkerSuspendVideoRequest
+    | DecodeWorkerUpdateAudioBinauralRequest
     | DecodeWorkerUpdateAudioDownmixSettingsRequest;
 
 export type DecodeWorkerAudioConfiguration = {
@@ -535,6 +557,14 @@ export type DecodeWorkerAudioSourceFormatResponse = {
     type: 'audio-source-format'
 };
 
+/** Reports how many dynamic objects the audio decoder package renders, as its blocks' `objectCount` attribute says; 0 for a stock decode. */
+export type DecodeWorkerAudioObjectCountResponse = {
+    audioEpoch: number
+    generation: number
+    objectCount: number
+    type: 'audio-object-count'
+};
+
 /** Carries a batch of the worker's timing trace events. */
 export type DecodeWorkerTimingTraceResponse = {
     events: readonly WorkerTimingTraceEvent[]
@@ -544,6 +574,7 @@ export type DecodeWorkerTimingTraceResponse = {
 
 export type DecodeWorkerResponse =
     | DecodeWorkerAudioEndedResponse
+    | DecodeWorkerAudioObjectCountResponse
     | DecodeWorkerAudioProgressResponse
     | DecodeWorkerAudioSourceFormatResponse
     | DecodeWorkerEndedResponse
@@ -638,9 +669,19 @@ function isAudioOutputMode(value: unknown): value is CustomDecodeAudioOutputMode
     return value === 'decoded-pcm' || value === 'native-media';
 }
 
-/** Validates a decoded PCM output layout: stereo, 5.1, or 7.1. */
-export function isDecodedAudioOutputChannelCount(value: unknown): value is CustomAudioOutputChannelCount {
-    return value === 2 || value === 6 || value === 8;
+/** Validates a decoded PCM output layout: stereo, 5.1, 7.1, 5.1.2, 5.1.4, 7.1.2, or 7.1.4. */
+export function isDecodedAudioOutputLayout(value: unknown): value is CustomAudioOutputLayout {
+    return isCustomAudioOutputLayout(value);
+}
+
+/** Validates a worklet channel count: one of the output layouts' 2, 6, 8, 10, or 12. */
+export function isDecodedAudioOutputChannelCount(value: unknown): value is number {
+    return CUSTOM_AUDIO_OUTPUT_LAYOUTS.some((layout: CustomAudioOutputLayout): boolean => getCustomAudioOutputChannelCount(layout) === value);
+}
+
+/** Validates a package's rendered object count, which its package decoder already checked against the same bound. */
+export function isDecodedAudioObjectCount(value: unknown): value is number {
+    return isAudioDecoderObjectCount(value);
 }
 
 /** Validates downmix gains received across a worker boundary. */
@@ -662,11 +703,14 @@ function isValidDecodedAudioOutputSelection(
     hasAudioTrack: boolean
 ): boolean {
     if (audioOutputMode !== 'decoded-pcm' || !hasAudioTrack) {
-        return value.audioDownmixSettings === undefined && value.decodedAudioOutputChannelCount === undefined;
+        return value.audioDownmixSettings === undefined
+            && value.decodedAudioOutputLayout === undefined
+            && value.binauralHeadphones === undefined;
     }
-    const hasValidOutputChannelCount = value.decodedAudioOutputChannelCount === undefined
-        || isDecodedAudioOutputChannelCount(value.decodedAudioOutputChannelCount);
-    return hasValidOutputChannelCount
+    const hasValidOutputLayout = value.decodedAudioOutputLayout === undefined
+        || isDecodedAudioOutputLayout(value.decodedAudioOutputLayout);
+    return hasValidOutputLayout
+        && (value.binauralHeadphones === undefined || typeof value.binauralHeadphones === 'boolean')
         && (value.audioDownmixSettings === undefined
             || isAudioDownmixSettings(value.audioDownmixSettings));
 }
@@ -1152,9 +1196,10 @@ function isAudioOutputAttachRequest(value: Record<string, unknown>): boolean {
 /** The new worklet's channel carries the layout the resync asks for. */
 function isAudioResyncRequest(value: Record<string, unknown>): boolean {
     return isAudioEpoch(value.audioEpoch, false)
-        && isDecodedAudioOutputChannelCount(value.decodedAudioOutputChannelCount)
+        && isDecodedAudioOutputLayout(value.decodedAudioOutputLayout)
         && isAudioOutputAttachment(value.audioOutput)
-        && value.audioOutput.channelCount === value.decodedAudioOutputChannelCount
+        && value.audioOutput.channelCount === getCustomAudioOutputChannelCount(value.decodedAudioOutputLayout)
+        && (value.binauralHeadphones === undefined || typeof value.binauralHeadphones === 'boolean')
         && isMicroseconds(value.targetTimeMicroseconds)
         && hasValidOptionalAudioDownmix(value);
 }
@@ -1230,6 +1275,8 @@ export function isDecodeWorkerRequest(value: unknown): value is DecodeWorkerRequ
             return isVideoEpoch(value.videoEpoch, false);
         case 'update-audio-downmix-settings':
             return isAudioDownmixSettings(value.audioDownmixSettings);
+        case 'update-audio-binaural':
+            return typeof value.binauralHeadphones === 'boolean';
         default:
             return false;
     }
@@ -1402,6 +1449,8 @@ export function isDecodeWorkerResponse(value: unknown): value is DecodeWorkerRes
                 && isPositiveInteger(value.channelCount)
                 && Number(value.channelCount) <= MAX_DECODED_AUDIO_CHANNELS
                 && isSupportedCustomAudioSampleRate(value.sampleRate);
+        case 'audio-object-count':
+            return isAudioEpoch(value.audioEpoch, true) && isDecodedAudioObjectCount(value.objectCount);
         case 'video-ended':
             return isVideoEpoch(value.videoEpoch, true) && hasValidOptionalOutputEvents(value);
         case 'video-interrupted':

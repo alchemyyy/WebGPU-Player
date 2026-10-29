@@ -23,10 +23,13 @@ import {
     getDolbyVisionReconstructionRawFrameFormat,
     getGPUVideoDecodeTarget,
     getPlaybackAudioCodec,
+    playbackAudioNeedsObjectRendering,
     getRawVideoPresentationRouteKey,
     hasEligibleCustomVideoRoute,
     hasPotentialCustomPlaybackVideoRoute,
     presentsInterlacedVideo,
+    type CustomAudioRenderTarget,
+    type CustomPlaybackEligibility,
     type CustomPlaybackEligibilityOptions,
     type CustomVideoRouteOptions
 } from 'webgpu-player/capability/CustomPlaybackEligibility';
@@ -42,6 +45,12 @@ import {
     type AV1RawFormatCapability,
     type AV1RawFormatVariant
 } from 'webgpu-player/capability/AV1RawFormatCapabilities';
+import {
+    H264_RAW_FORMAT_PROBE_DEFINITIONS,
+    H264_RAW_FORMAT_VARIANTS,
+    type H264RawFormatCapability,
+    type H264RawFormatVariant
+} from 'webgpu-player/capability/H264RawFormatCapabilities';
 import type { CustomPlaybackRuntimeAvailability } from 'webgpu-player/capability/CustomPlaybackRuntime';
 import type {
     NativeMediaAudioCapabilities,
@@ -57,7 +66,7 @@ import {
     H264_PROFILES,
     type H264ProfileCapabilities
 } from 'webgpu-player/capability/H264ProfileCapabilities';
-import type { VideoDecoderPackage } from 'webgpu-player/decode/packages/DecoderPackage';
+import type { AudioDecoderPackage, VideoDecoderPackage } from 'webgpu-player/decode/packages/DecoderPackage';
 import type { GPUDecoderOutputFormat } from 'webgpu-player/decode/video/gpu/GPUDecodeFormats';
 import { MEBIBYTE } from 'webgpu-player/decode/video/gpu/GPUDecodeLimits';
 import {
@@ -66,6 +75,7 @@ import {
     type GPUVideoDecoderSummary
 } from 'webgpu-player/decode/video/gpu/GPUVideoDecoderCatalog';
 import type { ExternalHDRAuthorizationRouteKey } from 'webgpu-player/validation/ExternalHDRPresentationAuthorization';
+import type { RawHDRAuthorizationRouteKey } from 'webgpu-player/validation/RawHDRPresentationAuthorization';
 
 import { createAudioDecoderPackageForTest } from '../helpers/audioDecoderPackageStubs';
 import { createDecoderProjectVideoPackageForTest, createVideoDecoderPackageForTest, createVideoDecoderSource } from '../helpers/decoderPackages';
@@ -162,6 +172,7 @@ const DOLBY_AUDIO_PACKAGE = createAudioDecoderPackageForTest('E-AC-3', [ 'eac3',
 const DTS_AUDIO_PACKAGE = createAudioDecoderPackageForTest('DTS', [ 'dts' ], 'dts');
 const TRUEHD_AUDIO_PACKAGE = createAudioDecoderPackageForTest('TrueHD', [ 'mlp', 'truehd' ], 'truehd');
 const AUDIO_PACKAGES = [ DOLBY_AUDIO_PACKAGE, DTS_AUDIO_PACKAGE, TRUEHD_AUDIO_PACKAGE ] as const;
+const WMA_AUDIO_PACKAGE = createAudioDecoderPackageForTest('WMA', [ 'wmav1', 'wmav2', 'wmapro', 'wmalossless', 'wmavoice' ], 'wma');
 
 function createCapability<Codec extends CustomAudioCodec | CustomVideoCodec>(
     codec: Codec,
@@ -340,7 +351,8 @@ function createNativeAV1Capabilities(): CustomDecodeCapabilities {
 }
 
 function createNativeSurroundAudioCapabilities(
-    supportedCodecs: ReadonlySet<CustomNativeSurroundAudioCodec>
+    supportedCodecs: ReadonlySet<CustomNativeSurroundAudioCodec>,
+    inputChannelCount: CustomNativeSurroundAudioCodecCapability['inputChannelCount'] = 6
 ): NonNullable<CustomDecodeCapabilities['nativeSurroundAudio']> {
     const codecStrings: Readonly<Record<CustomNativeSurroundAudioCodec, string>> = {
         aac: 'mp4a.40.2',
@@ -354,7 +366,7 @@ function createNativeSurroundAudioCapabilities(
         capabilities[codec] = {
             codec,
             codecString: codecStrings[codec],
-            inputChannelCount: 6,
+            inputChannelCount,
             reason: supported ? 'decode-output-verified' : 'decode-output-missing',
             sampleRate: 48_000,
             status: supported ? 'supported' : 'unsupported'
@@ -4111,6 +4123,69 @@ describe('CustomPlaybackEligibility', () => {
         )).toEqual({ eligible: false, reason: 'audio-codec-unsupported' });
     });
 
+    describe('WMA', () => {
+        // A package decodes without the browser's audio decoder
+        const packageRuntime: CustomPlaybackRuntimeAvailability = {
+            available: true,
+            environment: {
+                ...AVAILABLE_RUNTIME.environment,
+                audioData: false,
+                audioDecoder: false
+            },
+            reason: null
+        };
+
+        function getWMAEligibility(container: string, codec: string, channelCount: number, audioDecoders: readonly AudioDecoderPackage[]): CustomPlaybackEligibility {
+            const options = createOptions();
+            const mediaSource = options.mediaSource as {
+                Container: string
+                MediaStreams: Array<Record<string, unknown>>
+            };
+            mediaSource.Container = container;
+            mediaSource.MediaStreams[1].Channels = channelCount;
+            mediaSource.MediaStreams[1].Codec = codec;
+            mediaSource.MediaStreams[1].Profile = undefined;
+            mediaSource.MediaStreams[1].SampleRate = 44_100;
+            return getCustomPlaybackEligibility(
+                options,
+                createCapabilities(),
+                { allowRawHDR: false, audioDecoders, runtimeAvailability: packageRuntime }
+            );
+        }
+
+        it.each([
+            [ 'mkv', 'wmav1', 2 ],
+            [ 'mkv', 'wmav2', 1 ],
+            [ 'avi', 'wmav2', 2 ],
+            [ 'mkv', 'wmapro', 6 ],
+            [ 'avi', 'wmapro', 8 ],
+            [ 'mkv', 'wmalossless', 2 ],
+            [ 'mkv', 'wmavoice', 1 ]
+        ] as const)('selects the WMA audio decoder package for %s %s with %i channels', (container, codec, channelCount) => {
+            expect(getWMAEligibility(container, codec, channelCount, [ ...AUDIO_PACKAGES, WMA_AUDIO_PACKAGE ])).toMatchObject({
+                audioDecoder: { codec, source: { manifest: WMA_AUDIO_PACKAGE.manifest } },
+                audioOutputMode: 'decoded-pcm',
+                audioSourceChannelCount: channelCount,
+                audioTrackIndex: 0,
+                eligible: true
+            });
+        });
+
+        it.each([
+            // WMA v2 holds at most two channels, WMA Voice one, and no route presents 6.1
+            [ 'wmav2', 6 ],
+            [ 'wmavoice', 2 ],
+            [ 'wmapro', 7 ]
+        ] as const)('rejects %s with %i channels, which its decoder does not output in a layout a route presents', (codec, channelCount) => {
+            expect(getWMAEligibility('mkv', codec, channelCount, [ WMA_AUDIO_PACKAGE ])).toEqual({ eligible: false, reason: 'audio-layout-unsupported' });
+        });
+
+        it('rejects WMA without a WMA package, and from a container whose demuxer reads no WAVEFORMATEX', () => {
+            expect(getWMAEligibility('mkv', 'wmav2', 2, AUDIO_PACKAGES)).toEqual({ eligible: false, reason: 'audio-codec-unsupported' });
+            expect(getWMAEligibility('mp4', 'wmav2', 2, [ WMA_AUDIO_PACKAGE ])).toEqual({ eligible: false, reason: 'container-unsupported' });
+        });
+    });
+
     it.each([
         [ 'mkv', 'truehd', 'Dolby TrueHD', 2, 48_000, undefined ],
         [ 'matroska', 'truehd', 'Dolby TrueHD + Dolby Atmos', 6, 96_000, undefined ],
@@ -4429,6 +4504,83 @@ describe('CustomPlaybackEligibility', () => {
             });
         }
     );
+
+    it.each([ 'aac', 'opus', 'flac', 'vorbis' ] as const)(
+        'selects decoded PCM for 7.1 %s input only with its 7.1 verdict',
+        codec => {
+            const options = createOptions();
+            const mediaSource = options.mediaSource as {
+                MediaStreams: Array<Record<string, unknown>>
+            };
+            mediaSource.MediaStreams[1].Channels = 8;
+            mediaSource.MediaStreams[1].ChannelLayout = '7.1';
+            mediaSource.MediaStreams[1].Codec = codec;
+            const fivePointOneOnly: CustomDecodeCapabilities = {
+                ...createCapabilities(),
+                nativeSurroundAudio: createNativeSurroundAudioCapabilities(new Set([ codec ]))
+            };
+            const sevenPointOne: CustomDecodeCapabilities = {
+                ...createCapabilities(),
+                nativeSevenPointOneAudio: createNativeSurroundAudioCapabilities(new Set([ codec ]), 8)
+            };
+
+            expect(getCustomPlaybackEligibility(
+                options,
+                createCapabilities(),
+                { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
+            )).toEqual({ eligible: false, reason: 'audio-layout-unsupported' });
+            expect(getCustomPlaybackEligibility(
+                options,
+                fivePointOneOnly,
+                { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
+            )).toEqual({ eligible: false, reason: 'audio-layout-unsupported' });
+            expect(getCustomPlaybackEligibility(
+                options,
+                sevenPointOne,
+                { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
+            )).toMatchObject({
+                audioOutputMode: 'decoded-pcm',
+                audioTrackIndex: 0,
+                eligible: true
+            });
+        }
+    );
+
+    it('keeps 5.1 on its own verdict when only the 7.1 verdict holds', () => {
+        const options = createOptions();
+        const mediaSource = options.mediaSource as {
+            MediaStreams: Array<Record<string, unknown>>
+        };
+        mediaSource.MediaStreams[1].Channels = 6;
+        mediaSource.MediaStreams[1].Codec = 'opus';
+
+        expect(getCustomPlaybackEligibility(
+            options,
+            {
+                ...createCapabilities(),
+                nativeSevenPointOneAudio: createNativeSurroundAudioCapabilities(new Set([ 'opus' ]), 8)
+            },
+            { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
+        )).toEqual({ eligible: false, reason: 'audio-layout-unsupported' });
+    });
+
+    it('refuses 7.1 MP3 whatever the 7.1 verdicts', () => {
+        const options = createOptions();
+        const mediaSource = options.mediaSource as {
+            MediaStreams: Array<Record<string, unknown>>
+        };
+        mediaSource.MediaStreams[1].Channels = 8;
+        mediaSource.MediaStreams[1].Codec = 'mp3';
+
+        expect(getCustomPlaybackEligibility(
+            options,
+            {
+                ...createCapabilities(),
+                nativeSevenPointOneAudio: createNativeSurroundAudioCapabilities(new Set(CUSTOM_NATIVE_SURROUND_AUDIO_CODECS), 8)
+            },
+            { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
+        )).toEqual({ eligible: false, reason: 'audio-layout-unsupported' });
+    });
 
     it.each([
         [ undefined, 3_000 ],
@@ -6820,6 +6972,185 @@ describe('AV1 on a decoder package', () => {
     });
 });
 
+describe('H.264 beyond 8-bit 4:2:0 on raw planes', () => {
+    const BT709_SDR_STREAM = {
+        ColorPrimaries: 'bt709',
+        ColorRange: 'tv',
+        ColorSpace: 'bt709',
+        ColorTransfer: 'bt709',
+        VideoRange: 'SDR',
+        VideoRangeType: 'SDR'
+    } as const;
+    const HLG_STREAM = {
+        ColorPrimaries: 'bt2020',
+        ColorSpace: 'bt2020nc',
+        ColorTransfer: 'arib-std-b67',
+        VideoRange: 'HDR',
+        VideoRangeType: 'HLG'
+    } as const;
+    const VARIANT_STREAMS = [
+        { format: 'I420P10', variant: 'high420-10', videoStream: { BitDepth: 10, PixelFormat: 'yuv420p10le', Profile: 'High 10' } },
+        { format: 'I422', variant: 'high422-8', videoStream: { BitDepth: 8, PixelFormat: 'yuv422p', Profile: 'High 4:2:2' } },
+        { format: 'I422P10', variant: 'high422-10', videoStream: { BitDepth: 10, PixelFormat: 'yuv422p10le', Profile: 'High 4:2:2 Intra' } },
+        { format: 'I444', variant: 'high444-8', videoStream: { BitDepth: 8, PixelFormat: 'yuv444p', Profile: 'High 4:4:4 Predictive' } },
+        { format: 'I444P10', variant: 'high444-10', videoStream: { BitDepth: 10, PixelFormat: 'yuv444p10le', Profile: 'High 4:4:4 Intra' } }
+    ] as const;
+
+    function createH264Options(videoStream: Record<string, unknown>, container = 'mkv'): Record<string, unknown> {
+        return createOptions({
+            mediaSource: {
+                Container: container,
+                DefaultAudioStreamIndex: 1,
+                MediaStreams: [
+                    {
+                        ...BT709_SDR_STREAM,
+                        BitDepth: 8,
+                        Codec: 'h264',
+                        Height: 1_080,
+                        Index: 0,
+                        IsInterlaced: false,
+                        Profile: 'High',
+                        Type: 'Video',
+                        Width: 1_920,
+                        ...videoStream
+                    },
+                    { Channels: 2, Codec: 'aac', Index: 1, SampleRate: 48_000, Type: 'Audio' }
+                ],
+                RunTimeTicks: 60_000_000
+            }
+        });
+    }
+
+    /** Returns capabilities whose H.264 raw format variants qualified, all but the unqualified ones. */
+    function createH264RawFormatCapabilities(unqualifiedVariants: readonly H264RawFormatVariant[] = []): CustomDecodeCapabilities {
+        const capabilities = createCapabilities();
+        const h264RawFormats = {} as Record<H264RawFormatVariant, H264RawFormatCapability>;
+        for (const variant of H264_RAW_FORMAT_VARIANTS) {
+            const definition = H264_RAW_FORMAT_PROBE_DEFINITIONS[variant];
+            const qualified = !unqualifiedVariants.includes(variant);
+            h264RawFormats[variant] = {
+                bitDepth: definition.bitDepth,
+                chromaFormat: definition.chromaFormat,
+                codec: 'h264',
+                codecString: definition.config.codec,
+                format: definition.format,
+                jellyfinProfile: definition.jellyfinProfile,
+                pixelFormat: definition.pixelFormat,
+                reason: qualified ? 'output-copy-supported' : 'output-copy-unsupported',
+                status: qualified ? 'supported' : 'unsupported',
+                variant
+            };
+        }
+        capabilities.h264RawFormats = h264RawFormats;
+        return capabilities;
+    }
+
+    function createRawSDROptions(format: string): CustomPlaybackEligibilityOptions {
+        return {
+            allowRawHDR: false,
+            allowRawSDR: true,
+            authorizedRawHDRRouteKeys: [ `${format}:bt709:bt709:limited:sdr` as RawHDRAuthorizationRouteKey ],
+            runtimeAvailability: AVAILABLE_RUNTIME
+        };
+    }
+
+    it.each(VARIANT_STREAMS)('presents $videoStream.Profile $format from its qualified $variant variant on native raw planes', ({ format, variant, videoStream }) => {
+        const options = createH264Options(videoStream);
+
+        expect(getRawVideoPresentationRouteKey(options)).toBe(`${format}:bt709:bt709:limited:sdr`);
+        expect(getCustomPlaybackEligibility(options, createH264RawFormatCapabilities(), createRawSDROptions(format))).toMatchObject({
+            eligible: true,
+            hdr: false,
+            maximumCodedHeight: 1_080,
+            maximumCodedWidth: 1_920,
+            rawVideoFrameFormat: format,
+            videoDecoderBackend: 'native',
+            videoOutputMode: 'raw-planes'
+        });
+        // An unqualified variant, a missing raw key, or no raw SDR presentation never falls through to the High route
+        expect(getCustomPlaybackEligibility(options, createH264RawFormatCapabilities([ variant ]), createRawSDROptions(format)))
+            .toEqual({ eligible: false, reason: 'codec-unsupported' });
+        expect(getCustomPlaybackEligibility(options, createCapabilities(), createRawSDROptions(format)))
+            .toEqual({ eligible: false, reason: 'codec-unsupported' });
+        expect(getCustomPlaybackEligibility(options, createH264RawFormatCapabilities(), { ...createRawSDROptions(format), authorizedRawHDRRouteKeys: [] }))
+            .toEqual({ eligible: false, reason: 'codec-unsupported' });
+        expect(getCustomPlaybackEligibility(options, createH264RawFormatCapabilities(), { ...createRawSDROptions(format), allowRawSDR: false }))
+            .toEqual({ eligible: false, reason: 'codec-unsupported' });
+        expect(hasPotentialCustomPlaybackVideoRoute(createPlaybackSelectionItem({ ...videoStream, Codec: 'H264' }))).toBe(true);
+    });
+
+    it('takes each variant only through its own qualification', () => {
+        const options = createH264Options(VARIANT_STREAMS[2].videoStream);
+
+        expect(getCustomPlaybackEligibility(options, createH264RawFormatCapabilities([ 'high422-8', 'high444-10' ]), createRawSDROptions('I422P10')))
+            .toMatchObject({ eligible: true, rawVideoFrameFormat: 'I422P10' });
+        expect(getCustomPlaybackEligibility(options, createH264RawFormatCapabilities([ 'high422-10' ]), createRawSDROptions('I422P10')))
+            .toEqual({ eligible: false, reason: 'codec-unsupported' });
+    });
+
+    it('keeps 8-bit High on its native VideoFrame route whatever the raw format qualifications', () => {
+        const eligibility = getCustomPlaybackEligibility(createH264Options({ PixelFormat: 'yuv420p' }), createH264RawFormatCapabilities(), {
+            ...createRawSDROptions('I420'),
+            authorizedRawHDRRouteKeys: [ 'I420:bt709:bt709:limited:sdr' ]
+        });
+
+        expect(eligibility).toMatchObject({ eligible: true, rawVideoFrameFormat: null, videoDecoderBackend: 'native', videoOutputMode: 'video-frame' });
+    });
+
+    it.each([
+        // No variant takes these, and no other route presents them
+        [ '8-bit 4:2:0 coded under High 10', { BitDepth: 8, PixelFormat: 'yuv420p', Profile: 'High 10' } ],
+        [ '12-bit 4:4:4', { BitDepth: 12, PixelFormat: 'yuv444p12le', Profile: 'High 4:4:4 Predictive' } ],
+        [ 'RGB 4:4:4', { BitDepth: 8, PixelFormat: 'gbrp', Profile: 'High 4:4:4 Predictive' } ],
+        [ '10-bit 4:0:0', { BitDepth: 10, PixelFormat: 'gray10le', Profile: 'High 10' } ]
+    ])('refuses H.264 %s, which no route presents', (_subject, videoStream) => {
+        expect(getCustomPlaybackEligibility(createH264Options(videoStream), createH264RawFormatCapabilities(), {
+            allowRawHDR: true,
+            allowRawSDR: true,
+            authorizedRawHDRRouteKeys: H264_RAW_FORMAT_VARIANTS.map(variant => (
+                `${H264_RAW_FORMAT_PROBE_DEFINITIONS[variant].format}:bt709:bt709:limited:sdr` as RawHDRAuthorizationRouteKey
+            )),
+            runtimeAvailability: AVAILABLE_RUNTIME
+        })).toEqual({ eligible: false, reason: 'codec-unsupported' });
+    });
+
+    it('presents 10-bit HLG High 4:2:2 from raw I422P10 through its raw HDR key only', () => {
+        const options = createH264Options({ ...HLG_STREAM, BitDepth: 10, PixelFormat: 'yuv422p10le', Profile: 'High 4:2:2' });
+        const routeKey = 'I422P10:bt2020-ncl:bt2020:limited:hlg';
+
+        expect(getRawVideoPresentationRouteKey(options)).toBe(routeKey);
+        expect(getCustomPlaybackEligibility(options, createH264RawFormatCapabilities(), {
+            allowRawHDR: true,
+            authorizedRawHDRRouteKeys: [ routeKey ],
+            runtimeAvailability: AVAILABLE_RUNTIME
+        })).toMatchObject({ eligible: true, hdr: true, rawVideoFrameFormat: 'I422P10', videoOutputMode: 'raw-planes' });
+        expect(getCustomPlaybackEligibility(options, createH264RawFormatCapabilities(), {
+            allowRawHDR: false,
+            authorizedRawHDRRouteKeys: [ routeKey ],
+            runtimeAvailability: AVAILABLE_RUNTIME
+        })).toEqual({ eligible: false, reason: 'hdr-presentation-unavailable' });
+        expect(getCustomPlaybackEligibility(options, createH264RawFormatCapabilities([ 'high422-10' ]), {
+            allowRawHDR: true,
+            authorizedRawHDRRouteKeys: [ routeKey ],
+            runtimeAvailability: AVAILABLE_RUNTIME
+        })).toEqual({ eligible: false, reason: 'hdr-codec-unsupported' });
+    });
+
+    it('presents interlaced High 4:2:2 in MPEG-TS on raw planes, which the deinterlacing pass takes', () => {
+        const options = createH264Options({ BitDepth: 8, FieldOrder: 'tt', IsInterlaced: true, PixelFormat: 'yuv422p', Profile: 'High 4:2:2' }, 'ts');
+
+        expect(getCustomPlaybackEligibility(options, createH264RawFormatCapabilities(), createRawSDROptions('I422')))
+            .toMatchObject({ eligible: true, rawVideoFrameFormat: 'I422', videoOutputMode: 'raw-planes' });
+        expect(hasPotentialCustomPlaybackVideoRoute(createPlaybackSelectionItem({
+            BitDepth: 8,
+            Codec: 'H264',
+            IsInterlaced: true,
+            PixelFormat: 'yuv422p',
+            Profile: 'High 4:2:2'
+        }, 'ts'))).toBe(true);
+    });
+});
+
 describe('AVI and codecs without a route', () => {
     const AVI_CONTAINER = 'avi';
     // jsdom's own user agent names AppleWebKit without Chrome, which Mediabunny takes for WebKit
@@ -6993,5 +7324,123 @@ describe('AV1 on the native external HDR route', () => {
             createNativeAV1Capabilities(),
             createEligibilityOptions([ AV1_PQ_ROUTE_KEY ])
         )).toMatchObject({ rawVideoFrameFormat: 'I420P10' });
+    });
+});
+
+describe('Dolby Atmos audio eligibility', () => {
+    const OBJECT_AUDIO_OPTIONS: ReadonlyMap<number, string> = new Map([ [ 1, 'renderChannelMask' ], [ 2, 'renderBinaural' ] ]);
+    const RENDERING_DOLBY_PACKAGE: AudioDecoderPackage = {
+        ...DOLBY_AUDIO_PACKAGE,
+        manifest: { ...DOLBY_AUDIO_PACKAGE.manifest, options: OBJECT_AUDIO_OPTIONS }
+    };
+    const RENDERING_TRUEHD_PACKAGE: AudioDecoderPackage = {
+        ...TRUEHD_AUDIO_PACKAGE,
+        manifest: { ...TRUEHD_AUDIO_PACKAGE.manifest, options: OBJECT_AUDIO_OPTIONS }
+    };
+    const EAC3_ATMOS_PROFILE = 'Dolby Digital Plus + Dolby Atmos';
+    const TRUEHD_ATMOS_PROFILE = 'Dolby TrueHD + Dolby Atmos';
+
+    function createAudioOptions(codec: string, channelCount: number, profile: string | undefined): unknown {
+        const options = createOptions();
+        const stream = (options.mediaSource as { MediaStreams: Array<Record<string, unknown>> }).MediaStreams[1];
+        stream.Codec = codec;
+        stream.Channels = channelCount;
+        stream.ChannelLayout = channelCount === 8 ? '7.1' : '5.1';
+        stream.SampleRate = 48_000;
+        stream.Profile = profile;
+        return options;
+    }
+
+    function getAudioEligibility(
+        options: unknown,
+        audioRenderTarget: CustomAudioRenderTarget | undefined,
+        audioDecoders: readonly AudioDecoderPackage[] = [ RENDERING_DOLBY_PACKAGE, RENDERING_TRUEHD_PACKAGE ]
+    ): CustomPlaybackEligibility {
+        return getCustomPlaybackEligibility(options, createCapabilities(), {
+            allowRawHDR: false,
+            audioDecoders,
+            ...(audioRenderTarget ? { audioRenderTarget } : {}),
+            nativeMediaAudioCapabilities: createNativeMediaAudioCapabilities(new Set([ 'eac3:6:48000' ])),
+            runtimeAvailability: AVAILABLE_RUNTIME
+        });
+    }
+
+    it.each([
+        { binauralHeadphones: false, speakerLayout: '7.1.4' },
+        { binauralHeadphones: false, speakerLayout: '5.1.2' },
+        // 7.1 has speakers the 5.1 core lacks
+        { binauralHeadphones: false, speakerLayout: '7.1' },
+        { binauralHeadphones: true, speakerLayout: 'stereo' }
+    ] as const)('prefers a rendering package over native media for E-AC-3 Atmos on $speakerLayout, binaural $binauralHeadphones', audioRenderTarget => {
+        expect(getAudioEligibility(createAudioOptions('eac3', 6, EAC3_ATMOS_PROFILE), audioRenderTarget)).toMatchObject({
+            audioDecoder: { codec: 'eac3', source: { manifest: { options: OBJECT_AUDIO_OPTIONS } } },
+            audioOutputMode: 'decoded-pcm',
+            audioRendersObjects: true,
+            audioSourceChannelCount: 6,
+            eligible: true
+        });
+    });
+
+    it.each([
+        { binauralHeadphones: false, speakerLayout: '5.1' },
+        { binauralHeadphones: false, speakerLayout: 'stereo' },
+        // Binaural rendering only renders a stereo output
+        { binauralHeadphones: true, speakerLayout: '5.1' }
+    ] as const)('keeps E-AC-3 Atmos on native media when $speakerLayout, binaural $binauralHeadphones, needs no objects', audioRenderTarget => {
+        const eligibility = getAudioEligibility(createAudioOptions('eac3', 6, EAC3_ATMOS_PROFILE), audioRenderTarget);
+
+        expect(eligibility).toMatchObject({ audioOutputMode: 'native-media', eligible: true });
+        expect(eligibility).not.toHaveProperty('audioRendersObjects');
+    });
+
+    it('keeps native media for E-AC-3 without Atmos, for Atmos without a render target, and without a rendering package', () => {
+        const heightTarget: CustomAudioRenderTarget = { binauralHeadphones: false, speakerLayout: '7.1.4' };
+        const eligibilities = [
+            getAudioEligibility(createAudioOptions('eac3', 6, undefined), heightTarget),
+            getAudioEligibility(createAudioOptions('eac3', 6, EAC3_ATMOS_PROFILE), undefined),
+            getAudioEligibility(createAudioOptions('eac3', 6, EAC3_ATMOS_PROFILE), heightTarget, AUDIO_PACKAGES)
+        ];
+
+        for (const eligibility of eligibilities) {
+            expect(eligibility).toMatchObject({ audioOutputMode: 'native-media', eligible: true });
+            expect(eligibility).not.toHaveProperty('audioRendersObjects');
+        }
+    });
+
+    it('renders TrueHD Atmos objects with a package that declares them, and plays its 7.1 presentation with one that does not', () => {
+        const options = createAudioOptions('truehd', 8, TRUEHD_ATMOS_PROFILE);
+        const target: CustomAudioRenderTarget = { binauralHeadphones: false, speakerLayout: '7.1' };
+
+        expect(getAudioEligibility(options, target)).toMatchObject({
+            audioDecoder: { codec: 'truehd' },
+            audioRendersObjects: true,
+            audioSourceChannelCount: 8,
+            eligible: true
+        });
+        const stockEligibility = getAudioEligibility(options, target, AUDIO_PACKAGES);
+        expect(stockEligibility).toMatchObject({ audioDecoder: { codec: 'truehd' }, audioOutputMode: 'decoded-pcm', eligible: true });
+        expect(stockEligibility).not.toHaveProperty('audioRendersObjects');
+    });
+
+    it('tells a host before eligibility whether the selected track\'s Atmos objects must render', () => {
+        const heightTarget: CustomAudioRenderTarget = { binauralHeadphones: false, speakerLayout: '7.1.4' };
+        const coveredTarget: CustomAudioRenderTarget = { binauralHeadphones: false, speakerLayout: '5.1' };
+
+        expect(playbackAudioNeedsObjectRendering(createAudioOptions('eac3', 6, EAC3_ATMOS_PROFILE), heightTarget)).toBe(true);
+        expect(playbackAudioNeedsObjectRendering(createAudioOptions('eac3', 6, EAC3_ATMOS_PROFILE), { binauralHeadphones: true, speakerLayout: 'stereo' })).toBe(true);
+        expect(playbackAudioNeedsObjectRendering(createAudioOptions('eac3', 6, EAC3_ATMOS_PROFILE), coveredTarget)).toBe(false);
+        expect(playbackAudioNeedsObjectRendering(createAudioOptions('eac3', 6, undefined), heightTarget)).toBe(false);
+        expect(playbackAudioNeedsObjectRendering(createAudioOptions('truehd', 8, TRUEHD_ATMOS_PROFILE), heightTarget)).toBe(true);
+        expect(playbackAudioNeedsObjectRendering(createAudioOptions('eac3', 6, EAC3_ATMOS_PROFILE), undefined)).toBe(false);
+        expect(playbackAudioNeedsObjectRendering({}, heightTarget)).toBe(false);
+    });
+
+    it('still checks the declared layout of an Atmos stream', () => {
+        const eligibility = getAudioEligibility(
+            createAudioOptions('truehd', 7, TRUEHD_ATMOS_PROFILE),
+            { binauralHeadphones: false, speakerLayout: '7.1.4' }
+        );
+
+        expect(eligibility).toMatchObject({ eligible: false, reason: 'audio-layout-unsupported' });
     });
 });

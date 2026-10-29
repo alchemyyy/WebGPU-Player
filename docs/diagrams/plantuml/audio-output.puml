@@ -6,7 +6,7 @@ start
 DefaultAudioStreamIndex, else the first audio stream; <<$HL_BLUE>>
 :Normalization gain G = 10^(dB / 20) from TrackGain or AlbumGain,
 each falling back to the other; unity when Off or missing; <<$HL_BLUE>>
-if (AC-3 or E-AC-3, 2 or 6 channels, exactly 48 kHz,\nand the MSE probe passed?) then (native media)
+if (AC-3 or E-AC-3, 2 or 6 channels, exactly 48 kHz, the MSE probe passed,\nand no Atmos object rendering the speaker layout or binaural setting needs?) then (native media)
   :Worker remuxes the track to fMP4
   (2 MiB or 2 s segments, 2 credits, at most 6 s ahead); <<$HL_AMBER>>
   :CustomDecodeNativeAudioBridge appends to a hidden audio element through MSE; <<$HL_AMBER>>
@@ -22,8 +22,8 @@ else (decoded PCM)
   :Reconcile timestamps within 2 s: fill gaps with silence, trim overlaps,
   a larger deviation fails as decode-failed; <<$HL_NAVY>>
   if (Decoded layout differs from the output layout?) then (yes)
-    :Stereo output: downmix with the selected algorithm,
-    5.1 or 7.1 output: map by channel name; <<$HL_AMBER>>
+    :Stereo output: fold heights to the floor, then downmix with the selected algorithm,
+    5.1, 7.1, or height output: map by channel name, folding missing speakers; <<$HL_AMBER>>
   endif
   :Resample to 48 kHz; <<$HL_AMBER>>
   :Lookahead limiter (100 ms, -1 dBFS); <<$HL_AMBER>>

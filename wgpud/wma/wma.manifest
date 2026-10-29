@@ -1,0 +1,18 @@
+//! id: wma
+//! name: WMA
+//! decoder: audio
+//! accepts: codec in [wmav1, wmav2, wmapro, wmalossless, wmavoice]
+//! packet: 2 MiB
+//! attribute: 1, libraryVersion
+//! error: 1, input
+//! error: 2, send
+//! error: 3, receive
+//! error: 4, sampleFormat
+//! error: 5, option
+//! error: 6, output
+//! error: 7, waveFormat
+//! error: 8, formatTag
+//! error: 9, open
+//! error: 10, unconfigured
+
+The manifest of the WMA decoder package; the keys and codes are the ones ffmpeg_wma_bridge.c declares.

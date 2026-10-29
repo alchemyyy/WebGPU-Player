@@ -1,6 +1,7 @@
 import { PacketReader, type InputVideoTrack, type VideoCodec } from 'mediabunny';
 
 import { BITMAP_INFO_HEADER_BYTE_LENGTH, createBitmapInfoHeaderCodecPrivate, formatFourCC } from '../BitmapInfoHeader';
+import { readVFWStreamFormat } from '../VFWStreamFormat';
 import { readMatroskaMPEGVideoDecoderDescription } from '../mpeg/MatroskaMPEGVideoConfiguration';
 import { MATROSKA_VFW_CODEC_ID, readMatroskaVFWCodecPrivate } from '../vc1/MatroskaVFWVideoConfiguration';
 import { createMPEG4PresentationOrderTrack, readMPEG4VideoObjectLayerSyntax } from './MPEG4PresentationOrder';
@@ -13,9 +14,10 @@ export type MPEG4TrackConfiguration =
     | Readonly<{ description: Uint8Array, status: 'read', videoTrack: InputVideoTrack }>
     | Readonly<{ failure: string, status: 'failed' }>;
 
-/** Where a track is read from, as the worker opened it: an AVI track's codec ID is its strf FourCC. */
+/** Where a track is read from, as the worker opened it: an AVI or ASF track's codec ID is its FourCC. */
 export type MPEG4TrackSource = Readonly<{
-    avi: boolean
+    /** Whether the track is an AVI or ASF stream, whose codec ID is its FourCC */
+    fourCCCodecID: boolean
     codedHeight: number
     codedWidth: number
     /** The codec Mediabunny names for the track, mpeg4 for the MPEG-4 Part 2 tracks it maps, or null */
@@ -40,7 +42,7 @@ const H263_DEFAULT_FOURCC = 's263';
 const MSMPEG4V3_DEFAULT_FOURCC = 'MP43';
 const EMPTY_EXTRADATA = new Uint8Array(0);
 
-/** The codec IDs of the tracks besides AVI's each codec's route reads: Matroska's own and VfW tracks, and ISO base media sample entries. */
+/** The codec IDs of the tracks besides AVI's and ASF's each codec's route reads: Matroska's own and VfW tracks, and ISO base media sample entries. */
 export const MPEG4_TRACK_INTERNAL_CODEC_IDS: Readonly<Record<MPEG4TrackCodec, readonly string[]>> = Object.freeze({
     h263: Object.freeze([ MATROSKA_VFW_CODEC_ID, ...ISO_BASE_MEDIA_H263_SAMPLE_ENTRIES ]),
     mpeg4: Object.freeze([ ...MATROSKA_MPEG4_PART2_CODEC_IDS, MATROSKA_VFW_CODEC_ID, ISO_BASE_MEDIA_MPEG4_PART2_SAMPLE_ENTRY ]),
@@ -82,13 +84,22 @@ async function readMediabunnyExtradata(track: InputVideoTrack): Promise<Uint8Arr
         new Uint8Array(description).slice();
 }
 
-/** Reads an AVI track: its FourCC must be one of the codec's, and only a track Mediabunny names has its strf extradata as a description. */
-async function readAVITrackStream(codec: MPEG4TrackCodec, track: InputVideoTrack, source: MPEG4TrackSource): Promise<MPEG4TrackStream> {
+/**
+ * Reads an AVI or ASF stream: its FourCC must be one of the codec's. A stream Mediabunny names has its BITMAPINFOHEADER's extradata as a description,
+ * which unpacks a packed bitstream's, and a codec-less one has it in its stream format.
+ */
+async function readFourCCTrackStream(codec: MPEG4TrackCodec, track: InputVideoTrack, source: MPEG4TrackSource): Promise<MPEG4TrackStream> {
     if (!isCodecFourCC(codec, source.internalCodecID)) {
         return fail(`fourcc: ${formatFourCC(source.internalCodecID)}`);
     }
-    const extradata = source.containerCodec === null ? EMPTY_EXTRADATA : await readMediabunnyExtradata(track);
-    return { decodeOrder: true, extradata, fourCC: source.internalCodecID, status: 'read' };
+    if (source.containerCodec !== null) {
+        return { decodeOrder: true, extradata: await readMediabunnyExtradata(track), fourCC: source.internalCodecID, status: 'read' };
+    }
+    const streamFormat = readVFWStreamFormat(track);
+    if (streamFormat.status === 'failed') {
+        return streamFormat;
+    }
+    return { decodeOrder: true, extradata: streamFormat.extradata, fourCC: source.internalCodecID, status: 'read' };
 }
 
 /** Reads a Matroska or ISO base media track by its codec ID; a VfW track's FourCC must be one of the codec's, and the others get FFmpeg's default. */
@@ -135,7 +146,7 @@ async function createPresentationTrack(track: InputVideoTrack, extradata: Uint8A
  * Returns the codec private data an MPEG-4 Part 2, H.263, or MS-MPEG4 track gives its GPU decoder, and the track to read its packets from.
  * The codec private data is a 40-byte BITMAPINFOHEADER of the container's coded size and the track's FourCC, by which the decoder picks its codec and
  * FFmpeg's workarounds, then the track's extradata.
- * AVI and Matroska VfW tracks stamp their packets in decode order, so MPEG-4 Part 2 from them comes through a track that restamps B-VOP streams in
+ * AVI, ASF, and Matroska VfW tracks stamp their packets in decode order, so MPEG-4 Part 2 from them comes through a track that restamps B-VOP streams in
  * presentation order, as FFmpeg's decoder outputs them; H.263 and MS-MPEG4 code no B pictures, and the other tracks stamp presentation times.
  */
 export async function readMPEG4TrackConfiguration(
@@ -143,7 +154,9 @@ export async function readMPEG4TrackConfiguration(
     track: InputVideoTrack,
     source: MPEG4TrackSource
 ): Promise<MPEG4TrackConfiguration> {
-    const stream = source.avi ? await readAVITrackStream(codec, track, source) : await readContainerTrackStream(codec, track, source);
+    const stream = source.fourCCCodecID ?
+        await readFourCCTrackStream(codec, track, source) :
+        await readContainerTrackStream(codec, track, source);
     if (stream.status === 'failed') {
         return stream;
     }

@@ -200,7 +200,7 @@ class BrowserCustomAudioOutput implements CustomAudioOutput {
             // The pooled node serves one lease at a time, so the old layout must retire first
             await this.workletLease.release();
         }
-        configureCustomAudioDestination(this.audioContext, configuration.channelCount as 2 | 6 | 8);
+        configureCustomAudioDestination(this.audioContext, configuration.channelCount);
         const workletLease = await acquireWorkletOutput(
             this.audioContext,
             configuration.channelCount,
@@ -578,7 +578,7 @@ async function createOutput(
         }
         configureCustomAudioDestination(
             audioContext,
-            configuration.channelCount as 2 | 6 | 8
+            configuration.channelCount
         );
         await waitForBrowserAudioOperation(
             audioContextReference.resumePromise,

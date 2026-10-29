@@ -53,5 +53,14 @@ export function getLibraryAssets() {
             join(av1RawFormatDirectory, fileName)
         ]);
     }
+
+    // The raw H.264 qualification streams of the formats outside 8-bit 4:2:0
+    const h264RawFormatDirectory = join(CODEC_VECTOR_ASSETS_DIRECTORY, 'h264-raw-format');
+    for (const fileName of readdirSync(h264RawFormatDirectory).filter(name => name.endsWith('.h264'))) {
+        assets.push([
+            `webgpu-player/h264-raw/${fileName.replace(/\.h264$/u, '.bin')}`,
+            join(h264RawFormatDirectory, fileName)
+        ]);
+    }
     return assets;
 }

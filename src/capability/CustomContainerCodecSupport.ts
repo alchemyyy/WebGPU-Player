@@ -37,6 +37,14 @@ const CUSTOM_ISO_BASE_MEDIA_PCM_AUDIO_CODECS: readonly CustomAudioCodec[] = Obje
     'pcm_f64le',
     'pcm_f64be'
 ]);
+// The worker reads WMA from the WAVEFORMATEX of a Matroska A_MS/ACM track or an AVI or ASF stream, which Mediabunny leaves without a codec, by its format tag
+const CUSTOM_WAVE_FORMAT_AUDIO_CODECS: readonly CustomAudioCodec[] = Object.freeze([
+    'wmav1',
+    'wmav2',
+    'wmapro',
+    'wmalossless',
+    'wmavoice'
+]);
 const CUSTOM_MATROSKA_AUDIO_CODECS: readonly CustomAudioCodec[] = Object.freeze([
     ...CUSTOM_COMPRESSED_AUDIO_CODECS,
     'dts',
@@ -50,7 +58,8 @@ const CUSTOM_MATROSKA_AUDIO_CODECS: readonly CustomAudioCodec[] = Object.freeze(
     'pcm_s32le',
     'pcm_s32be',
     'pcm_f32le',
-    'pcm_f64le'
+    'pcm_f64le',
+    ...CUSTOM_WAVE_FORMAT_AUDIO_CODECS
 ]);
 const CUSTOM_NATIVE_VIDEO_CODECS: readonly CustomVideoCodec[] = Object.freeze(
     CUSTOM_VIDEO_CODECS.filter((codec: CustomVideoCodec): boolean => !isCustomPackageVideoCodec(codec))
@@ -106,8 +115,22 @@ const CUSTOM_AVI_AUDIO_CODECS: readonly CustomAudioCodec[] = Object.freeze([
     'pcm_f32le',
     'pcm_f64le',
     'pcm_mulaw',
-    'pcm_alaw'
+    'pcm_alaw',
+    ...CUSTOM_WAVE_FORMAT_AUDIO_CODECS
 ]);
+// The fork's ASF demuxer stamps media objects in decode order, as FFmpeg reads them, and the worker restamps VC-1 and WMV3 pictures and MPEG-4 Part 2
+// B-VOPs; H.264 and HEVC, which the fork would hand on in decode order, are left out
+const CUSTOM_ASF_VIDEO_CODECS: readonly CustomVideoCodec[] = Object.freeze([
+    'vc1',
+    'wmv3',
+    'mpeg4',
+    'h263',
+    'msmpeg4v1',
+    'msmpeg4v2',
+    'msmpeg4v3'
+]);
+// An ASF stream carries the WAVEFORMATEX an AVI stream does, which the fork maps alike
+const CUSTOM_ASF_AUDIO_CODECS: readonly CustomAudioCodec[] = CUSTOM_AVI_AUDIO_CODECS;
 
 /**
  * Defines container compatibility independently of the selected decoder backends.
@@ -152,6 +175,14 @@ export const CUSTOM_CONTAINER_CODEC_RULES: readonly CustomContainerCodecRule[] =
         containerAliases: Object.freeze([]),
         profileContainers: Object.freeze([ 'avi' ]),
         videoCodecs: CUSTOM_AVI_VIDEO_CODECS
+    }),
+    Object.freeze({
+        audioCodecs: CUSTOM_ASF_AUDIO_CODECS,
+        // The file extensions of ASF files, by which a file library, such as the sandbox's, finds them
+        containerAliases: Object.freeze([ 'wmv', 'wma' ]),
+        // Jellyfin names every ASF file, .asf, .wmv, or .wma, by ffprobe's format name
+        profileContainers: Object.freeze([ 'asf' ]),
+        videoCodecs: CUSTOM_ASF_VIDEO_CODECS
     }),
     Object.freeze({
         audioCodecs: Object.freeze([ 'opus', 'vorbis' ] as const),

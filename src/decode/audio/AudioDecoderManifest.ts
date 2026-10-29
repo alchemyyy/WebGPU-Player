@@ -21,6 +21,26 @@ export type AudioDecoderManifest = Readonly<{
     packetByteLength: number
 }>;
 
+/** The option an object audio package declares to take the WAVE channel mask of the playback's output layout, which it renders object audio into */
+export const AUDIO_DECODER_RENDER_CHANNEL_MASK_OPTION = 'renderChannelMask';
+/** The option an object audio package declares to render binaural stereo for headphones: 1 on, 0 off */
+export const AUDIO_DECODER_RENDER_BINAURAL_OPTION = 'renderBinaural';
+/** The attribute an object audio package reports per block: how many dynamic objects it rendered, 0 for a stock decode */
+export const AUDIO_DECODER_OBJECT_COUNT_ATTRIBUTE = 'objectCount';
+
+/** The most dynamic objects a block may report rendering; a larger `objectCount` is corrupt */
+export const AUDIO_DECODER_MAXIMUM_OBJECT_COUNT = 1_024;
+
+/** Validates a block's `objectCount`: a whole number of objects within AUDIO_DECODER_MAXIMUM_OBJECT_COUNT. */
+export function isAudioDecoderObjectCount(value: unknown): value is number {
+    return Number.isSafeInteger(value) && Number(value) >= 0 && Number(value) <= AUDIO_DECODER_MAXIMUM_OBJECT_COUNT;
+}
+
+/** Reports whether a manifest declares an option, such as an object audio package's `renderChannelMask`. */
+export function declaresAudioDecoderOption(manifest: AudioDecoderManifest, name: string): boolean {
+    return [ ...manifest.options.values() ].includes(name);
+}
+
 /** The check an audio decoder header failed. */
 export type AudioDecoderManifestErrorCode =
     | 'accepts-syntax'

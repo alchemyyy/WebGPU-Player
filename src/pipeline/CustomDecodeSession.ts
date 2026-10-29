@@ -17,7 +17,11 @@ import GPUVideoDecodeFeed, {
 } from '../decode/video/gpu/GPUVideoDecodeFeed';
 import type CustomDecodeAudioBridge from '../audio/output/CustomDecodeAudioBridge';
 import type CustomDecodeNativeAudioBridge from '../audio/native/CustomDecodeNativeAudioBridge';
-import type { CustomAudioOutputChannelCount } from '../audio/processing/CustomAudioChannelLayout';
+import {
+    getCustomAudioOutputChannelCount,
+    isCustomAudioOutputLayout,
+    type CustomAudioOutputLayout
+} from '../audio/processing/CustomAudioChannelLayout';
 import {
     assertValidAudioDownmixSettings,
     type AudioDownmixSettings
@@ -59,6 +63,7 @@ import {
     type DecodeWorkerAudioEndedResponse,
     type DecodeWorkerAudioOutputAttachment,
     type DecodeWorkerAudioProgressResponse,
+    type DecodeWorkerAudioObjectCountResponse,
     type DecodeWorkerAudioSourceFormatResponse,
     type DecodeWorkerFrameResponse,
     type DecodeWorkerGPUVideoParser,
@@ -102,7 +107,9 @@ export type CustomDecodeSessionStartOptions = {
     audioDownmixSettings?: AudioDownmixSettings
     audioOutputMode?: CustomDecodeAudioOutputMode
     audioTrackIndex?: number | null
-    decodedAudioOutputChannelCount?: CustomAudioOutputChannelCount
+    /** Binaural headphone rendering by an audio decoder package that declares `renderBinaural`, when the output is stereo */
+    binauralHeadphones?: boolean
+    decodedAudioOutputLayout?: CustomAudioOutputLayout
     durationMicroseconds?: Microseconds | null
     dolbyVisionProfile: CustomDecodeDolbyVisionProfile
     /** The host's audio decoder package that decodes the decoded PCM route's track, in place of the engine's decoders */
@@ -126,8 +133,10 @@ export type CustomDecodeAudioResyncOptions = {
     audioDownmixAlgorithm?: CustomAudioDownmixAlgorithm
     audioDownmixSettings?: AudioDownmixSettings
     /** Builds the output for the new layout after the previous bridge has stopped */
+    /** The binaural setting the new attempt opens with, or undefined to keep the current one */
+    binauralHeadphones?: boolean
     createAudioBridge: (audioConfiguration: DecodeWorkerAudioConfiguration) => Promise<CustomDecodeAudioBridge>
-    decodedAudioOutputChannelCount: CustomAudioOutputChannelCount
+    decodedAudioOutputLayout: CustomAudioOutputLayout
     targetTimeMicroseconds: Microseconds
 };
 
@@ -192,6 +201,10 @@ export type CustomDecodeSessionTelemetry = {
     audioSourceChannelCount: number | null
     /** The decoded rate once audio binds, else the declared one */
     audioSourceSampleRate: number | null
+    /** How many dynamic objects the audio decoder package renders, from its `objectCount` attribute; null for a package without one and before its first block */
+    decodedAudioObjectCount: number | null
+    /** The output layout decoded PCM plays to, or null without decoded PCM audio */
+    decodedAudioOutputLayout: CustomAudioOutputLayout | null
     /** The channel count the audio decoder produces, null until the first decoded output */
     decodedAudioSourceChannelCount: number | null
     droppedFrameCount: number
@@ -285,9 +298,11 @@ type GenerationRecord = {
     /** The current audio epoch reached the end of its track */
     audioTrackEnded: boolean
     configurationReceived: boolean
+    /** The newest binaural headphone setting, live switches included, which a resync posts once its bridge is built */
+    binauralHeadphones: boolean | undefined
     /** The worker posted 'ended': both streams finished */
     decodeEnded: boolean
-    decodedAudioOutputChannelCount: CustomAudioOutputChannelCount | null
+    decodedAudioOutputLayout: CustomAudioOutputLayout | null
     decodedVideoGeometry: RawVideoFrameGeometry | null
     /** The frame-pool route's video epoch left the GPU decoder after its end, so the run's end can complete */
     framePoolVideoDrained: boolean
@@ -337,6 +352,8 @@ function createTelemetry(): CustomDecodeSessionTelemetry {
         audioSampleRate: null,
         audioSourceChannelCount: null,
         audioSourceSampleRate: null,
+        decodedAudioObjectCount: null,
+        decodedAudioOutputLayout: null,
         decodedAudioSourceChannelCount: null,
         droppedFrameCount: 0,
         failureKind: null,
@@ -555,19 +572,20 @@ function closePresentationFrame(presentationFrame: DecodedPresentationFrame): vo
     }
 }
 
-function validateDecodedAudioOutputChannelCount(
+function validateDecodedAudioOutputLayout(
     options: CustomDecodeSessionStartOptions,
     audioOutputMode: CustomDecodeAudioOutputMode
 ): void {
-    const outputChannelCount = options.decodedAudioOutputChannelCount;
-    if (outputChannelCount !== undefined
-        && outputChannelCount !== 2
-        && outputChannelCount !== 6
-        && outputChannelCount !== 8) {
-        throw new RangeError('Decoded audio output channel count must be 2, 6, or 8');
+    const outputLayout = options.decodedAudioOutputLayout;
+    if (outputLayout !== undefined && !isCustomAudioOutputLayout(outputLayout)) {
+        throw new RangeError('Decoded audio output layout must be stereo, 5.1, 7.1, 5.1.2, 5.1.4, 7.1.2, or 7.1.4');
     }
-    if (outputChannelCount !== undefined && (options.audioTrackIndex == null || audioOutputMode !== 'decoded-pcm')) {
+    if (outputLayout !== undefined && (options.audioTrackIndex == null || audioOutputMode !== 'decoded-pcm')) {
         throw new TypeError('Decoded audio output channels require decoded PCM audio');
+    }
+    if (options.binauralHeadphones !== undefined
+        && (typeof options.binauralHeadphones !== 'boolean' || options.audioTrackIndex == null || audioOutputMode !== 'decoded-pcm')) {
+        throw new TypeError('Binaural headphone rendering requires decoded PCM audio');
     }
     if (options.audioDownmixSettings !== undefined) {
         if (options.audioTrackIndex == null || audioOutputMode !== 'decoded-pcm') {
@@ -604,7 +622,9 @@ function getReadyAudioConfigurationError(
     if (responseOutputMode !== generationRecord.audioOutputMode) {
         return 'Decoded audio output mode did not match the request';
     }
-    if (responseOutputMode === 'decoded-pcm' && audioConfiguration.channelCount !== generationRecord.decodedAudioOutputChannelCount) {
+    if (responseOutputMode === 'decoded-pcm'
+        && (generationRecord.decodedAudioOutputLayout === null
+            || audioConfiguration.channelCount !== getCustomAudioOutputChannelCount(generationRecord.decodedAudioOutputLayout))) {
         return 'Decoded audio channel count did not match the request';
     }
     return null;
@@ -632,7 +652,7 @@ function validateAudioStartOptions(
         throw new TypeError('Custom decode cannot select an audio output mode without audio');
     }
     validateAudioDownmixAlgorithm(options);
-    validateDecodedAudioOutputChannelCount(options, audioOutputMode);
+    validateDecodedAudioOutputLayout(options, audioOutputMode);
     if (options.audioTrackIndex == null) {
         return;
     }
@@ -852,7 +872,7 @@ export default class CustomDecodeSession {
             || !generationRecord.configurationReceived
             || (this.telemetry.state !== 'configured' && this.telemetry.state !== 'ready')
             || generationRecord.audioOutputMode !== 'decoded-pcm'
-            || generationRecord.decodedAudioOutputChannelCount !== 2) {
+            || generationRecord.decodedAudioOutputLayout !== 'stereo') {
             return false;
         }
 
@@ -868,6 +888,33 @@ export default class CustomDecodeSession {
                 audioDownmixSettings: { ...settings },
                 generation: generationRecord.generation,
                 type: 'update-audio-downmix-settings'
+            });
+            return true;
+        } catch {
+            return false;
+        }
+    }
+
+    /**
+     * Switches binaural headphone rendering of decoded PCM live; an audio decoder package that declares `renderBinaural` takes it between packets when the output is stereo.
+     * Returns false when no configured decoded PCM run took it.
+     */
+    public updateAudioBinaural(binauralHeadphones: boolean): boolean {
+        const generationRecord = this.activeGeneration;
+        if (!generationRecord
+            || !this.isGenerationCurrent(generationRecord)
+            || !generationRecord.configurationReceived
+            || (this.telemetry.state !== 'configured' && this.telemetry.state !== 'ready')
+            || generationRecord.audioOutputMode !== 'decoded-pcm') {
+            return false;
+        }
+        // A resync still building its bridge posts this setting, not the older one it was asked with
+        generationRecord.binauralHeadphones = binauralHeadphones;
+        try {
+            this.postRequest(generationRecord, {
+                binauralHeadphones,
+                generation: generationRecord.generation,
+                type: 'update-audio-binaural'
             });
             return true;
         } catch {
@@ -1018,10 +1065,14 @@ export default class CustomDecodeSession {
      */
     public async resyncAudio(options: CustomDecodeAudioResyncOptions): Promise<number | null> {
         requireMicroseconds(options.targetTimeMicroseconds, 'Audio resync target time');
-        const outputChannelCount = options.decodedAudioOutputChannelCount;
-        if (outputChannelCount !== 2 && outputChannelCount !== 6 && outputChannelCount !== 8) {
-            throw new RangeError('Decoded audio output channel count must be 2, 6, or 8');
+        const outputLayout = options.decodedAudioOutputLayout;
+        if (!isCustomAudioOutputLayout(outputLayout)) {
+            throw new RangeError('Decoded audio output layout must be stereo, 5.1, 7.1, 5.1.2, 5.1.4, 7.1.2, or 7.1.4');
         }
+        if (options.binauralHeadphones !== undefined && typeof options.binauralHeadphones !== 'boolean') {
+            throw new TypeError('Binaural headphone rendering must be a boolean');
+        }
+        const outputChannelCount = getCustomAudioOutputChannelCount(outputLayout);
         if (options.audioDownmixAlgorithm !== undefined && !isCustomAudioDownmixAlgorithm(options.audioDownmixAlgorithm)) {
             throw new TypeError('Custom decode audio downmix algorithm is invalid');
         }
@@ -1042,6 +1093,9 @@ export default class CustomDecodeSession {
 
         // A newer resync supersedes one still building its bridge
         const audioEpoch = generationRecord.audioEpoch + 1;
+        if (options.binauralHeadphones !== undefined) {
+            generationRecord.binauralHeadphones = options.binauralHeadphones;
+        }
         generationRecord.audioEpoch = audioEpoch;
         generationRecord.audioEpochSubmittedFrameCount = 0;
         generationRecord.audioResyncPending = true;
@@ -1049,6 +1103,8 @@ export default class CustomDecodeSession {
         this.telemetry.audioEnded = false;
         this.telemetry.audioEpoch = audioEpoch;
         this.telemetry.audioResyncPending = true;
+        // The new attempt's package reports its own objects
+        this.telemetry.decodedAudioObjectCount = null;
         // PCM queued for the old layout is discarded with its bridge
         this.activeAudioBridge?.stop(generationRecord.generation);
         this.activeAudioBridge = null;
@@ -1073,7 +1129,8 @@ export default class CustomDecodeSession {
         const decodeEnded = this.isDecodeEnded();
 
         generationRecord.audioConfiguration = resyncedAudioConfiguration;
-        generationRecord.decodedAudioOutputChannelCount = outputChannelCount;
+        generationRecord.decodedAudioOutputLayout = outputLayout;
+        this.telemetry.decodedAudioOutputLayout = outputLayout;
         this.activeAudioBridge = audioBridge;
         let audioOutput: DecodeWorkerAudioOutputAttachment;
         try {
@@ -1116,11 +1173,14 @@ export default class CustomDecodeSession {
         const resyncRequest: DecodeWorkerResyncAudioRequest = {
             audioEpoch,
             audioOutput,
-            decodedAudioOutputChannelCount: options.decodedAudioOutputChannelCount,
+            decodedAudioOutputLayout: options.decodedAudioOutputLayout,
             generation: generationRecord.generation,
             targetTimeMicroseconds: options.targetTimeMicroseconds,
             type: 'resync-audio'
         };
+        if (generationRecord.binauralHeadphones !== undefined) {
+            resyncRequest.binauralHeadphones = generationRecord.binauralHeadphones;
+        }
         if (options.audioDownmixAlgorithm !== undefined) {
             resyncRequest.audioDownmixAlgorithm = options.audioDownmixAlgorithm;
         }
@@ -1220,8 +1280,11 @@ export default class CustomDecodeSession {
         if (audioOutputMode === 'decoded-pcm' && options.audioDecoder !== undefined) {
             startRequest.audioPackageDecoder = options.audioDecoder;
         }
-        if (options.decodedAudioOutputChannelCount !== undefined) {
-            startRequest.decodedAudioOutputChannelCount = options.decodedAudioOutputChannelCount;
+        if (options.decodedAudioOutputLayout !== undefined) {
+            startRequest.decodedAudioOutputLayout = options.decodedAudioOutputLayout;
+        }
+        if (audioOutputMode === 'decoded-pcm' && options.binauralHeadphones !== undefined) {
+            startRequest.binauralHeadphones = options.binauralHeadphones;
         }
         return startRequest;
     }
@@ -1239,12 +1302,13 @@ export default class CustomDecodeSession {
             audioOutputMode: options.audioOutputMode ?? 'decoded-pcm',
             audioRequested: options.audioTrackIndex != null,
             audioTrackEnded: false,
+            binauralHeadphones: options.binauralHeadphones,
             configurationReceived: false,
             decodeEnded: false,
-            decodedAudioOutputChannelCount:
+            decodedAudioOutputLayout:
                 (options.audioOutputMode ?? 'decoded-pcm') === 'decoded-pcm'
                     && options.audioTrackIndex != null ?
-                    options.decodedAudioOutputChannelCount ?? 2 :
+                    options.decodedAudioOutputLayout ?? 'stereo' :
                     null,
             decodedVideoGeometry: null,
             framePoolVideoDrained: false,
@@ -1543,6 +1607,9 @@ export default class CustomDecodeSession {
                 break;
             case 'audio-source-format':
                 this.handleAudioSourceFormatResponse(generationRecord, messageValue);
+                break;
+            case 'audio-object-count':
+                this.handleAudioObjectCountResponse(generationRecord, messageValue);
                 break;
             case 'video-interrupted':
                 this.handleVideoInterruptedResponse(generationRecord, messageValue);
@@ -1945,6 +2012,7 @@ export default class CustomDecodeSession {
         this.telemetry.audioChannelCount = audioConfiguration?.channelCount ?? null;
         this.telemetry.audioCodec = audioConfiguration?.codec ?? null;
         this.telemetry.audioSampleRate = audioConfiguration?.sampleRate ?? null;
+        this.telemetry.decodedAudioOutputLayout = generationRecord.decodedAudioOutputLayout;
         // A decoded source format reported before readiness outranks the declared one
         if (this.telemetry.decodedAudioSourceChannelCount === null) {
             this.telemetry.audioSourceChannelCount = audioConfiguration?.sourceChannelCount ?? null;
@@ -2097,6 +2165,16 @@ export default class CustomDecodeSession {
         this.telemetry.decodedAudioSourceChannelCount = message.channelCount;
         this.telemetry.audioSourceChannelCount = message.channelCount;
         this.telemetry.audioSourceSampleRate = message.sampleRate;
+    }
+
+    /** Records how many objects the current audio epoch's package renders. */
+    private handleAudioObjectCountResponse(
+        generationRecord: GenerationRecord,
+        message: DecodeWorkerAudioObjectCountResponse
+    ): void {
+        if (message.audioEpoch === generationRecord.audioEpoch) {
+            this.telemetry.decodedAudioObjectCount = message.objectCount;
+        }
     }
 
     /** Marks the native media stream complete once, so its element plays to the end of its media. */

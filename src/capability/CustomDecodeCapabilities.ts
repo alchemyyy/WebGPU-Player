@@ -32,6 +32,14 @@ import {
     type AV1RawFormatVariant
 } from './AV1RawFormatCapabilities';
 import {
+    H264_RAW_FORMAT_PROBE_DEFINITIONS,
+    H264_RAW_FORMAT_VARIANTS,
+    getH264RawFormatNegotiationVariants,
+    type H264RawFormatCapability,
+    type H264RawFormatProbeDefinition,
+    type H264RawFormatVariant
+} from './H264RawFormatCapabilities';
+import {
     getPresentationInputColorMetadata,
     isKnownSDRPresentationInput
 } from '../presentation/PresentationInput';
@@ -46,6 +54,13 @@ import {
     NATIVE_SURROUND_AUDIO_CAPABILITY_VECTOR_SAMPLE_RATE,
     type NativeSurroundAudioCapabilityVector
 } from './vectors/NativeSurroundAudioCapabilityVectors';
+import {
+    createNativeSevenPointOneAudioCapabilityVector,
+    NATIVE_SEVEN_POINT_ONE_AUDIO_CAPABILITY_VECTOR_CHANNEL_COUNT,
+    NATIVE_SEVEN_POINT_ONE_AUDIO_CAPABILITY_VECTOR_CODECS,
+    type NativeSevenPointOneAudioCapabilityVector
+} from './vectors/NativeSevenPointOneAudioCapabilityVectors';
+import { matchesNativeAudioChannelTones, type NativeAudioChannelTone } from './NativeAudioChannelTones';
 import {
     createNativeUltraHDVideoCapabilityVector,
     NATIVE_ULTRA_HD_VIDEO_CAPABILITY_CODECS,
@@ -148,7 +163,8 @@ export type CustomDecodeCapabilityReason =
 /** The audio probes, which every item runs because a playing item can switch to any of its audio tracks. */
 export const CUSTOM_DECODE_AUDIO_PROBES = [
     'native-audio',
-    'native-surround-audio'
+    'native-surround-audio',
+    'native-seven-point-one-audio'
 ] as const;
 
 // The codecs whose ordinary SDR route has a decoded-output vector; H.264 qualifies per profile instead
@@ -161,6 +177,7 @@ export type CustomDecodeVideoProbe =
     | 'native-hdr-av1'
     | 'native-hdr-hevc'
     | `av1-raw-format:${AV1RawFormatVariant}`
+    | `h264-raw-format:${H264RawFormatVariant}`
     | `hevc-range-extension:${HEVCRangeExtensionVariant}`
     | `native-sdr:${NativeSDRVideoProbeCodec}`
     | `native-ultra-hd:${CustomNativeUltraHDVideoCodec}`
@@ -208,11 +225,16 @@ export type CustomDecodeCapabilities = {
     /** The exact raw formats of AV1 outside Main 10, each a probe of its own; AV1 Main 10 qualifies through `rawHDRVideo.av1` */
     av1RawFormats?: Readonly<Record<AV1RawFormatVariant, AV1RawFormatCapability>>
     h264Profiles?: H264ProfileCapabilities
+    /** The exact raw formats of H.264 beyond 8-bit 4:2:0, each a probe of its own */
+    h264RawFormats?: Readonly<Record<H264RawFormatVariant, H264RawFormatCapability>>
     hevcRangeExtensions?: Readonly<Record<HEVCRangeExtensionVariant, HEVCRangeExtensionCapability>>
     nativeDolbyVisionHEVC?: CustomNativeDolbyVisionHEVCCapability
     nativeHDRAV1?: CustomNativeHDRAV1Capability
     nativeHDRHEVC?: CustomNativeHDRHEVCCapability
+    /** The 5.1 verdicts of the WebCodecs codecs, from 5.1 silence vectors */
     nativeSurroundAudio?: Readonly<Record<CustomNativeSurroundAudioCodec, CustomNativeSurroundAudioCodecCapability>>
+    /** The 7.1 verdicts of the same codecs, kept apart from their 5.1 verdicts: 8-channel tone vectors that also prove WAVE 7.1 plane order */
+    nativeSevenPointOneAudio?: Readonly<Record<CustomNativeSurroundAudioCodec, CustomNativeSurroundAudioCodecCapability>>
     nativeUltraHDVideo?: Readonly<Record<CustomNativeUltraHDVideoCodec, CustomNativeUltraHDVideoCodecCapability>>
     /**
      * Whether this result ran each probe.
@@ -224,8 +246,10 @@ export type CustomDecodeCapabilities = {
     video: Readonly<Record<CustomVideoCodec, CustomDecodeCodecCapability<CustomVideoCodec>>>
 };
 
+/** A WebCodecs codec's surround verdict for one input layout: 6 channels (5.1) or 8 (7.1). */
 export type CustomNativeSurroundAudioCodecCapability = CustomDecodeCodecCapability<CustomNativeSurroundAudioCodec> & {
     inputChannelCount: typeof NATIVE_SURROUND_AUDIO_CAPABILITY_VECTOR_CHANNEL_COUNT
+        | typeof NATIVE_SEVEN_POINT_ONE_AUDIO_CAPABILITY_VECTOR_CHANNEL_COUNT
     sampleRate: typeof NATIVE_SURROUND_AUDIO_CAPABILITY_VECTOR_SAMPLE_RATE
 };
 
@@ -276,7 +300,7 @@ export type CustomRawHDRVideoCodecCapability = {
 };
 
 export type RawHDRVideoOutputProbeRequest = {
-    codec: CustomRawHDRVideoCodec
+    codec: CustomRawHDRVideoCodec | 'h264'
     configuration: VideoDecoderConfig
     encodedChunks: readonly Readonly<{
         data: Uint8Array
@@ -285,6 +309,7 @@ export type RawHDRVideoOutputProbeRequest = {
     }>[]
     expectedCodedHeight: number
     expectedCodedWidth: number
+    // In output order, which is presentation order
     expectedDecodedFrames: readonly Readonly<{
         fingerprint: number
         timestamp: number
@@ -328,7 +353,7 @@ export type NativeVideoOutputProbeRequest = {
 
 export type NativeVideoOutputProbe = (probeRequest: NativeVideoOutputProbeRequest) => Promise<boolean>;
 
-export type NativeAudioOutputProbeRequest = {
+type NativeAudioOutputProbeRequestBase = {
     codec: CustomWebCodecsAudioCodec
     configuration: AudioDecoderConfig
     encodedChunks: readonly Readonly<{
@@ -337,10 +362,22 @@ export type NativeAudioOutputProbeRequest = {
         timestamp: number
     }>[]
     expectedNumberOfChannels: number
-    expectedNumberOfFrames: number
     expectedSampleRate: number
+};
+
+/** A silence vector expects one exact silent AudioData. */
+export type NativeAudioSilenceOutputProbeRequest = NativeAudioOutputProbeRequestBase & {
+    channelTones?: undefined
+    expectedNumberOfFrames: number
     expectedTimestamp: number
 };
+
+/** A tone vector expects its source channels' tones, one per decoded plane in source order, across every AudioData it decodes to. */
+export type NativeAudioToneOutputProbeRequest = NativeAudioOutputProbeRequestBase & {
+    channelTones: readonly NativeAudioChannelTone[]
+};
+
+export type NativeAudioOutputProbeRequest = NativeAudioSilenceOutputProbeRequest | NativeAudioToneOutputProbeRequest;
 
 export type NativeAudioOutputProbe = (probeRequest: NativeAudioOutputProbeRequest) => Promise<boolean>;
 
@@ -355,6 +392,7 @@ export type WebCodecsCapabilityEnvironment = {
     audioDecoder?: Pick<typeof AudioDecoder, 'isConfigSupported'> | null
     av1RawFormatVectorLoader?: HEVCRangeExtensionVectorLoader | null
     h264ProfileProbe?: Pick<H264ProfileCapabilityProbe, 'probe'> | null
+    h264RawFormatVectorLoader?: HEVCRangeExtensionVectorLoader | null
     hevcRangeExtensionVectorLoader?: HEVCRangeExtensionVectorLoader | null
     nativeAudioOutputProbe?: NativeAudioOutputProbe | null
     nativeDolbyVisionVideoOutputProbe?: NativeDolbyVisionVideoOutputProbe | null
@@ -388,21 +426,30 @@ type NativeUltraHDVideoProbeDefinition = DecodedVideoProbeDefinition & {
     codec: CustomNativeUltraHDVideoCodec
 };
 
+type AudioProbeOutputVector = {
+    channelTones?: undefined
+    encodedChunks: NativeAudioCapabilityVector['encodedChunks']
+        | NativeSurroundAudioCapabilityVector['encodedChunks']
+    expectedNumberOfChannels: number
+    expectedNumberOfFrames: number
+    expectedSampleRate: number
+    expectedTimestamp: number
+} | {
+    channelTones: readonly NativeAudioChannelTone[]
+    encodedChunks: NativeSevenPointOneAudioCapabilityVector['encodedChunks']
+    expectedNumberOfChannels: number
+    expectedSampleRate: number
+};
+
 type AudioProbeDefinition = {
     codec: CustomWebCodecsAudioCodec
     config: AudioDecoderConfig
-    outputVector: {
-        encodedChunks: NativeAudioCapabilityVector['encodedChunks']
-            | NativeSurroundAudioCapabilityVector['encodedChunks']
-        expectedNumberOfChannels: number
-        expectedNumberOfFrames: number
-        expectedSampleRate: number
-        expectedTimestamp: number
-    }
+    outputVector: AudioProbeOutputVector
 };
 
 type NativeSurroundAudioProbeDefinition = AudioProbeDefinition & {
     codec: CustomNativeSurroundAudioCodec
+    inputChannelCount: CustomNativeSurroundAudioCodecCapability['inputChannelCount']
 };
 
 // The codec string a capability reports for a codec no probe settles
@@ -771,13 +818,42 @@ readonly NativeSurroundAudioProbeDefinition[] {
         const vector = createNativeSurroundAudioCapabilityVector(codec);
         definitions.push({
             ...createAudioProbeDefinition(vector),
-            codec
+            codec,
+            inputChannelCount: vector.numberOfChannels
         });
     }
     return definitions;
 }
 
 const NATIVE_SURROUND_AUDIO_PROBE_DEFINITIONS: readonly NativeSurroundAudioProbeDefinition[] = createNativeSurroundAudioProbeDefinitions();
+
+function createNativeSevenPointOneAudioProbeDefinitions():
+readonly NativeSurroundAudioProbeDefinition[] {
+    const definitions: NativeSurroundAudioProbeDefinition[] = [];
+    for (const codec of NATIVE_SEVEN_POINT_ONE_AUDIO_CAPABILITY_VECTOR_CODECS) {
+        const vector = createNativeSevenPointOneAudioCapabilityVector(codec);
+        definitions.push({
+            codec,
+            config: {
+                codec: vector.codecString,
+                description: vector.description.slice(),
+                numberOfChannels: vector.numberOfChannels,
+                sampleRate: vector.sampleRate
+            },
+            inputChannelCount: vector.numberOfChannels,
+            outputVector: {
+                channelTones: vector.channelTones,
+                encodedChunks: vector.encodedChunks,
+                expectedNumberOfChannels: vector.numberOfChannels,
+                expectedSampleRate: vector.sampleRate
+            }
+        });
+    }
+    return definitions;
+}
+
+const NATIVE_SEVEN_POINT_ONE_AUDIO_PROBE_DEFINITIONS: readonly NativeSurroundAudioProbeDefinition[] =
+    createNativeSevenPointOneAudioProbeDefinitions();
 
 const MEDIABUNNY_PCM_AUDIO_CODEC_DEFINITIONS: readonly AudioCodecStringDefinition<CustomMediabunnyPCMAudioCodec>[] = [
     { codec: 'pcm_s16le', codecString: 'pcm-s16' },
@@ -801,7 +877,13 @@ const PACKAGE_AUDIO_CODEC_DEFINITIONS: readonly AudioCodecStringDefinition<Custo
     { codec: 'eac3', codecString: 'ec-3' },
     { codec: 'dts', codecString: 'dts' },
     { codec: 'mlp', codecString: 'mlp' },
-    { codec: 'truehd', codecString: 'truehd' }
+    { codec: 'truehd', codecString: 'truehd' },
+    // No codec string names WMA, so its capability carries FFmpeg's decoder names
+    { codec: 'wmav1', codecString: 'wmav1' },
+    { codec: 'wmav2', codecString: 'wmav2' },
+    { codec: 'wmapro', codecString: 'wmapro' },
+    { codec: 'wmalossless', codecString: 'wmalossless' },
+    { codec: 'wmavoice', codecString: 'wmavoice' }
 ];
 
 const VP9_PROFILE_2_VECTOR = createRawHDRCapabilityVector('vp9');
@@ -879,6 +961,10 @@ function getAV1RawFormatVideoProbe(variant: AV1RawFormatVariant): CustomDecodeVi
     return `av1-raw-format:${variant}`;
 }
 
+function getH264RawFormatVideoProbe(variant: H264RawFormatVariant): CustomDecodeVideoProbe {
+    return `h264-raw-format:${variant}`;
+}
+
 const NATIVE_SDR_VIDEO_PROBES: readonly CustomDecodeVideoProbe[] = NATIVE_SDR_VIDEO_PROBE_DEFINITIONS.map(
     (definition: NativeSDRVideoProbeDefinition): CustomDecodeVideoProbe => getNativeSDRVideoProbe(definition.codec)
 );
@@ -897,6 +983,7 @@ export const CUSTOM_DECODE_VIDEO_PROBES: readonly CustomDecodeVideoProbe[] = [
     ...RAW_VIDEO_PROBES,
     ...HEVC_RANGE_EXTENSION_VARIANTS.map(getHEVCRangeExtensionVideoProbe),
     ...AV1_RAW_FORMAT_VARIANTS.map(getAV1RawFormatVideoProbe),
+    ...H264_RAW_FORMAT_VARIANTS.map(getH264RawFormatVideoProbe),
     'native-dolby-vision-hevc',
     'native-hdr-av1',
     'native-hdr-hevc'
@@ -1268,7 +1355,7 @@ export function createRawHDRVideoOutputProbe(): RawHDRVideoOutputProbe | null {
 
 function nativeAudioDataMatchesRequest(
     audioData: AudioData,
-    probeRequest: NativeAudioOutputProbeRequest
+    probeRequest: NativeAudioSilenceOutputProbeRequest
 ): boolean {
     const expectedDuration: number = Math.round(
         (probeRequest.expectedNumberOfFrames * 1_000_000)
@@ -1304,7 +1391,53 @@ function nativeAudioDataMatchesRequest(
     return true;
 }
 
-/** Creates the exact decoded AudioData probe for native WebCodecs audio. */
+// Copies each plane of a tone vector's AudioData, or returns null for output of another layout or one that does not copy
+function copyNativeAudioTonePlanes(
+    audioData: AudioData,
+    probeRequest: NativeAudioToneOutputProbeRequest
+): Float32Array[] | null {
+    if (audioData.numberOfChannels !== probeRequest.expectedNumberOfChannels
+        || audioData.sampleRate !== probeRequest.expectedSampleRate) {
+        return null;
+    }
+    const planes: Float32Array[] = [];
+    try {
+        for (let channelIndex = 0; channelIndex < audioData.numberOfChannels; channelIndex += 1) {
+            const samples: Float32Array = new Float32Array(audioData.numberOfFrames);
+            audioData.copyTo(samples, {
+                format: 'f32-planar',
+                planeIndex: channelIndex
+            });
+            planes.push(samples);
+        }
+    } catch {
+        return null;
+    }
+    return planes;
+}
+
+function concatenateNativeAudioPlanes(outputs: readonly (readonly Float32Array[])[], channelCount: number): Float32Array[] {
+    const planes: Float32Array[] = [];
+    for (let channelIndex = 0; channelIndex < channelCount; channelIndex += 1) {
+        let frameCount = 0;
+        for (const output of outputs) {
+            frameCount += output[channelIndex].length;
+        }
+        const plane = new Float32Array(frameCount);
+        let offset = 0;
+        for (const output of outputs) {
+            plane.set(output[channelIndex], offset);
+            offset += output[channelIndex].length;
+        }
+        planes.push(plane);
+    }
+    return planes;
+}
+
+/**
+ * Creates the decoded AudioData probe for native WebCodecs audio.
+ * A silence vector must decode to one exact silent AudioData; a tone vector to AudioData of its layout whose planes carry its tones in source order.
+ */
 export function createNativeAudioOutputProbe(): NativeAudioOutputProbe | null {
     if (typeof globalThis.AudioDecoder !== 'function'
         || typeof globalThis.EncodedAudioChunk !== 'function') {
@@ -1316,6 +1449,7 @@ export function createNativeAudioOutputProbe(): NativeAudioOutputProbe | null {
         let decoderError: DOMException | null = null;
         let outputCount = 0;
         let outputMatches = true;
+        const tonePlanes: Float32Array[][] = [];
         // eslint-disable-next-line compat/compat -- Custom decode is capability-gated
         const decoder: AudioDecoder = new AudioDecoder({
             error: (error: DOMException): void => {
@@ -1328,8 +1462,16 @@ export function createNativeAudioOutputProbe(): NativeAudioOutputProbe | null {
                         return;
                     }
                     outputCount += 1;
-                    outputMatches = outputMatches
-                        && nativeAudioDataMatchesRequest(audioData, probeRequest);
+                    if (probeRequest.channelTones) {
+                        const planes = outputMatches ? copyNativeAudioTonePlanes(audioData, probeRequest) : null;
+                        outputMatches = planes !== null;
+                        if (planes) {
+                            tonePlanes.push(planes);
+                        }
+                    } else {
+                        outputMatches = outputMatches
+                            && nativeAudioDataMatchesRequest(audioData, probeRequest);
+                    }
                 } finally {
                     audioData.close();
                 }
@@ -1349,7 +1491,17 @@ export function createNativeAudioOutputProbe(): NativeAudioOutputProbe | null {
                     }));
                 }
                 await decoder.flush();
-                return decoderError === null && outputCount === 1 && outputMatches;
+                if (decoderError !== null || outputCount === 0 || !outputMatches) {
+                    return false;
+                }
+                if (!probeRequest.channelTones) {
+                    return outputCount === 1;
+                }
+                return matchesNativeAudioChannelTones(
+                    concatenateNativeAudioPlanes(tonePlanes, probeRequest.expectedNumberOfChannels),
+                    probeRequest.expectedSampleRate,
+                    probeRequest.channelTones
+                );
             };
             return await Promise.race([
                 runOutputProbe(),
@@ -1555,6 +1707,9 @@ function getDefaultEnvironment(): WebCodecsCapabilityEnvironment {
             loadRawFormatVector :
             null,
         h264ProfileProbe: defaultH264ProfileCapabilityProbe,
+        h264RawFormatVectorLoader: typeof globalThis.fetch === 'function' ?
+            loadRawFormatVector :
+            null,
         hevcRangeExtensionVectorLoader: typeof globalThis.fetch === 'function' ?
             loadRawFormatVector :
             null,
@@ -1747,12 +1902,30 @@ function createAV1RawFormatBaseCapability(
     };
 }
 
-// What an exact raw format probe decides: a range extension's or an AV1 raw format's verdict
+function createH264RawFormatBaseCapability(
+    definition: H264RawFormatProbeDefinition
+): Omit<H264RawFormatCapability, 'reason' | 'status'> {
+    return {
+        bitDepth: definition.bitDepth,
+        chromaFormat: definition.chromaFormat,
+        codec: 'h264',
+        codecString: definition.config.codec,
+        format: definition.format,
+        jellyfinProfile: definition.jellyfinProfile,
+        pixelFormat: definition.pixelFormat,
+        variant: definition.variant
+    };
+}
+
+// What an exact raw format probe decides: a range extension's, an AV1 raw format's, or an H.264 raw format's verdict
 type ExactRawFormatProbeOutcome = Readonly<Pick<HEVCRangeExtensionCapability, 'reason' | 'status'>>;
 
-/** Qualifies one exact raw format: its configuration, then its downloaded vector's decode, copy format, and fingerprints. */
+/**
+ * Qualifies one exact raw format: its configuration, then its downloaded vector's decode, copy format, and fingerprints.
+ * The access units decode in their order, and their frames output in presentation order, which their timestamps give.
+ */
 async function probeExactRawFormatConfig<BaseCapability extends object>(
-    codec: 'av1' | 'hevc',
+    codec: 'av1' | 'h264' | 'hevc',
     definition: Pick<HEVCRangeExtensionProbeDefinition, 'accessUnits' | 'assetPath' | 'config' | 'format'>,
     baseCapability: BaseCapability,
     decoder: DecoderCapabilityAPI<VideoDecoderConfig> | null | undefined,
@@ -1829,6 +2002,8 @@ async function probeExactRawFormatConfig<BaseCapability extends object>(
             if (byteOffset !== vectorBytes.byteLength) {
                 return Object.freeze({ outputCopySupported: false });
             }
+            // A B access unit presents before the access unit it follows in decode order
+            expectedDecodedFrames.sort((first, second): number => first.timestamp - second.timestamp);
             return outputProbe({
                 codec,
                 configuration: definition.config,
@@ -1946,15 +2121,21 @@ async function probeNativeAudioConfig(
                 timestamp: chunk.timestamp
             });
         }
-        const outputSupported = await heavyProbeScheduler.runTimed(() => outputProbe({
+        const requestBase = {
             codec: definition.codec,
             configuration: { ...definition.config },
             encodedChunks,
             expectedNumberOfChannels: vector.expectedNumberOfChannels,
-            expectedNumberOfFrames: vector.expectedNumberOfFrames,
-            expectedSampleRate: vector.expectedSampleRate,
-            expectedTimestamp: vector.expectedTimestamp
-        }));
+            expectedSampleRate: vector.expectedSampleRate
+        };
+        const probeRequest: NativeAudioOutputProbeRequest = vector.channelTones ?
+            { ...requestBase, channelTones: vector.channelTones } :
+            {
+                ...requestBase,
+                expectedNumberOfFrames: vector.expectedNumberOfFrames,
+                expectedTimestamp: vector.expectedTimestamp
+            };
+        const outputSupported = await heavyProbeScheduler.runTimed(() => outputProbe(probeRequest));
         if (outputSupported === CAPABILITY_PROBE_TIMEOUT) {
             return Object.freeze({
                 codec: definition.codec,
@@ -1989,7 +2170,7 @@ async function probeNativeSurroundAudioConfig(
     return Object.freeze({
         codec: definition.codec,
         codecString: capability.codecString,
-        inputChannelCount: NATIVE_SURROUND_AUDIO_CAPABILITY_VECTOR_CHANNEL_COUNT,
+        inputChannelCount: definition.inputChannelCount,
         reason: capability.reason,
         sampleRate: NATIVE_SURROUND_AUDIO_CAPABILITY_VECTOR_SAMPLE_RATE,
         status: capability.status
@@ -1997,11 +2178,12 @@ async function probeNativeSurroundAudioConfig(
 }
 
 function createNativeSurroundAudioProbePromises(
+    definitions: readonly NativeSurroundAudioProbeDefinition[],
     environment: WebCodecsCapabilityEnvironment,
     heavyProbeScheduler: HeavyCapabilityProbeQueue
 ): Array<Promise<CustomNativeSurroundAudioCodecCapability>> {
     const probePromises: Array<Promise<CustomNativeSurroundAudioCodecCapability>> = [];
-    for (const definition of NATIVE_SURROUND_AUDIO_PROBE_DEFINITIONS) {
+    for (const definition of definitions) {
         probePromises.push(probeNativeSurroundAudioConfig(
             definition,
             environment.audioDecoder,
@@ -2028,9 +2210,10 @@ function createNativeSurroundAudioCapabilities(
     return Object.freeze(capabilitiesByCodec);
 }
 
+// Counts the 5.1 and the 7.1 probes together
 function getNativeSurroundAudioProbeCount(environment: WebCodecsCapabilityEnvironment): number {
     return environment.audioDecoder && environment.nativeAudioOutputProbe ?
-        NATIVE_SURROUND_AUDIO_PROBE_DEFINITIONS.length :
+        NATIVE_SURROUND_AUDIO_PROBE_DEFINITIONS.length + NATIVE_SEVEN_POINT_ONE_AUDIO_PROBE_DEFINITIONS.length :
         0;
 }
 
@@ -2428,6 +2611,24 @@ function createAV1RawFormatCapabilities(
     return Object.freeze(av1RawFormats);
 }
 
+function createNotProbedH264RawFormatCapability(variant: H264RawFormatVariant): H264RawFormatCapability {
+    return Object.freeze({
+        ...createH264RawFormatBaseCapability(H264_RAW_FORMAT_PROBE_DEFINITIONS[variant]),
+        reason: 'not-probed',
+        status: 'not-probed'
+    });
+}
+
+function createH264RawFormatCapabilities(
+    capabilities: readonly H264RawFormatCapability[]
+): Readonly<Record<H264RawFormatVariant, H264RawFormatCapability>> {
+    const h264RawFormats = {} as Record<H264RawFormatVariant, H264RawFormatCapability>;
+    for (const capability of capabilities) {
+        h264RawFormats[capability.variant] = capability;
+    }
+    return Object.freeze(h264RawFormats);
+}
+
 const NOT_PROBED_NATIVE_DOLBY_VISION_HEVC_CAPABILITY: CustomNativeDolbyVisionHEVCCapability = Object.freeze({
     bitDepth: 10,
     codec: 'hevc',
@@ -2600,6 +2801,10 @@ function addVideoStreamProbes(
             break;
         case 'h264':
             probes.add('h264-profiles');
+            // A profile beyond High negotiates only when every variant it codes at the stream's depth qualifies
+            for (const variant of getH264RawFormatNegotiationVariants(stream)) {
+                probes.add(getH264RawFormatVideoProbe(variant));
+            }
             break;
         case 'hevc':
             addHEVCStreamProbes(stream, dynamicRange, beyondNativeSDR, probes);
@@ -2692,6 +2897,7 @@ function createProbeStates(
 
 type AudioProbeResults = Readonly<{
     nativeAudio: readonly CustomDecodeCodecCapability<CustomAudioCodec>[]
+    nativeSevenPointOneAudio: readonly CustomNativeSurroundAudioCodecCapability[]
     nativeSurroundAudio: readonly CustomNativeSurroundAudioCodecCapability[]
 }>;
 
@@ -2704,6 +2910,7 @@ type H264ProbeResult = Readonly<{
 type VideoProbeResults = Readonly<{
     av1RawFormats: readonly AV1RawFormatCapability[]
     h264: H264ProbeResult | null
+    h264RawFormats: readonly H264RawFormatCapability[]
     hevcRangeExtensions: readonly HEVCRangeExtensionCapability[]
     nativeDolbyVisionHEVC: CustomNativeDolbyVisionHEVCCapability
     nativeHDRAV1: CustomNativeHDRAV1Capability
@@ -2719,6 +2926,7 @@ type ProbeTelemetryCapabilities = Pick<CustomDecodeCapabilities, 'h264Profiles'>
     | 'nativeDolbyVisionHEVC'
     | 'nativeHDRAV1'
     | 'nativeHDRHEVC'
+    | 'nativeSevenPointOneAudio'
     | 'nativeSurroundAudio'
     | 'nativeUltraHDVideo'
     | 'rawHDRVideo'
@@ -2800,7 +3008,11 @@ function createProbeTelemetry(
 ): Readonly<CustomDecodeProbeTelemetry> {
     const audioCapabilities = Object.values(capabilities.audio);
     const videoCapabilities = Object.values(capabilities.video);
-    const nativeSurroundAudioCapabilities = Object.values(capabilities.nativeSurroundAudio);
+    // The surround telemetry counts the 5.1 and the 7.1 verdicts together
+    const nativeSurroundAudioCapabilities = [
+        ...Object.values(capabilities.nativeSurroundAudio),
+        ...Object.values(capabilities.nativeSevenPointOneAudio)
+    ];
     const nativeUltraHDVideoCapabilities = Object.values(capabilities.nativeUltraHDVideo);
     const allCapabilities: Array<CustomDecodeCodecCapability<CustomDecodeCodec>> = [];
     allCapabilities.push(
@@ -2850,6 +3062,7 @@ function createCustomDecodeCapabilities(
         nativeDolbyVisionHEVC: videoResults.nativeDolbyVisionHEVC,
         nativeHDRAV1: videoResults.nativeHDRAV1,
         nativeHDRHEVC: videoResults.nativeHDRHEVC,
+        nativeSevenPointOneAudio: createNativeSurroundAudioCapabilities(audioResults.nativeSevenPointOneAudio),
         nativeSurroundAudio: createNativeSurroundAudioCapabilities(audioResults.nativeSurroundAudio),
         nativeUltraHDVideo: createNativeUltraHDVideoCapabilities(videoResults.nativeUltraHDVideo),
         rawHDRVideo: createRawHDRVideoCapabilities(videoResults.rawVideo),
@@ -2858,6 +3071,7 @@ function createCustomDecodeCapabilities(
     return Object.freeze({
         ...capabilities,
         av1RawFormats: createAV1RawFormatCapabilities(videoResults.av1RawFormats),
+        h264RawFormats: createH264RawFormatCapabilities(videoResults.h264RawFormats),
         hevcRangeExtensions: createHEVCRangeExtensionCapabilities(videoResults.hevcRangeExtensions),
         probeStates: createProbeStates(selection),
         telemetry: createProbeTelemetry(environment, selection, capabilities)
@@ -3017,11 +3231,12 @@ export default class CustomDecodeCapabilityProbe {
 
     /** Starts every audio probe once per page, because a playing item can switch to any of its audio tracks. */
     private async startAudioProbes(): Promise<AudioProbeResults> {
-        const [ nativeAudio, nativeSurroundAudio ] = await Promise.all([
+        const [ nativeAudio, nativeSurroundAudio, nativeSevenPointOneAudio ] = await Promise.all([
             this.startProbe<Array<CustomDecodeCodecCapability<CustomAudioCodec>>>('native-audio', this.heavyProbeScheduler),
-            this.startProbe<CustomNativeSurroundAudioCodecCapability[]>('native-surround-audio', this.heavyProbeScheduler)
+            this.startProbe<CustomNativeSurroundAudioCodecCapability[]>('native-surround-audio', this.heavyProbeScheduler),
+            this.startProbe<CustomNativeSurroundAudioCodecCapability[]>('native-seven-point-one-audio', this.heavyProbeScheduler)
         ]);
-        return { nativeAudio, nativeSurroundAudio };
+        return { nativeAudio, nativeSevenPointOneAudio, nativeSurroundAudio };
     }
 
     /** Starts the selected video probes that no earlier item started, in queue order; an unselected probe resolves as not probed. */
@@ -3080,6 +3295,16 @@ export default class CustomDecodeCapabilityProbe {
                 )
             )
         ));
+        const h264RawFormats = Promise.all(H264_RAW_FORMAT_VARIANTS.map(
+            (variant: H264RawFormatVariant): Promise<H264RawFormatCapability> => (
+                this.startSelectedProbe(
+                    selection,
+                    getH264RawFormatVideoProbe(variant),
+                    videoQueue,
+                    createNotProbedH264RawFormatCapability(variant)
+                )
+            )
+        ));
         const nativeDolbyVisionHEVC = this.startSelectedProbe(
             selection,
             'native-dolby-vision-hevc',
@@ -3091,6 +3316,7 @@ export default class CustomDecodeCapabilityProbe {
         return {
             av1RawFormats: await av1RawFormats,
             h264: await h264,
+            h264RawFormats: await h264RawFormats,
             hevcRangeExtensions: await hevcRangeExtensions,
             nativeDolbyVisionHEVC: await nativeDolbyVisionHEVC,
             nativeHDRAV1: await nativeHDRAV1,
@@ -3263,7 +3489,16 @@ export default class CustomDecodeCapabilityProbe {
 function createProbeStarters(environment: WebCodecsCapabilityEnvironment): ReadonlyMap<CustomDecodeProbe, ProbeStarter> {
     const starters = new Map<CustomDecodeProbe, ProbeStarter>([
         [ 'native-audio', (queue) => Promise.all(createAudioProbePromises(environment, queue)) ],
-        [ 'native-surround-audio', (queue) => Promise.all(createNativeSurroundAudioProbePromises(environment, queue)) ],
+        [ 'native-surround-audio', (queue) => Promise.all(createNativeSurroundAudioProbePromises(
+            NATIVE_SURROUND_AUDIO_PROBE_DEFINITIONS,
+            environment,
+            queue
+        )) ],
+        [ 'native-seven-point-one-audio', (queue) => Promise.all(createNativeSurroundAudioProbePromises(
+            NATIVE_SEVEN_POINT_ONE_AUDIO_PROBE_DEFINITIONS,
+            environment,
+            queue
+        )) ],
         [ 'h264-profiles', (queue) => probeH264(environment, queue) ],
         [ 'native-dolby-vision-hevc', (queue) => probeNativeDolbyVisionHEVC(
             environment.videoDecoder,
@@ -3318,6 +3553,18 @@ function createProbeStarters(environment: WebCodecsCapabilityEnvironment): Reado
             environment.videoDecoder,
             environment.rawHDRVideoOutputProbe,
             environment.av1RawFormatVectorLoader,
+            queue
+        ));
+    }
+    for (const variant of H264_RAW_FORMAT_VARIANTS) {
+        const definition = H264_RAW_FORMAT_PROBE_DEFINITIONS[variant];
+        starters.set(getH264RawFormatVideoProbe(variant), (queue) => probeExactRawFormatConfig(
+            'h264',
+            definition,
+            createH264RawFormatBaseCapability(definition),
+            environment.videoDecoder,
+            environment.rawHDRVideoOutputProbe,
+            environment.h264RawFormatVectorLoader,
             queue
         ));
     }

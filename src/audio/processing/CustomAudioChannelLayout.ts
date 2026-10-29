@@ -21,15 +21,8 @@ export const CUSTOM_SEVEN_POINT_ONE_INPUT_CHANNEL_COUNT = 8;
 export const CUSTOM_STEREO_OUTPUT_CHANNEL_COUNT = 2;
 export const CUSTOM_FIVE_POINT_ONE_OUTPUT_CHANNEL_COUNT = 6;
 export const CUSTOM_SEVEN_POINT_ONE_OUTPUT_CHANNEL_COUNT = 8;
-
-export type CustomAudioOutputChannelCount =
-    | typeof CUSTOM_STEREO_OUTPUT_CHANNEL_COUNT
-    | typeof CUSTOM_FIVE_POINT_ONE_OUTPUT_CHANNEL_COUNT
-    | typeof CUSTOM_SEVEN_POINT_ONE_OUTPUT_CHANNEL_COUNT;
-
-type CustomAudioSurroundOutputChannelCount =
-    | typeof CUSTOM_FIVE_POINT_ONE_OUTPUT_CHANNEL_COUNT
-    | typeof CUSTOM_SEVEN_POINT_ONE_OUTPUT_CHANNEL_COUNT;
+/** The widest output layout, 7.1.4 */
+export const CUSTOM_MAXIMUM_OUTPUT_CHANNEL_COUNT = 12;
 
 export type CustomAudioChannel =
     | 'front-center'
@@ -40,12 +33,22 @@ export type CustomAudioChannel =
     | 'back-center'
     | 'low-frequency-effects'
     | 'side-left'
-    | 'side-right';
+    | 'side-right'
+    | 'top-front-left'
+    | 'top-front-right'
+    | 'top-back-left'
+    | 'top-back-right';
 
 export type CustomAudioChannelLayout = {
     channels: readonly CustomAudioChannel[]
-    id: '2.1' | '3.0' | '3.0-back' | '5.1-back' | '5.1-side' | '6.1' | '7.1' | 'mono' | 'stereo'
+    id: '2.1' | '3.0' | '3.0-back' | '5.1-back' | '5.1-side' | '5.1.2' | '5.1.2-side' | '5.1.4' | '6.1' | '7.1' | '7.1.2' | '7.1.4' | 'mono' | 'stereo'
 };
+
+/**
+ * The speaker layouts decoded audio plays to: a destination of the layout's channel count takes its channels in WAVE order, except 5.1, which takes Web Audio's 5.1 order.
+ * The height layouts are FFmpeg's 5.1.2, 5.1.4, 7.1.2, and 7.1.4, whose 5.1 floors use the back pair.
+ */
+export type CustomAudioOutputLayout = '5.1' | '5.1.2' | '5.1.4' | '7.1' | '7.1.2' | '7.1.4' | 'stereo';
 
 export const CUSTOM_MONO_CHANNEL_LAYOUT: CustomAudioChannelLayout = Object.freeze({
     channels: Object.freeze([ 'front-center' ] as const),
@@ -136,54 +139,187 @@ export const CUSTOM_SIX_POINT_ONE_CHANNEL_LAYOUT: CustomAudioChannelLayout = Obj
     id: '6.1'
 });
 
+// FFmpeg's 5.1.2(back): 5.1(back) and the top front pair
+export const CUSTOM_FIVE_POINT_ONE_POINT_TWO_CHANNEL_LAYOUT: CustomAudioChannelLayout = Object.freeze({
+    channels: Object.freeze([
+        'front-left',
+        'front-right',
+        'front-center',
+        'low-frequency-effects',
+        'back-left',
+        'back-right',
+        'top-front-left',
+        'top-front-right'
+    ] as const),
+    id: '5.1.2'
+});
+
+// 5.1(side) and the top front pair, which FFmpeg's E-AC-3 decoder reports for a dependent stream that adds the heights
+export const CUSTOM_FIVE_POINT_ONE_SIDE_POINT_TWO_CHANNEL_LAYOUT: CustomAudioChannelLayout = Object.freeze({
+    channels: Object.freeze([
+        'front-left',
+        'front-right',
+        'front-center',
+        'low-frequency-effects',
+        'side-left',
+        'side-right',
+        'top-front-left',
+        'top-front-right'
+    ] as const),
+    id: '5.1.2-side'
+});
+
+// FFmpeg's 5.1.4(back): 5.1(back) and the top front and top back pairs
+export const CUSTOM_FIVE_POINT_ONE_POINT_FOUR_CHANNEL_LAYOUT: CustomAudioChannelLayout = Object.freeze({
+    channels: Object.freeze([
+        'front-left',
+        'front-right',
+        'front-center',
+        'low-frequency-effects',
+        'back-left',
+        'back-right',
+        'top-front-left',
+        'top-front-right',
+        'top-back-left',
+        'top-back-right'
+    ] as const),
+    id: '5.1.4'
+});
+
+export const CUSTOM_SEVEN_POINT_ONE_POINT_TWO_CHANNEL_LAYOUT: CustomAudioChannelLayout = Object.freeze({
+    channels: Object.freeze([
+        'front-left',
+        'front-right',
+        'front-center',
+        'low-frequency-effects',
+        'back-left',
+        'back-right',
+        'side-left',
+        'side-right',
+        'top-front-left',
+        'top-front-right'
+    ] as const),
+    id: '7.1.2'
+});
+
+export const CUSTOM_SEVEN_POINT_ONE_POINT_FOUR_CHANNEL_LAYOUT: CustomAudioChannelLayout = Object.freeze({
+    channels: Object.freeze([
+        'front-left',
+        'front-right',
+        'front-center',
+        'low-frequency-effects',
+        'back-left',
+        'back-right',
+        'side-left',
+        'side-right',
+        'top-front-left',
+        'top-front-right',
+        'top-back-left',
+        'top-back-right'
+    ] as const),
+    id: '7.1.4'
+});
+
 export type StereoChannelData = [ Float32Array, Float32Array ];
 export type CustomAudioOutputChannelData = readonly Float32Array[];
 
-type CustomAudioPairedChannel = Exclude<CustomAudioChannel, 'back-center'>;
+type CustomAudioFloorOutputLayout = Extract<CustomAudioOutputLayout, '5.1' | '7.1' | 'stereo'>;
 
-// Output slots in Web Audio 5.1 order, where sides and backs share the surround pair
-const FIVE_POINT_ONE_OUTPUT_CHANNEL_INDEX: Readonly<Record<CustomAudioPairedChannel, number>> =
-    Object.freeze({
-        'back-left': 4,
-        'back-right': 5,
-        'front-center': 2,
-        'front-left': 0,
-        'front-right': 1,
-        'low-frequency-effects': 3,
-        'side-left': 4,
-        'side-right': 5
-    });
-// Output slots in the WAVE 7.1 order the worklet passes through
-const SEVEN_POINT_ONE_OUTPUT_CHANNEL_INDEX: Readonly<Record<CustomAudioPairedChannel, number>> =
-    Object.freeze({
-        'back-left': 4,
-        'back-right': 5,
-        'front-center': 2,
-        'front-left': 0,
-        'front-right': 1,
-        'low-frequency-effects': 3,
-        'side-left': 6,
-        'side-right': 7
-    });
-const SURROUND_PAIR_CHANNELS: ReadonlySet<CustomAudioChannel> = new Set<CustomAudioChannel>([
-    'back-left',
-    'back-right',
-    'side-left',
-    'side-right'
+type CustomAudioOutputLayoutDefinition = Readonly<{
+    /** The output's speakers in the order its destination takes them */
+    channelLayout: CustomAudioChannelLayout
+    /** The layout without its heights, which every source that is not rendered as objects plays within */
+    floor: CustomAudioFloorOutputLayout
+}>;
+
+// The 5.1 output keeps Web Audio's 5.1 order, whose surround pair takes sides and backs alike
+const CUSTOM_FIVE_POINT_ONE_OUTPUT_LAYOUT = CUSTOM_FIVE_POINT_ONE_CHANNEL_LAYOUT;
+
+/* eslint-disable @typescript-eslint/naming-convention -- speaker layouts take FFmpeg's names */
+const CUSTOM_AUDIO_OUTPUT_LAYOUT_DEFINITIONS: Readonly<Record<CustomAudioOutputLayout, CustomAudioOutputLayoutDefinition>> = Object.freeze({
+    '5.1': Object.freeze({ channelLayout: CUSTOM_FIVE_POINT_ONE_OUTPUT_LAYOUT, floor: '5.1' }),
+    '5.1.2': Object.freeze({ channelLayout: CUSTOM_FIVE_POINT_ONE_POINT_TWO_CHANNEL_LAYOUT, floor: '5.1' }),
+    '5.1.4': Object.freeze({ channelLayout: CUSTOM_FIVE_POINT_ONE_POINT_FOUR_CHANNEL_LAYOUT, floor: '5.1' }),
+    '7.1': Object.freeze({ channelLayout: CUSTOM_SEVEN_POINT_ONE_CHANNEL_LAYOUT, floor: '7.1' }),
+    '7.1.2': Object.freeze({ channelLayout: CUSTOM_SEVEN_POINT_ONE_POINT_TWO_CHANNEL_LAYOUT, floor: '7.1' }),
+    '7.1.4': Object.freeze({ channelLayout: CUSTOM_SEVEN_POINT_ONE_POINT_FOUR_CHANNEL_LAYOUT, floor: '7.1' }),
+    stereo: Object.freeze({ channelLayout: CUSTOM_STEREO_CHANNEL_LAYOUT, floor: 'stereo' })
+});
+/* eslint-enable @typescript-eslint/naming-convention */
+
+/** Every output layout, smallest first. */
+export const CUSTOM_AUDIO_OUTPUT_LAYOUTS: readonly CustomAudioOutputLayout[] = Object.freeze([
+    'stereo',
+    '5.1',
+    '7.1',
+    '5.1.2',
+    '5.1.4',
+    '7.1.2',
+    '7.1.4'
 ]);
+
+// A pair the output lacks folds into the pair this names, and a channel without a pair splits across it
+const FOLD_TARGETS: Readonly<Partial<Record<CustomAudioChannel, readonly CustomAudioChannel[]>>> = Object.freeze({
+    // Sides and backs share the one surround pair of a 5.1 floor
+    'back-left': Object.freeze([ 'side-left' ] as const),
+    'back-right': Object.freeze([ 'side-right' ] as const),
+    'side-left': Object.freeze([ 'back-left' ] as const),
+    'side-right': Object.freeze([ 'back-right' ] as const),
+    // Heights fold to the floor pair beneath them
+    'top-back-left': Object.freeze([ 'back-left' ] as const),
+    'top-back-right': Object.freeze([ 'back-right' ] as const),
+    'top-front-left': Object.freeze([ 'front-left' ] as const),
+    'top-front-right': Object.freeze([ 'front-right' ] as const)
+});
 const DIRECT_CHANNEL_GAIN = 1;
-// Two channels folded into one speaker, or one channel split across two, keep their power
-const FOLDED_CHANNEL_GAIN = Math.SQRT1_2;
+// One channel split across two speakers keeps its power
+const SPLIT_CHANNEL_GAIN = Math.SQRT1_2;
 
 type CustomAudioOutputChannelRoute = Readonly<{
     gain: number
+    inputChannelIndex: number
     outputChannelIndex: number
 }>;
+
+type CustomAudioOutputRouting = Readonly<{
+    /** Every input channel lands unscaled in the output slot of its own index */
+    passthrough: boolean
+    routes: readonly CustomAudioOutputChannelRoute[]
+    /** Some output slot sums more than one route, which can exceed full scale */
+    sums: boolean
+}>;
+
+const outputRoutingCache = new Map<string, CustomAudioOutputRouting>();
+
+/** Reports whether a value names an output layout. */
+export function isCustomAudioOutputLayout(value: unknown): value is CustomAudioOutputLayout {
+    return typeof value === 'string' && Object.hasOwn(CUSTOM_AUDIO_OUTPUT_LAYOUT_DEFINITIONS, value);
+}
+
+/** Returns the speakers an output layout's destination takes, in its order. */
+export function getCustomAudioOutputChannelLayout(outputLayout: CustomAudioOutputLayout): CustomAudioChannelLayout {
+    return CUSTOM_AUDIO_OUTPUT_LAYOUT_DEFINITIONS[outputLayout].channelLayout;
+}
+
+/** Returns how many channels an output layout's destination takes. */
+export function getCustomAudioOutputChannelCount(outputLayout: CustomAudioOutputLayout): number {
+    return CUSTOM_AUDIO_OUTPUT_LAYOUT_DEFINITIONS[outputLayout].channelLayout.channels.length;
+}
+
+/** Returns an output layout without its heights: stereo, 5.1, or 7.1. */
+export function getCustomAudioOutputFloorLayout(outputLayout: CustomAudioOutputLayout): CustomAudioFloorOutputLayout {
+    return CUSTOM_AUDIO_OUTPUT_LAYOUT_DEFINITIONS[outputLayout].floor;
+}
+
+/** Reports whether an output layout has height speakers. */
+export function hasCustomAudioOutputHeights(outputLayout: CustomAudioOutputLayout): boolean {
+    return getCustomAudioOutputFloorLayout(outputLayout) !== outputLayout;
+}
 
 /**
  * Maps a decoded channel count to its layout when the decoder reports no speaker mask.
  * Three channels are 3.0 (FL, FR, FC), the order AAC, FLAC, Opus, and Vorbis decode to.
- * 2.1 and 3.0(back) beds come only from a decoder's speaker mask.
+ * 2.1, 3.0(back), and the height layouts come only from a decoder's speaker mask.
  */
 export function getCustomAudioChannelLayout(channelCount: number): CustomAudioChannelLayout | null {
     switch (channelCount) {
@@ -205,13 +341,93 @@ export function getCustomAudioChannelLayout(channelCount: number): CustomAudioCh
 }
 
 /**
+ * Resolves the output speakers one decoded channel feeds: its own, else the pair its fold target names, else, for a back center, the back pair split.
+ * Each step resolves by the same rule, so a top back channel of a 5.1 output reaches the surround pair through the back pair.
+ */
+function resolveOutputChannels(channel: CustomAudioChannel, outputChannels: readonly CustomAudioChannel[]): readonly CustomAudioChannel[] {
+    if (outputChannels.includes(channel)) {
+        return [ channel ];
+    }
+    if (channel === 'back-center') {
+        return [
+            ...resolveOutputChannels('back-left', outputChannels),
+            ...resolveOutputChannels('back-right', outputChannels)
+        ];
+    }
+    for (const target of FOLD_TARGETS[channel] ?? []) {
+        if (outputChannels.includes(target)) {
+            return [ target ];
+        }
+        // Only a height continues to its floor pair's own fold: every output has a side or a back pair
+        if (channel.startsWith('top-')) {
+            return resolveOutputChannels(target, outputChannels);
+        }
+    }
+    return [];
+}
+
+/**
+ * Routes each decoded channel by name into a surround output layout.
+ * A channel the output has passes through; one it lacks folds into the pair beneath it: sides and backs into the 5.1 surround pair, heights into the floor pair below them.
+ * Every channel that folds into a speaker, and every one already there, takes 1/sqrt(n) of the n channels the speaker sums, which keeps the power of content common to them, sqrt(1/2) for a pair.
+ * A back center splits across the back or surround pair at sqrt(1/2) each.
+ */
+function getSurroundOutputRouting(layout: CustomAudioChannelLayout, outputLayout: CustomAudioOutputLayout): CustomAudioOutputRouting {
+    const cacheKey = `${layout.id}>${outputLayout}`;
+    const cachedRouting = outputRoutingCache.get(cacheKey);
+    if (cachedRouting) {
+        return cachedRouting;
+    }
+
+    const outputChannels = getCustomAudioOutputChannelLayout(outputLayout).channels;
+    const wholeChannelCounts = new Array<number>(outputChannels.length).fill(0);
+    const routeCounts = new Array<number>(outputChannels.length).fill(0);
+    const resolvedRoutes: Array<{ inputChannelIndex: number, outputChannelIndices: number[] }> = [];
+    for (let inputChannelIndex = 0; inputChannelIndex < layout.channels.length; inputChannelIndex += 1) {
+        const outputChannelIndices = resolveOutputChannels(layout.channels[inputChannelIndex], outputChannels)
+            .map((channel: CustomAudioChannel): number => outputChannels.indexOf(channel));
+        if (outputChannelIndices.length === 1) {
+            wholeChannelCounts[outputChannelIndices[0]] += 1;
+        }
+        for (const outputChannelIndex of outputChannelIndices) {
+            routeCounts[outputChannelIndex] += 1;
+        }
+        resolvedRoutes.push({ inputChannelIndex, outputChannelIndices });
+    }
+
+    const routes: CustomAudioOutputChannelRoute[] = [];
+    let passthrough = layout.channels.length === outputChannels.length;
+    for (const { inputChannelIndex, outputChannelIndices } of resolvedRoutes) {
+        for (const outputChannelIndex of outputChannelIndices) {
+            // sqrt(1/2) for a folded pair matches Math.SQRT1_2 bit for bit, and a lone channel keeps unit gain
+            const gain = outputChannelIndices.length > 1 ?
+                SPLIT_CHANNEL_GAIN :
+                Math.sqrt(1 / wholeChannelCounts[outputChannelIndex]);
+            routes.push({ gain, inputChannelIndex, outputChannelIndex });
+            passthrough &&= gain === DIRECT_CHANNEL_GAIN && outputChannelIndex === inputChannelIndex;
+        }
+        passthrough &&= outputChannelIndices.length === 1;
+    }
+    const routing: CustomAudioOutputRouting = Object.freeze({
+        passthrough,
+        routes: Object.freeze(routes),
+        sums: routeCounts.some((routeCount: number): boolean => routeCount > 1)
+    });
+    outputRoutingCache.set(cacheKey, routing);
+    return routing;
+}
+
+/**
  * Reports whether converting the layout to the output sums channels, which can exceed full scale, so the output stage must run its peak limiter.
  */
 export function requiresCustomAudioFoldDown(
     layout: CustomAudioChannelLayout,
-    outputChannelCount: CustomAudioOutputChannelCount
+    outputLayout: CustomAudioOutputLayout
 ): boolean {
-    return layout.channels.length > outputChannelCount;
+    if (outputLayout === 'stereo') {
+        return layout.channels.length > CUSTOM_STEREO_OUTPUT_CHANNEL_COUNT;
+    }
+    return getSurroundOutputRouting(layout, outputLayout).sums;
 }
 
 function requireLayoutChannelData(channelData: readonly Float32Array[], layout: CustomAudioChannelLayout): number {
@@ -230,7 +446,38 @@ function requireLayoutChannelData(channelData: readonly Float32Array[], layout: 
     return frameCount;
 }
 
-/** Mixes a decoded layout to stereo: mono is duplicated, stereo passes through, and every larger bed uses its downmix. */
+/** Maps each decoded channel by name into a surround output layout; an input already in the output's order passes through uncopied. */
+function mapCustomAudioToSurround(
+    channelData: readonly Float32Array[],
+    layout: CustomAudioChannelLayout,
+    outputLayout: Exclude<CustomAudioOutputLayout, 'stereo'>
+): CustomAudioOutputChannelData {
+    const frameCount = requireLayoutChannelData(channelData, layout);
+    const routing = getSurroundOutputRouting(layout, outputLayout);
+    if (routing.passthrough) {
+        return channelData;
+    }
+
+    const outputChannelData: Float32Array[] = [];
+    const outputChannelCount = getCustomAudioOutputChannelCount(outputLayout);
+    for (let outputChannelIndex = 0; outputChannelIndex < outputChannelCount; outputChannelIndex += 1) {
+        outputChannelData.push(new Float32Array(frameCount));
+    }
+    for (const route of routing.routes) {
+        const inputChannel = channelData[route.inputChannelIndex];
+        const outputChannel = outputChannelData[route.outputChannelIndex];
+        const gain = route.gain;
+        for (let frameIndex = 0; frameIndex < frameCount; frameIndex += 1) {
+            outputChannel[frameIndex] += inputChannel[frameIndex] * gain;
+        }
+    }
+    return outputChannelData;
+}
+
+/**
+ * Mixes a decoded layout to stereo: mono is duplicated, stereo passes through, and every larger bed uses its downmix.
+ * A height layout first folds its heights into its 5.1 or 7.1 floor, which the floor's downmix then mixes.
+ */
 export function mixCustomAudioToStereo(
     channelData: readonly Float32Array[],
     layout: CustomAudioChannelLayout,
@@ -283,6 +530,15 @@ export function mixCustomAudioToStereo(
                 downmixSettings,
                 downmixSettingsRamp
             );
+        case '5.1.2':
+        case '5.1.2-side':
+        case '5.1.4':
+            return downmixFivePointOneToStereo(
+                mapCustomAudioToSurround(channelData, layout, '5.1'),
+                downmixAlgorithm,
+                downmixSettings,
+                downmixSettingsRamp
+            );
         case '6.1':
             return downmixSixPointOneToStereo(
                 channelData,
@@ -296,109 +552,37 @@ export function mixCustomAudioToStereo(
                 downmixSettings,
                 downmixSettingsRamp
             );
-    }
-}
-
-function isNativeSurroundLayout(
-    layout: CustomAudioChannelLayout,
-    outputChannelCount: CustomAudioSurroundOutputChannelCount
-): boolean {
-    switch (outputChannelCount) {
-        case CUSTOM_FIVE_POINT_ONE_OUTPUT_CHANNEL_COUNT:
-            return layout.id === '5.1-back' || layout.id === '5.1-side';
-        case CUSTOM_SEVEN_POINT_ONE_OUTPUT_CHANNEL_COUNT:
-            return layout.id === '7.1';
-    }
-}
-
-/** Returns the speakers one decoded channel feeds in a 5.1 or 7.1 output. */
-function getSurroundOutputChannelRoutes(
-    channel: CustomAudioChannel,
-    layout: CustomAudioChannelLayout,
-    outputChannelCount: CustomAudioSurroundOutputChannelCount
-): readonly CustomAudioOutputChannelRoute[] {
-    const outputChannelIndices = outputChannelCount === CUSTOM_SEVEN_POINT_ONE_OUTPUT_CHANNEL_COUNT ?
-        SEVEN_POINT_ONE_OUTPUT_CHANNEL_INDEX :
-        FIVE_POINT_ONE_OUTPUT_CHANNEL_INDEX;
-    if (channel === 'back-center') {
-        // A 6.1 or 3.0(back) back center splits across the back pair, or the 5.1 surround pair
-        return [
-            {
-                gain: FOLDED_CHANNEL_GAIN,
-                outputChannelIndex: outputChannelIndices['back-left']
-            },
-            {
-                gain: FOLDED_CHANNEL_GAIN,
-                outputChannelIndex: outputChannelIndices['back-right']
-            }
-        ];
-    }
-
-    // A 7.1 bed folds its side and back pairs into the one 5.1 surround pair
-    const foldsSurroundPairs = outputChannelCount === CUSTOM_FIVE_POINT_ONE_OUTPUT_CHANNEL_COUNT
-        && layout.channels.includes('side-left')
-        && layout.channels.includes('back-left');
-    return [ {
-        gain: foldsSurroundPairs && SURROUND_PAIR_CHANNELS.has(channel) ?
-            FOLDED_CHANNEL_GAIN :
-            DIRECT_CHANNEL_GAIN,
-        outputChannelIndex: outputChannelIndices[channel]
-    } ];
-}
-
-/**
- * Maps each decoded channel by name into a 5.1 or 7.1 output.
- * Missing speakers stay silent; 7.1 sides and backs fold into the 5.1 surrounds, and a back center splits across the back or surround pair, each at sqrt(1/2).
- */
-function mapCustomAudioToSurround(
-    channelData: readonly Float32Array[],
-    layout: CustomAudioChannelLayout,
-    outputChannelCount: CustomAudioSurroundOutputChannelCount
-): CustomAudioOutputChannelData {
-    const frameCount = requireLayoutChannelData(channelData, layout);
-    if (isNativeSurroundLayout(layout, outputChannelCount)) {
-        return channelData;
-    }
-
-    const outputChannelData: Float32Array[] = [];
-    for (let outputChannelIndex = 0; outputChannelIndex < outputChannelCount; outputChannelIndex += 1) {
-        outputChannelData.push(new Float32Array(frameCount));
-    }
-    for (let inputChannelIndex = 0; inputChannelIndex < layout.channels.length; inputChannelIndex += 1) {
-        const inputChannel = channelData[inputChannelIndex];
-        const routes = getSurroundOutputChannelRoutes(layout.channels[inputChannelIndex], layout, outputChannelCount);
-        for (const route of routes) {
-            const outputChannel = outputChannelData[route.outputChannelIndex];
-            for (let frameIndex = 0; frameIndex < frameCount; frameIndex += 1) {
-                outputChannel[frameIndex] += inputChannel[frameIndex] * route.gain;
-            }
-        }
-    }
-    return outputChannelData;
-}
-
-/**
- * Converts any decoded layout to the output layout by channel name: an exact 5.1 or 7.1 bed passes through, and stereo output uses the selected downmix.
- */
-export function prepareCustomAudioOutputChannelData(
-    channelData: readonly Float32Array[],
-    layout: CustomAudioChannelLayout,
-    outputChannelCount: CustomAudioOutputChannelCount,
-    downmixAlgorithm: CustomAudioDownmixAlgorithm = DEFAULT_CUSTOM_AUDIO_DOWNMIX_ALGORITHM,
-    downmixSettings: AudioDownmixSettings = createDefaultAudioDownmixSettings(),
-    downmixSettingsRamp: AudioDownmixSettingsRamp | null = null
-): CustomAudioOutputChannelData {
-    switch (outputChannelCount) {
-        case CUSTOM_STEREO_OUTPUT_CHANNEL_COUNT:
-            return mixCustomAudioToStereo(
-                channelData,
-                layout,
+        case '7.1.2':
+        case '7.1.4':
+            return downmixSevenPointOneToStereo(
+                mapCustomAudioToSurround(channelData, layout, '7.1'),
                 downmixAlgorithm,
                 downmixSettings,
                 downmixSettingsRamp
             );
-        case CUSTOM_FIVE_POINT_ONE_OUTPUT_CHANNEL_COUNT:
-        case CUSTOM_SEVEN_POINT_ONE_OUTPUT_CHANNEL_COUNT:
-            return mapCustomAudioToSurround(channelData, layout, outputChannelCount);
     }
+}
+
+/**
+ * Converts any decoded layout to the output layout by channel name: a bed already in the output's order passes through, a surround output maps and folds by name,
+ * and stereo output uses the selected downmix.
+ */
+export function prepareCustomAudioOutputChannelData(
+    channelData: readonly Float32Array[],
+    layout: CustomAudioChannelLayout,
+    outputLayout: CustomAudioOutputLayout,
+    downmixAlgorithm: CustomAudioDownmixAlgorithm = DEFAULT_CUSTOM_AUDIO_DOWNMIX_ALGORITHM,
+    downmixSettings: AudioDownmixSettings = createDefaultAudioDownmixSettings(),
+    downmixSettingsRamp: AudioDownmixSettingsRamp | null = null
+): CustomAudioOutputChannelData {
+    if (outputLayout === 'stereo') {
+        return mixCustomAudioToStereo(
+            channelData,
+            layout,
+            downmixAlgorithm,
+            downmixSettings,
+            downmixSettingsRamp
+        );
+    }
+    return mapCustomAudioToSurround(channelData, layout, outputLayout);
 }

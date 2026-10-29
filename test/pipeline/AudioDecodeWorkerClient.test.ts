@@ -111,10 +111,11 @@ afterEach(() => {
 
 function createListener(): AudioDecodeWorkerAttemptListener & {
     onChange: Mock
+    onObjectCount: Mock
     onProgress: Mock
     onSourceFormat: Mock
 } {
-    return { onChange: vi.fn(), onProgress: vi.fn(), onSourceFormat: vi.fn() };
+    return { onChange: vi.fn(), onObjectCount: vi.fn(), onProgress: vi.fn(), onSourceFormat: vi.fn() };
 }
 
 function createOptions(audioOutput: DecodeWorkerAudioOutputAttachment | null = null): AudioDecodeWorkerAttemptOptions {
@@ -125,8 +126,10 @@ function createOptions(audioOutput: DecodeWorkerAudioOutputAttachment | null = n
         audioOutput,
         channelMask: null,
         decoderBackend: 'pcm',
-        outputChannelCount: STEREO_CHANNEL_COUNT,
+        outputLayout: 'stereo',
+        packageCodecPrivate: null,
         packageDecoder: null,
+        renderBinaural: false,
         routeCodec: 'pcm-s16',
         sourceSampleRate: SAMPLE_RATE,
         startTimeMicroseconds: START_TIME_MICROSECONDS,

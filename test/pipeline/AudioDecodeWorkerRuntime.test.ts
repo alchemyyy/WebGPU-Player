@@ -21,7 +21,10 @@ import {
     type AudioDecodeWorkerRequest,
     type AudioDecodeWorkerResponse
 } from 'webgpu-player/pipeline/AudioDecodeWorkerProtocol';
-import { CUSTOM_WAVE_CHANNEL_MASK_STEREO } from 'webgpu-player/audio/processing/CustomWaveChannelLayout';
+import {
+    CUSTOM_WAVE_CHANNEL_MASK_SEVEN_POINT_ONE_POINT_FOUR,
+    CUSTOM_WAVE_CHANNEL_MASK_STEREO
+} from 'webgpu-player/audio/processing/CustomWaveChannelLayout';
 import { startAudioDecodeWorkerRuntime } from 'webgpu-player/pipeline/AudioDecodeWorkerRuntime';
 import type { DecodeWorkerAudioOutputAttachment } from 'webgpu-player/pipeline/DecodeWorkerProtocol';
 
@@ -33,7 +36,7 @@ import {
     type FakeWorkletProcessor
 } from '../helpers/fakeWorkletProcessor';
 import { readLibraryAssetSource } from '../helpers/libraryAssets';
-import { ScriptedAudioDecoderModule, type ScriptedAudioPacket } from '../helpers/scriptedAudioDecoderModule';
+import { SCRIPTED_AUDIO_DECODER_HANDLE, ScriptedAudioDecoderModule, type ScriptedAudioPacket } from '../helpers/scriptedAudioDecoderModule';
 
 // Package attempts instantiate the scripted modules their sources carry
 vi.mock('webgpu-player/decode/packages/DecoderPackageImports', async (importOriginal) => {
@@ -75,6 +78,25 @@ const PACKAGE_MANIFEST = parseAudioDecoderManifest([
     `//! accepts: codec in [${PACKAGE_ROUTE_CODEC}]`,
     `//! error: ${PACKAGE_CONVERT_ERROR_CODE}, ${PACKAGE_CONVERT_ERROR}`
 ].join('\n'));
+// A package that renders object audio: it takes the output layout's mask and binaural rendering, and reports the objects it renders per block
+const OBJECT_PACKAGE_MANIFEST = parseAudioDecoderManifest([
+    '//! id: scripted-objects',
+    '//! name: Scripted objects',
+    '//! decoder: audio',
+    `//! accepts: codec in [${PACKAGE_ROUTE_CODEC}]`,
+    '//! option: 1, renderChannelMask',
+    '//! option: 2, renderBinaural',
+    '//! attribute: 1, objectCount'
+].join('\n'));
+const SEVEN_POINT_ONE_POINT_FOUR_CHANNEL_COUNT = 12;
+// The objects the scripted package reports rendering from the second half of its packets on
+const RENDERED_OBJECT_COUNT = 11;
+// The batches an attempt renders before a live binaural switch
+const BATCHES_BEFORE_BINAURAL_SWITCH = 2;
+// A WMA track's WAVEFORMATEX, which a package attempt's decoder configures with before its first packet
+const PACKAGE_CODEC_PRIVATE = Uint8Array.of(0x61, 0x01, 0x02, 0x00, 0x44, 0xAC, 0x00, 0x00, 0x40, 0x1F, 0x00, 0x00, 0x73, 0x01, 0x10, 0x00, 0x00, 0x00);
+const PACKAGE_CONFIGURE_FAILURE_VALUE = 0x161;
+const PACKAGE_CONFIGURE_FAILURE = `audio decoder ${PACKAGE_CONVERT_ERROR}: ${PACKAGE_CONFIGURE_FAILURE_VALUE}`;
 // Matroska timestamps count milliseconds
 const MATROSKA_TIME_RESOLUTION = 1_000;
 const START_TIME_MICROSECONDS = 0 as Microseconds;
@@ -167,8 +189,10 @@ function createOpenRequest(overrides: Partial<AudioDecodeWorkerOpenAttemptReques
         audioOutput: null,
         channelMask: null,
         decoderBackend: 'pcm',
-        outputChannelCount: STEREO_CHANNEL_COUNT,
+        outputLayout: 'stereo',
+        packageCodecPrivate: null,
         packageDecoder: null,
+        renderBinaural: false,
         routeCodec: PCM_ROUTE_CODEC,
         sourceSampleRate: SAMPLE_RATE,
         startTimeMicroseconds: START_TIME_MICROSECONDS,
@@ -278,6 +302,33 @@ function createTonePackage(): ScriptedAudioDecoderModule {
         });
     }
     return new ScriptedAudioDecoderModule({ manifest: PACKAGE_MANIFEST, packets });
+}
+
+/**
+ * A scripted object audio package whose every packet decodes to the tone sample of its position in one layout,
+ * reporting no objects for the first half of its packets and RENDERED_OBJECT_COUNT after.
+ */
+function createObjectPackage(channelMask: number, channelCount: number): ScriptedAudioDecoderModule {
+    const packets: ScriptedAudioPacket[] = [];
+    const packetCount = SAMPLES_PER_BATCH * BATCH_COUNT;
+    for (let sampleIndex = 0; sampleIndex < packetCount; sampleIndex += 1) {
+        const sample = createToneSample(sampleIndex, channelCount);
+        packets.push({
+            blocks: [ {
+                attributes: { objectCount: sampleIndex < packetCount / 2 ? 0 : RENDERED_OBJECT_COUNT },
+                channelData: sample.channelData.map((plane: Float32Array): number[] => Array.from(plane)),
+                channelMask,
+                sampleRate: sample.sampleRate,
+                timestampMicroseconds: sample.mediaTimeMicroseconds
+            } ],
+            kind: 'decoded'
+        });
+    }
+    return new ScriptedAudioDecoderModule({ manifest: OBJECT_PACKAGE_MANIFEST, packets });
+}
+
+function getObjectCounts(channel: RuntimeChannel): number[] {
+    return channel.responses.flatMap(response => (response.type === 'object-count' ? [ response.objectCount ] : []));
 }
 
 /** Batches one packet per tone sample at the sample's time, as the decode worker batches a track's packets. */
@@ -516,6 +567,125 @@ describe('the audio decode worker runtime', () => {
         expect(packaged.processor.chunks.map(chunk => chunk.channelData)).toEqual(decodedPCM.processor.chunks.map(chunk => chunk.channelData));
     });
 
+    it('sets an object audio package\'s render options before its first packet, takes a live binaural switch between packets, and reports its objects', async () => {
+        const objectPackage = createObjectPackage(CUSTOM_WAVE_CHANNEL_MASK_STEREO, STEREO_CHANNEL_COUNT);
+        const channel = openRuntime();
+        const { attachment, processor } = openWorklet();
+        channel.send(createOpenRequest({
+            audioOutput: attachment,
+            decoderBackend: PACKAGE_BACKEND,
+            packageDecoder: { codec: PACKAGE_ROUTE_CODEC, source: objectPackage.source },
+            routeCodec: PACKAGE_ROUTE_CODEC
+        }), [ attachment.port ]);
+        const batches = createTonePacketBatches();
+
+        await sendBatchesOnCredits(channel, batches.slice(0, BATCHES_BEFORE_BINAURAL_SWITCH));
+        await vi.waitFor(() => {
+            expect(getReturnedInputCredits(channel)).toBe(BATCHES_BEFORE_BINAURAL_SWITCH);
+        }, WAIT_OPTIONS);
+        channel.send({ binauralHeadphones: true, generation: GENERATION, type: 'update-binaural' });
+        // Another run's switch never reaches this attempt
+        channel.send({ binauralHeadphones: false, generation: GENERATION + 1, type: 'update-binaural' });
+        for (const batch of batches.slice(BATCHES_BEFORE_BINAURAL_SWITCH)) {
+            await vi.waitFor(() => {
+                expect(AUDIO_DECODE_WORKER_INPUT_CREDITS + getReturnedInputCredits(channel)).toBeGreaterThan(batches.indexOf(batch));
+            }, WAIT_OPTIONS);
+            sendBatch(channel, batch);
+        }
+        channel.send({ ...ATTEMPT_KEY, type: 'finish-attempt' });
+        await waitForResponse(channel, { ...ATTEMPT_KEY, type: 'attempt-finished' });
+
+        expect(getFailures(channel)).toEqual([]);
+        const packetsBeforeSwitch = BATCHES_BEFORE_BINAURAL_SWITCH * SAMPLES_PER_BATCH;
+        expect(objectPackage.options).toEqual([
+            { name: 'renderChannelMask', sentPacketCount: 0, value: CUSTOM_WAVE_CHANNEL_MASK_STEREO },
+            { name: 'renderBinaural', sentPacketCount: 0, value: 0 },
+            { name: 'renderBinaural', sentPacketCount: packetsBeforeSwitch, value: 1 }
+        ]);
+        expect(getObjectCounts(channel)).toEqual([ 0, RENDERED_OBJECT_COUNT ]);
+        await vi.waitFor(() => {
+            expect(processor.receivedFrameCount).toBe(TOTAL_FRAME_COUNT);
+        }, WAIT_OPTIONS);
+    });
+
+    it('sets no render option on a package that declares none, and reports no objects', async () => {
+        const tonePackage = createTonePackage();
+
+        const packaged = await runAttempt(createTonePacketBatches(), {
+            decoderBackend: PACKAGE_BACKEND,
+            packageDecoder: { codec: PACKAGE_ROUTE_CODEC, source: tonePackage.source },
+            routeCodec: PACKAGE_ROUTE_CODEC
+        });
+
+        expect(getFailures(packaged.channel)).toEqual([]);
+        expect(tonePackage.options).toEqual([]);
+        expect(getObjectCounts(packaged.channel)).toEqual([]);
+    });
+
+    it('plays a package\'s 7.1.4 render to a 7.1.4 worklet channel for channel, with the 7.1.4 mask set before its first packet', async () => {
+        const objectPackage = createObjectPackage(CUSTOM_WAVE_CHANNEL_MASK_SEVEN_POINT_ONE_POINT_FOUR, SEVEN_POINT_ONE_POINT_FOUR_CHANNEL_COUNT);
+        const channel = openRuntime();
+        const { attachment, processor } = openWorklet({ channelCount: SEVEN_POINT_ONE_POINT_FOUR_CHANNEL_COUNT });
+        channel.send(createOpenRequest({
+            audioOutput: attachment,
+            decoderBackend: PACKAGE_BACKEND,
+            outputLayout: '7.1.4',
+            packageDecoder: { codec: PACKAGE_ROUTE_CODEC, source: objectPackage.source },
+            routeCodec: PACKAGE_ROUTE_CODEC
+        }), [ attachment.port ]);
+
+        await sendBatchesOnCredits(channel, createTonePacketBatches());
+        channel.send({ ...ATTEMPT_KEY, type: 'finish-attempt' });
+        await waitForResponse(channel, { ...ATTEMPT_KEY, type: 'attempt-finished' });
+
+        expect(getFailures(channel)).toEqual([]);
+        expect(objectPackage.options).toEqual([
+            { name: 'renderChannelMask', sentPacketCount: 0, value: CUSTOM_WAVE_CHANNEL_MASK_SEVEN_POINT_ONE_POINT_FOUR },
+            { name: 'renderBinaural', sentPacketCount: 0, value: 0 }
+        ]);
+        expect(channel.responses.filter(response => response.type === 'source-format')).toEqual([
+            { ...ATTEMPT_KEY, channelCount: SEVEN_POINT_ONE_POINT_FOUR_CHANNEL_COUNT, sampleRate: SAMPLE_RATE, type: 'source-format' }
+        ]);
+        await vi.waitFor(() => {
+            expect(processor.receivedFrameCount).toBe(TOTAL_FRAME_COUNT);
+        }, WAIT_OPTIONS);
+        // Each of the twelve speakers plays its own decoded channel, unmixed and unlimited
+        const [ firstChunk ] = processor.chunks;
+        expect(firstChunk.channelData).toHaveLength(SEVEN_POINT_ONE_POINT_FOUR_CHANNEL_COUNT);
+        for (let channelIndex = 0; channelIndex < SEVEN_POINT_ONE_POINT_FOUR_CHANNEL_COUNT; channelIndex += 1) {
+            const expected = createToneSample(0, SEVEN_POINT_ONE_POINT_FOUR_CHANNEL_COUNT).channelData[channelIndex].subarray(0, COMPARED_FRAME_COUNT);
+            expect(firstChunk.channelData[channelIndex].subarray(0, COMPARED_FRAME_COUNT), `channel ${channelIndex}`).toEqual(expected);
+        }
+    });
+
+    it('folds a package\'s 7.1.4 render into a 7.1 worklet channel', async () => {
+        const objectPackage = createObjectPackage(CUSTOM_WAVE_CHANNEL_MASK_SEVEN_POINT_ONE_POINT_FOUR, SEVEN_POINT_ONE_POINT_FOUR_CHANNEL_COUNT);
+        const sevenPointOneChannelCount = 8;
+        const channel = openRuntime();
+        const { attachment, processor } = openWorklet({ channelCount: sevenPointOneChannelCount });
+        channel.send(createOpenRequest({
+            audioOutput: attachment,
+            decoderBackend: PACKAGE_BACKEND,
+            outputLayout: '7.1',
+            packageDecoder: { codec: PACKAGE_ROUTE_CODEC, source: objectPackage.source },
+            routeCodec: PACKAGE_ROUTE_CODEC
+        }), [ attachment.port ]);
+
+        await sendBatchesOnCredits(channel, createTonePacketBatches());
+        channel.send({ ...ATTEMPT_KEY, type: 'finish-attempt' });
+        await waitForResponse(channel, { ...ATTEMPT_KEY, type: 'attempt-finished' });
+
+        expect(getFailures(channel)).toEqual([]);
+        await vi.waitFor(() => {
+            expect(processor.receivedFrameCount).toBe(TOTAL_FRAME_COUNT);
+        }, WAIT_OPTIONS);
+        expect(processor.chunks.every(chunk => chunk.channelData.length === sevenPointOneChannelCount)).toBe(true);
+        // The side channels have no height above them and pass through
+        const sample = createToneSample(0, SEVEN_POINT_ONE_POINT_FOUR_CHANNEL_COUNT);
+        const [ firstChunk ] = processor.chunks;
+        expect(firstChunk.channelData[6].subarray(0, COMPARED_FRAME_COUNT)).toEqual(sample.channelData[6].subarray(0, COMPARED_FRAME_COUNT));
+    });
+
     it('fails a package attempt with its package\'s named error when a packet fails to decode', async () => {
         const failingPackage = new ScriptedAudioDecoderModule({
             manifest: PACKAGE_MANIFEST,
@@ -546,5 +716,123 @@ describe('the audio decode worker runtime', () => {
             message: PACKAGE_FAILURE,
             type: 'attempt-failed'
         });
+    });
+
+    it('configures each package attempt\'s decoder once with the track\'s codec private data, before its first packet', async () => {
+        const tonePackage = createTonePackage();
+        const packageAttempt: Partial<AudioDecodeWorkerOpenAttemptRequest> = {
+            decoderBackend: PACKAGE_BACKEND,
+            packageCodecPrivate: PACKAGE_CODEC_PRIVATE,
+            packageDecoder: { codec: PACKAGE_ROUTE_CODEC, source: tonePackage.source },
+            routeCodec: PACKAGE_ROUTE_CODEC
+        };
+
+        const first = await runAttempt(createTonePacketBatches(), packageAttempt);
+        const firstAttemptPacketCount = tonePackage.sentPackets.length;
+        const second = await runAttempt(createTonePacketBatches(), packageAttempt);
+
+        expect([ ...getFailures(first.channel), ...getFailures(second.channel) ]).toEqual([]);
+        expect(tonePackage.configurations).toEqual([
+            { bytes: PACKAGE_CODEC_PRIVATE, sentPacketCount: 0 },
+            { bytes: PACKAGE_CODEC_PRIVATE, sentPacketCount: firstAttemptPacketCount }
+        ]);
+    });
+
+    it('configures no package decoder of a track without codec private data', async () => {
+        const tonePackage = createTonePackage();
+
+        const packaged = await runAttempt(createTonePacketBatches(), {
+            decoderBackend: PACKAGE_BACKEND,
+            packageDecoder: { codec: PACKAGE_ROUTE_CODEC, source: tonePackage.source },
+            routeCodec: PACKAGE_ROUTE_CODEC
+        });
+
+        expect(getFailures(packaged.channel)).toEqual([]);
+        expect(tonePackage.configurations).toEqual([]);
+    });
+
+    it('fails a package attempt with its package\'s named error when its codec private data fails to configure, and sends it no packet', async () => {
+        const refusingPackage = new ScriptedAudioDecoderModule({
+            configureFailure: { code: getAudioDecoderErrorCode(PACKAGE_MANIFEST, PACKAGE_CONVERT_ERROR), value: PACKAGE_CONFIGURE_FAILURE_VALUE },
+            manifest: PACKAGE_MANIFEST,
+            packets: [ { blocks: [], kind: 'decoded' } ]
+        });
+        const channel = openRuntime();
+        const { attachment } = openWorklet();
+        channel.send(createOpenRequest({
+            audioOutput: attachment,
+            decoderBackend: PACKAGE_BACKEND,
+            packageCodecPrivate: PACKAGE_CODEC_PRIVATE,
+            packageDecoder: { codec: PACKAGE_ROUTE_CODEC, source: refusingPackage.source },
+            routeCodec: PACKAGE_ROUTE_CODEC
+        }), [ attachment.port ]);
+
+        await waitForResponse(channel, {
+            ...ATTEMPT_KEY,
+            failureKind: 'decode-failed',
+            message: PACKAGE_CONFIGURE_FAILURE,
+            type: 'attempt-failed'
+        });
+        expect(refusingPackage.sentPackets).toEqual([]);
+        expect(refusingPackage.destroyedHandles).toEqual([ SCRIPTED_AUDIO_DECODER_HANDLE ]);
+    });
+
+    it('drains a package decoder once at the end of its track, and renders the frames it held back after its packets\' frames', async () => {
+        const silentBlock = {
+            channelData: [ new Array<number>(SAMPLE_FRAME_COUNT).fill(0), new Array<number>(SAMPLE_FRAME_COUNT).fill(0) ],
+            channelMask: CUSTOM_WAVE_CHANNEL_MASK_STEREO,
+            sampleRate: SAMPLE_RATE
+        };
+        const drainingPackage = new ScriptedAudioDecoderModule({
+            drainedBlocks: [ silentBlock ],
+            manifest: PACKAGE_MANIFEST,
+            packets: [ { blocks: [ { ...silentBlock, timestampMicroseconds: START_TIME_MICROSECONDS } ], kind: 'decoded' } ]
+        });
+
+        const packaged = await runAttempt([ {
+            data: new ArrayBuffer(PACKET_BYTE_LENGTH),
+            kind: 'packets',
+            packetByteLengths: [ PACKET_BYTE_LENGTH ],
+            packetTimestampsMicroseconds: [ START_TIME_MICROSECONDS ]
+        } ], {
+            decoderBackend: PACKAGE_BACKEND,
+            packageDecoder: { codec: PACKAGE_ROUTE_CODEC, source: drainingPackage.source },
+            routeCodec: PACKAGE_ROUTE_CODEC
+        });
+
+        expect(getFailures(packaged.channel)).toEqual([]);
+        expect(drainingPackage.drainCount).toBe(1);
+        await vi.waitFor(() => {
+            expect(packaged.processor.receivedFrameCount).toBe(2 * SAMPLE_FRAME_COUNT);
+        }, WAIT_OPTIONS);
+    });
+
+    it('starts drained frames without a timestamp at the last packet\'s time when no packet output any, as after a seek onto a track\'s last packet', async () => {
+        const drainingPackage = new ScriptedAudioDecoderModule({
+            drainedBlocks: [ {
+                channelData: [ new Array<number>(SAMPLE_FRAME_COUNT).fill(0), new Array<number>(SAMPLE_FRAME_COUNT).fill(0) ],
+                channelMask: CUSTOM_WAVE_CHANNEL_MASK_STEREO,
+                sampleRate: SAMPLE_RATE
+            } ],
+            manifest: PACKAGE_MANIFEST,
+            packets: [ { blocks: [], kind: 'decoded' } ]
+        });
+
+        const packaged = await runAttempt([ {
+            data: new ArrayBuffer(PACKET_BYTE_LENGTH),
+            kind: 'packets',
+            packetByteLengths: [ PACKET_BYTE_LENGTH ],
+            packetTimestampsMicroseconds: [ START_TIME_MICROSECONDS ]
+        } ], {
+            decoderBackend: PACKAGE_BACKEND,
+            packageDecoder: { codec: PACKAGE_ROUTE_CODEC, source: drainingPackage.source },
+            routeCodec: PACKAGE_ROUTE_CODEC
+        });
+
+        expect(getFailures(packaged.channel)).toEqual([]);
+        await vi.waitFor(() => {
+            expect(packaged.processor.receivedFrameCount).toBe(SAMPLE_FRAME_COUNT);
+        }, WAIT_OPTIONS);
+        expect(getProgress(packaged.channel)[0]).toMatchObject({ mediaTimeMicroseconds: START_TIME_MICROSECONDS });
     });
 });

@@ -6,7 +6,7 @@ import type {
     AudioWorkletControllerOptions
 } from '../audio/output/AudioWorkletController';
 import type { AudioWorkletTelemetry } from '../audio/output/AudioWorkletProtocol';
-import type { CustomAudioOutputChannelCount } from '../audio/processing/CustomAudioChannelLayout';
+import type { CustomAudioOutputLayout } from '../audio/processing/CustomAudioChannelLayout';
 import type { AudioDownmixSettings } from '../audio/processing/CustomAudioDownmix';
 import type { CustomAudioDownmixAlgorithm } from '../audio/processing/CustomAudioDownmixAlgorithm';
 import type CustomDecodeAudioBridge from '../audio/output/CustomDecodeAudioBridge';
@@ -66,8 +66,16 @@ export type CustomPlaybackPlayOptions = {
     audioDownmixAlgorithm?: CustomAudioDownmixAlgorithm
     audioDownmixSettings?: AudioDownmixSettings
     audioOutputMode?: CustomDecodeAudioOutputMode
+    /**
+     * The audio decoder package renders the track's object audio, Dolby Atmos in E-AC-3 or TrueHD, so a live layout switch keeps the whole layout
+     * instead of the source's floor
+     */
+    audioRendersObjects?: boolean
     audioTrackIndex: number | null
-    decodedAudioOutputChannelCount?: CustomAudioOutputChannelCount
+    /** Asks a package that declares `renderBinaural` for binaural headphone rendering whenever the output is stereo; decoded PCM only */
+    binauralHeadphones?: boolean
+    /** The layout decoded PCM plays to; defaults to stereo */
+    decodedAudioOutputLayout?: CustomAudioOutputLayout
     durationMicroseconds: Microseconds | null
     dolbyVisionProfile: CustomDecodeDolbyVisionProfile
     /** The frame-pool route's GPU decoder; set exactly on that route */
@@ -122,7 +130,9 @@ export type CustomAudioOutput = {
 export type CustomPlaybackAudioOutputOptions = {
     audioDownmixAlgorithm?: CustomAudioDownmixAlgorithm
     audioDownmixSettings?: AudioDownmixSettings
-    decodedAudioOutputChannelCount: CustomAudioOutputChannelCount
+    /** Binaural headphone rendering; a change that keeps the layout switches between packets without a resync */
+    binauralHeadphones?: boolean
+    decodedAudioOutputLayout: CustomAudioOutputLayout
 };
 
 export type CustomAudioOutputBinding = {
@@ -151,6 +161,7 @@ export type CustomVideoDecodeSession = {
     stop: () => Promise<void>
     suspendVideo?: () => boolean
     takeFrame: (targetTimeMicroseconds: Microseconds) => DecodedPresentationFrame | null
+    updateAudioBinaural?: (binauralHeadphones: boolean) => boolean
     updateAudioDownmixSettings: (settings: AudioDownmixSettings) => boolean
 };
 

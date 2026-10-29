@@ -46,6 +46,14 @@ import {
     isSupportedCustomAudioInputMetadataLayout
 } from '../audio/CustomAudioOutputPolicy';
 import {
+    CUSTOM_FIVE_POINT_ONE_INPUT_CHANNEL_COUNT,
+    CUSTOM_SEVEN_POINT_ONE_INPUT_CHANNEL_COUNT,
+    getCustomAudioOutputChannelCount,
+    hasCustomAudioOutputHeights,
+    type CustomAudioOutputLayout
+} from '../audio/processing/CustomAudioChannelLayout';
+import { AUDIO_DECODER_RENDER_CHANNEL_MASK_OPTION, declaresAudioDecoderOption } from '../decode/audio/AudioDecoderManifest';
+import {
     isCustomPlaybackContainer,
     supportsCustomContainerCodecCombination
 } from './CustomContainerCodecSupport';
@@ -86,6 +94,10 @@ import {
     getAV1RawFormatStreamDefinitionFromMetadata,
     type AV1RawFormatProbeDefinition
 } from './AV1RawFormatCapabilities';
+import {
+    getH264RawFormatStreamDefinitionFromMetadata,
+    type H264RawFormatProbeDefinition
+} from './H264RawFormatCapabilities';
 import {
     getGPUDecoderFormatFacts,
     getGPUDecoderPixelFormatHolding,
@@ -179,7 +191,12 @@ const AUDIO_CODEC_ALIASES = new Map<string, CustomAudioCodec>([
     [ 'PCM_U8', 'pcm_u8' ],
     [ 'TRUEHD', 'truehd' ],
     [ 'TRUE-HD', 'truehd' ],
-    [ 'VORBIS', 'vorbis' ]
+    [ 'VORBIS', 'vorbis' ],
+    [ 'WMALOSSLESS', 'wmalossless' ],
+    [ 'WMAPRO', 'wmapro' ],
+    [ 'WMAV1', 'wmav1' ],
+    [ 'WMAV2', 'wmav2' ],
+    [ 'WMAVOICE', 'wmavoice' ]
 ]);
 
 type MediaStream = {
@@ -277,6 +294,7 @@ type TypedStreamCandidate = {
 type AudioOutputSelection =
     | {
         audioDecoder?: AudioDecoderPackageSelection
+        audioRendersObjects?: true
         outputMode: CustomDecodeAudioOutputMode
         status: 'selected'
     }
@@ -290,6 +308,7 @@ type PlaybackAudioSelection =
         audioCodec: CustomAudioCodec | null
         audioDecoder?: AudioDecoderPackageSelection
         audioOutputMode: CustomDecodeAudioOutputMode | null
+        audioRendersObjects?: true
         audioSourceChannelCount: number | null
         audioTrackIndex: number | null
         status: 'selected'
@@ -356,6 +375,11 @@ export type CustomPlaybackEligibilityOptions = {
      * The first that decodes the track's codec decodes it to PCM when neither the media element nor the engine's own decoders play it.
      */
     audioDecoders?: readonly AudioDecoderPackage[]
+    /**
+     * Where decoded audio would play: the speaker layout chosen for the destination, and the host's binaural headphone setting.
+     * A Dolby Atmos stream prefers a package that renders its objects when the layout has speakers its decode lacks, or binaural rendering is asked for a stereo layout.
+     */
+    audioRenderTarget?: CustomAudioRenderTarget
     authorizedExternalHDRRouteKeys?: readonly ExternalHDRAuthorizationRouteKey[]
     authorizedRawHDRRouteKeys?: readonly RawHDRAuthorizationRouteKey[]
     /** The GPU decoders the host's policy lets the frame-pool route choose, on the presenter's device */
@@ -370,10 +394,18 @@ export type CustomVideoRouteOptions = Omit<CustomPlaybackEligibilityOptions, 'gp
     gpuVideoDecoderSummaries?: readonly GPUVideoDecoderSummary[]
 };
 
+/** The speaker layout decoded audio plays to, and whether the host asked for binaural headphone rendering. */
+export type CustomAudioRenderTarget = Readonly<{
+    binauralHeadphones: boolean
+    speakerLayout: CustomAudioOutputLayout
+}>;
+
 export type EligibleCustomPlayback = {
-    /** The host's audio decoder package that decodes the decoded PCM route's track, which no engine decoder decodes */
+    /** The host's audio decoder package that decodes the decoded PCM route's track, which no engine decoder decodes or which renders its object audio */
     audioDecoder?: AudioDecoderPackageSelection
     audioOutputMode: CustomDecodeAudioOutputMode | null
+    /** The package renders the track's Dolby Atmos objects, so the track plays to the whole speaker layout instead of its floor; set only when true */
+    audioRendersObjects?: true
     audioSourceChannelCount: number | null
     /** Zero-based ordinal within container audio tracks, not MediaStream.Index. */
     audioTrackIndex: number | null
@@ -631,6 +663,11 @@ function getNativeMediaAudioCodec(codec: CustomAudioCodec): NativeMediaAudioCode
         case 'opus':
         case 'truehd':
         case 'vorbis':
+        case 'wmalossless':
+        case 'wmapro':
+        case 'wmav1':
+        case 'wmav2':
+        case 'wmavoice':
             return null;
     }
 }
@@ -655,7 +692,7 @@ function hasQualifiedDecodedPCMInputLayout(
     if (isCustomMediabunnyPCMAudioCodec(codec)) {
         return true;
     }
-    if (stream.Channels !== 6) {
+    if (stream.Channels !== CUSTOM_FIVE_POINT_ONE_INPUT_CHANNEL_COUNT && stream.Channels !== CUSTOM_SEVEN_POINT_ONE_INPUT_CHANNEL_COUNT) {
         return true;
     }
 
@@ -664,8 +701,11 @@ function hasQualifiedDecodedPCMInputLayout(
         case 'flac':
         case 'opus':
         case 'vorbis': {
+            // 5.1 and 7.1 each need the codec's own verdict for that layout
             const surroundCapability: CustomNativeSurroundAudioCodecCapability | undefined =
-                capabilities.nativeSurroundAudio?.[codec];
+                stream.Channels === CUSTOM_SEVEN_POINT_ONE_INPUT_CHANNEL_COUNT ?
+                    capabilities.nativeSevenPointOneAudio?.[codec] :
+                    capabilities.nativeSurroundAudio?.[codec];
             return surroundCapability?.status === 'supported'
                 && surroundCapability.inputChannelCount === stream.Channels;
         }
@@ -675,6 +715,11 @@ function hasQualifiedDecodedPCMInputLayout(
         case 'mlp':
         case 'mp3':
         case 'truehd':
+        case 'wmalossless':
+        case 'wmapro':
+        case 'wmav1':
+        case 'wmav2':
+        case 'wmavoice':
             return false;
     }
 }
@@ -695,6 +740,84 @@ function findAudioDecoderPackage(
     return { codec, source: { manifest: decoderPackage.manifest, memory: decoderPackage.memory, module: decoderPackage.module } };
 }
 
+/** Reports whether Jellyfin's Profile names Dolby Atmos on an E-AC-3 or TrueHD stream, as FFmpeg's profile names do: "Dolby Digital Plus + Dolby Atmos", "Dolby TrueHD + Dolby Atmos". */
+function isDolbyAtmosStream(codec: CustomAudioCodec, stream: MediaStream): boolean {
+    return (codec === 'eac3' || codec === 'truehd') && (normalizeMetadataToken(stream.Profile)?.includes('ATMOS') ?? false);
+}
+
+/** Reports whether a package renders object audio: its manifest declares `renderChannelMask`. */
+function rendersObjectAudio(audioDecoder: AudioDecoderPackageSelection): boolean {
+    return declaresAudioDecoderOption(audioDecoder.source.manifest, AUDIO_DECODER_RENDER_CHANNEL_MASK_OPTION);
+}
+
+/**
+ * Reports whether an Atmos stream's objects must render for the target: binaural headphones on a stereo layout, a height layout,
+ * or a floor wider than the channels the stream declares, its E-AC-3 core or its TrueHD 7.1 presentation, which stock decode plays.
+ */
+function needsObjectRendering(stream: MediaStream, renderTarget: CustomAudioRenderTarget | undefined): boolean {
+    if (!renderTarget) {
+        return false;
+    }
+    const { binauralHeadphones, speakerLayout } = renderTarget;
+    return (binauralHeadphones && speakerLayout === 'stereo')
+        || hasCustomAudioOutputHeights(speakerLayout)
+        || getCustomAudioOutputChannelCount(speakerLayout) > Number(stream.Channels);
+}
+
+/** Returns the first of the host's audio decoder packages that decodes the codec and renders its object audio, whatever the engine's own decoders decode. */
+function findObjectAudioDecoderPackage(
+    codec: CustomAudioCodec,
+    audioDecoders: readonly AudioDecoderPackage[]
+): AudioDecoderPackageSelection | null {
+    for (const decoderPackage of audioDecoders) {
+        const selection: AudioDecoderPackageSelection = {
+            codec,
+            source: { manifest: decoderPackage.manifest, memory: decoderPackage.memory, module: decoderPackage.module }
+        };
+        if (decoderPackage.manifest.codecs.includes(codec) && rendersObjectAudio(selection)) {
+            return selection;
+        }
+    }
+    return null;
+}
+
+/** Selects a package that renders an Atmos stream's objects when the render target needs them and the declared layout has a decoded PCM route, else null. */
+function selectObjectAudioOutput(
+    codec: CustomAudioCodec,
+    stream: MediaStream,
+    eligibilityOptions: CustomPlaybackEligibilityOptions
+): AudioOutputSelection | null {
+    if (!needsObjectRendering(stream, eligibilityOptions.audioRenderTarget)) {
+        return null;
+    }
+    const objectAudioDecoder = findObjectAudioDecoderPackage(codec, eligibilityOptions.audioDecoders ?? []);
+    // The declared layout, the E-AC-3 core or the TrueHD 7.1 presentation, still needs its decoded PCM route
+    return objectAudioDecoder && isSupportedCustomAudioInputLayout(codec, stream.Channels, stream.SampleRate) ?
+        { audioDecoder: objectAudioDecoder, audioRendersObjects: true, outputMode: 'decoded-pcm', status: 'selected' } :
+        null;
+}
+
+/** Selects a package for a codec no engine decoder decodes; an Atmos stream it renders the objects of plays to the whole layout. */
+function selectPackageAudioOutput(
+    codec: CustomAudioCodec,
+    stream: MediaStream,
+    audioDecoder: AudioDecoderPackageSelection,
+    atmos: boolean
+): AudioOutputSelection {
+    if (!isSupportedCustomAudioInputLayout(codec, stream.Channels, stream.SampleRate)) {
+        return { reason: 'audio-layout-unsupported', status: 'invalid' };
+    }
+    return atmos && rendersObjectAudio(audioDecoder) ?
+        { audioDecoder, audioRendersObjects: true, outputMode: 'decoded-pcm', status: 'selected' } :
+        { audioDecoder, outputMode: 'decoded-pcm', status: 'selected' };
+}
+
+/**
+ * Selects the audio output route.
+ * A Dolby Atmos stream whose objects the render target needs takes a package that renders them, ahead of the native media route;
+ * any other stream takes the native media route, then a package for a codec no engine decoder decodes, then the engine's own decoders.
+ * Either way, an Atmos stream a rendering package decodes plays to the whole speaker layout.
+ */
 function selectAudioOutput(
     codec: CustomAudioCodec,
     stream: MediaStream,
@@ -702,6 +825,12 @@ function selectAudioOutput(
     eligibilityOptions: CustomPlaybackEligibilityOptions,
     durationKnown: boolean
 ): AudioOutputSelection {
+    const atmos = isDolbyAtmosStream(codec, stream);
+    const objectAudioOutput = atmos ? selectObjectAudioOutput(codec, stream, eligibilityOptions) : null;
+    if (objectAudioOutput) {
+        return objectAudioOutput;
+    }
+
     const nativeMediaAudioCapabilities = eligibilityOptions.nativeMediaAudioCapabilities;
     const nativeCodec = getNativeMediaAudioCodec(codec);
     // The native media backend sizes its MediaSource from the duration
@@ -720,9 +849,7 @@ function selectAudioOutput(
     // A package reports its decoded speaker layout, so the declared layout only has to have a decoded PCM presentation path
     const audioDecoder = findAudioDecoderPackage(codec, capabilities, eligibilityOptions.audioDecoders ?? []);
     if (audioDecoder) {
-        return isSupportedCustomAudioInputLayout(codec, stream.Channels, stream.SampleRate) ?
-            { audioDecoder, outputMode: 'decoded-pcm', status: 'selected' } :
-            { reason: 'audio-layout-unsupported', status: 'invalid' };
+        return selectPackageAudioOutput(codec, stream, audioDecoder, atmos);
     }
 
     if (capabilities.audio[codec].status !== 'supported') {
@@ -1185,23 +1312,19 @@ function getAV1RawFormatVariantDefinition(videoCodec: CustomVideoCodec, stream: 
 }
 
 /**
- * Selects raw planes in the exact format of AV1 outside Main, which no VideoFrame route decodes.
- * Such a stream never falls through to the Main routes, so without its variant capability or raw key a GPU decoder package may still take it.
+ * Selects raw planes in an exact raw format variant's format, which its variant capability and the raw key of its format and color qualify.
+ * The color takes the variant's depth, and HDR needs the raw HDR route.
  */
-function selectAV1RawFormatVideoOutput(
-    capabilities: CustomDecodeCapabilities,
+function selectExactRawFormatVideoOutput(
     eligibilityOptions: CustomPlaybackEligibilityOptions,
-    videoCodec: CustomVideoCodec,
     stream: MediaStream,
-    colorMetadata: InputColorMetadata
-): VideoOutputSelection | null {
-    const definition = getAV1RawFormatVariantDefinition(videoCodec, stream);
-    if (!definition) {
-        return null;
-    }
+    colorMetadata: InputColorMetadata,
+    definition: Pick<AV1RawFormatProbeDefinition, 'bitDepth' | 'format'>,
+    variantSupported: boolean
+): VideoOutputSelection {
     const exactColorMetadata: InputColorMetadata = { ...colorMetadata, bitDepth: definition.bitDepth };
     const hdr = exactColorMetadata.transfer !== 'sdr';
-    if (!hasSupportedAV1RawFormatVariant(capabilities, definition) || !hasStreamRawVideoFrameCopyLayout(
+    if (!variantSupported || !hasStreamRawVideoFrameCopyLayout(
         stream,
         definition.format,
         RAW_VIDEO_SINGLE_LAYER_FRAME_COUNT
@@ -1216,6 +1339,66 @@ function selectAV1RawFormatVideoOutput(
         return { reason: hdr ? 'hdr-presentation-unavailable' : 'codec-unsupported', status: 'invalid' };
     }
     return createRawVideoOutputSelection(stream, definition.format, hdr);
+}
+
+/**
+ * Selects raw planes in the exact format of AV1 outside Main, which no VideoFrame route decodes.
+ * Such a stream never falls through to the Main routes, so without its variant capability or raw key a GPU decoder package may still take it.
+ */
+function selectAV1RawFormatVideoOutput(
+    capabilities: CustomDecodeCapabilities,
+    eligibilityOptions: CustomPlaybackEligibilityOptions,
+    videoCodec: CustomVideoCodec,
+    stream: MediaStream,
+    colorMetadata: InputColorMetadata
+): VideoOutputSelection | null {
+    const definition = getAV1RawFormatVariantDefinition(videoCodec, stream);
+    if (!definition) {
+        return null;
+    }
+    return selectExactRawFormatVideoOutput(
+        eligibilityOptions,
+        stream,
+        colorMetadata,
+        definition,
+        hasSupportedAV1RawFormatVariant(capabilities, definition)
+    );
+}
+
+/** Returns whether an H.264 raw format's exact variant capability passed for its format, bit depth, and chroma. */
+function hasSupportedH264RawFormatVariant(
+    capabilities: CustomDecodeCapabilities,
+    definition: H264RawFormatProbeDefinition
+): boolean {
+    const capability = capabilities.h264RawFormats?.[definition.variant];
+    return capability?.status === 'supported'
+        && capability.format === definition.format
+        && capability.bitDepth === definition.bitDepth
+        && capability.chromaFormat === definition.chromaFormat;
+}
+
+/**
+ * Selects raw planes in the exact format of H.264 beyond 8-bit 4:2:0, a profile beyond High at 10-bit 4:2:0, 4:2:2, or 4:4:4, which the native VideoFrame route never decodes.
+ * Such a stream never falls through to the High route.
+ */
+function selectH264RawFormatVideoOutput(
+    capabilities: CustomDecodeCapabilities,
+    eligibilityOptions: CustomPlaybackEligibilityOptions,
+    videoCodec: CustomVideoCodec,
+    stream: MediaStream,
+    colorMetadata: InputColorMetadata
+): VideoOutputSelection | null {
+    const definition = videoCodec === 'h264' ? getH264RawFormatStreamDefinitionFromMetadata(stream) : null;
+    if (!definition) {
+        return null;
+    }
+    return selectExactRawFormatVideoOutput(
+        eligibilityOptions,
+        stream,
+        colorMetadata,
+        definition,
+        hasSupportedH264RawFormatVariant(capabilities, definition)
+    );
 }
 
 /** Selects an independently authorized native Dolby Vision compatible base route. */
@@ -1362,13 +1545,22 @@ export function getDolbyVisionReconstructionRawFrameFormat(options: unknown): Cu
 }
 
 /**
- * Returns the raw format a stream's raw-plane route decodes into, before capability checks: a range extension's or an AV1 raw format's exact variant,
- * else I420P10 or I420P12 for the profiles the raw HDR probes cover.
+ * Returns the raw format a stream's raw-plane route decodes into, before capability checks: a range extension's, an AV1 raw format's, or an H.264 raw
+ * format's exact variant, else I420P10 or I420P12 for the profiles the raw HDR probes cover.
  */
 function getRawVideoStreamFormat(codec: CustomVideoCodec, stream: MediaStream): CustomDecodeRawVideoFrameFormat | null {
-    const exactDefinition = codec === 'hevc' ?
-        getHEVCRangeExtensionStreamDefinitionFromMetadata(stream) :
-        getAV1RawFormatVariantDefinition(codec, stream);
+    let exactDefinition: Pick<AV1RawFormatProbeDefinition, 'format'> | null;
+    switch (codec) {
+        case 'hevc':
+            exactDefinition = getHEVCRangeExtensionStreamDefinitionFromMetadata(stream);
+            break;
+        case 'h264':
+            exactDefinition = getH264RawFormatStreamDefinitionFromMetadata(stream);
+            break;
+        default:
+            exactDefinition = getAV1RawFormatVariantDefinition(codec, stream);
+            break;
+    }
     if (exactDefinition) {
         return exactDefinition.format;
     }
@@ -1801,8 +1993,8 @@ function selectVideoOutput(
 }
 
 /**
- * Selects the engine's own route for a stream's color: a range extension's or AV1 raw format's exact variant, then the SDR routes, then the HDR
- * routes.
+ * Selects the engine's own route for a stream's color: a range extension's, AV1 raw format's, or H.264 raw format's exact variant, then the SDR
+ * routes, then the HDR routes.
  */
 function selectColorVideoOutput(
     capabilities: CustomDecodeCapabilities,
@@ -1819,6 +2011,12 @@ function selectColorVideoOutput(
         colorMetadata
     );
     const exactRawSelection = rangeExtensionSelection ?? selectAV1RawFormatVideoOutput(
+        capabilities,
+        eligibilityOptions,
+        videoCodec,
+        videoStream,
+        colorMetadata
+    ) ?? selectH264RawFormatVideoOutput(
         capabilities,
         eligibilityOptions,
         videoCodec,
@@ -2001,6 +2199,7 @@ function selectPlaybackAudio(
         audioCodec,
         ...(audioOutput.audioDecoder ? { audioDecoder: audioOutput.audioDecoder } : {}),
         audioOutputMode: audioOutput.outputMode,
+        ...(audioOutput.audioRendersObjects ? { audioRendersObjects: true } : {}),
         audioSourceChannelCount: Number(selectedAudio.stream.Channels),
         audioTrackIndex: selectedAudio.trackOrdinal,
         status: 'selected'
@@ -2207,13 +2406,16 @@ function hasPotentialColorVideoRoute(
     if (packageFormat !== null && isPackageOnlyVideoVariant(codec, stream, packageFormat)) {
         return hasPotentialCustomVideoDimensions(stream);
     }
-    const rangeExtensionDefinition = codec === 'hevc' ?
-        getHEVCRangeExtensionStreamDefinitionFromMetadata(stream) :
-        null;
-    if (rangeExtensionDefinition) {
+    let exactRawDefinition: Readonly<{ bitDepth: number }> | null = null;
+    if (codec === 'hevc') {
+        exactRawDefinition = getHEVCRangeExtensionStreamDefinitionFromMetadata(stream);
+    } else if (codec === 'h264') {
+        exactRawDefinition = getH264RawFormatStreamDefinitionFromMetadata(stream);
+    }
+    if (exactRawDefinition) {
         return hasPotentialCustomVideoDimensions(stream)
             && (colorMetadata.transfer === 'sdr'
-                || rangeExtensionDefinition.bitDepth >= 10);
+                || exactRawDefinition.bitDepth >= 10);
     }
     if (colorMetadata.transfer === 'sdr') {
         if (!hasCompletePotentialSDRVideoMetadata(stream)) {
@@ -2336,6 +2538,25 @@ export function getPlaybackAudioCodec(options: unknown): CustomAudioCodec | null
         return null;
     }
     return AUDIO_CODEC_ALIASES.get(normalizeMetadataValue(selectedAudio.stream.Codec) ?? '') ?? null;
+}
+
+/**
+ * Returns whether the selected audio track is Dolby Atmos whose objects the render target needs, the test eligibility runs before it prefers a rendering package.
+ * A host that fetches audio packages only when a playback needs them asks it first, so that such a track never settles for the native media route for want of a package.
+ */
+export function playbackAudioNeedsObjectRendering(options: unknown, renderTarget: CustomAudioRenderTarget | undefined): boolean {
+    const mediaSource = options && typeof options === 'object' ? (options as { mediaSource?: unknown }).mediaSource : undefined;
+    if (!mediaSource || typeof mediaSource !== 'object') {
+        return false;
+    }
+    const selectedAudio = getSelectedAudioStream(mediaSource as MediaSource, getStreams(mediaSource as MediaSource));
+    if (selectedAudio.status !== 'selected') {
+        return false;
+    }
+    const codec = AUDIO_CODEC_ALIASES.get(normalizeMetadataValue(selectedAudio.stream.Codec) ?? '');
+    return codec !== undefined
+        && isDolbyAtmosStream(codec, selectedAudio.stream)
+        && needsObjectRendering(selectedAudio.stream, renderTarget);
 }
 
 /**
@@ -2466,6 +2687,7 @@ export function getCustomPlaybackEligibility(
     return {
         ...(audioSelection.audioDecoder ? { audioDecoder: audioSelection.audioDecoder } : {}),
         audioOutputMode,
+        ...(audioSelection.audioRendersObjects ? { audioRendersObjects: true } : {}),
         audioSourceChannelCount,
         audioTrackIndex,
         durationMicroseconds: parsedSource.durationMicroseconds,

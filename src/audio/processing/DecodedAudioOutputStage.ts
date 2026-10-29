@@ -1,8 +1,9 @@
 import {
     getCustomAudioChannelLayout,
+    getCustomAudioOutputChannelCount,
     requiresCustomAudioFoldDown,
     type CustomAudioChannelLayout,
-    type CustomAudioOutputChannelCount
+    type CustomAudioOutputLayout
 } from './CustomAudioChannelLayout';
 import StreamingAudioOutputPipeline, {
     type StreamingAudioOutputPipelineTelemetry,
@@ -14,7 +15,8 @@ import type AudioOutputStageModule from './AudioOutputStageModule';
 import type PCMChannelPool from './PCMChannelPool';
 import {
     CUSTOM_AUDIO_OUTPUT_SAMPLE_RATE,
-    isSupportedCustomAudioInputLayout
+    isSupportedCustomAudioInputLayout,
+    isSupportedCustomAudioRenderedLayout
 } from '../CustomAudioOutputPolicy';
 import { isSupportedCustomAudioSampleRate } from '../CustomAudioSampleRate';
 
@@ -23,6 +25,8 @@ export type DecodedAudioFormat = Readonly<{
     channelCount: number
     /** The decoder's speaker layout, or null to derive it from the channel count */
     layout: CustomAudioChannelLayout | null
+    /** A package rendered the block from objects, summing them without a limiter of its own; absent for every other decode */
+    rendered?: boolean
     sampleRate: number
 }>;
 
@@ -40,7 +44,7 @@ export type DecodedAudioOutputStageOptions = Readonly<{
     /** Observes the first binding and every later change of the bound format */
     onSourceFormat?: (sourceFormat: DecodedAudioSourceFormat) => void
     onTimelineCorrection?: StreamingAudioTimelineCorrectionListener
-    outputChannelCount: CustomAudioOutputChannelCount
+    outputLayout: CustomAudioOutputLayout
     /** Renders the resampler and limiter in WebAssembly; without it, the JavaScript references render the same bytes */
     outputStageModule?: AudioOutputStageModule | null
     /** The codec name the decoded PCM route tables qualify */
@@ -96,7 +100,9 @@ export default class DecodedAudioOutputStage {
             throw new UnsupportedDecodedAudioFormatError(`The decoded ${channelCount}-channel audio layout is unsupported`);
         }
         const routeCodec = this.options.routeCodec;
-        if (!isSupportedCustomAudioInputLayout(routeCodec, channelCount, sampleRate)) {
+        // A package that renders object audio reports the output layout, heights included
+        if (!isSupportedCustomAudioInputLayout(routeCodec, channelCount, sampleRate)
+            && !isSupportedCustomAudioRenderedLayout(routeCodec, layout, sampleRate)) {
             throw new UnsupportedDecodedAudioFormatError(
                 `Decoded ${routeCodec} audio at ${channelCount} channels and ${sampleRate} Hz `
                 + 'does not match a qualified decoded PCM route'
@@ -111,8 +117,8 @@ export default class DecodedAudioOutputStage {
         } else if (sampleRate !== this.boundSourceFormat?.sampleRate) {
             outputs = pipeline.changeSourceSampleRate(sampleRate);
         }
-        // A fold-down can exceed full scale; the limiter also guards a later live gain boost
-        if (requiresCustomAudioFoldDown(layout, this.options.outputChannelCount)) {
+        // A fold-down, or a package's object render, sums channels and can exceed full scale; the limiter also guards a later live gain boost
+        if (decodedAudioFormat.rendered === true || requiresCustomAudioFoldDown(layout, this.options.outputLayout)) {
             pipeline.enablePeakLimiter();
         }
         streamingDownmixSettings?.setSampleRate(sampleRate);
@@ -144,7 +150,7 @@ export default class DecodedAudioOutputStage {
 
     private createPipeline(sourceSampleRate: number): StreamingAudioOutputPipeline {
         return new StreamingAudioOutputPipeline({
-            channelCount: this.options.outputChannelCount,
+            channelCount: getCustomAudioOutputChannelCount(this.options.outputLayout),
             channelPool: this.options.channelPool,
             maximumOutputFrameCount: this.options.maximumOutputFrameCount,
             maximumTimestampQuantizationMicroseconds: this.options.timestampToleranceMicroseconds,

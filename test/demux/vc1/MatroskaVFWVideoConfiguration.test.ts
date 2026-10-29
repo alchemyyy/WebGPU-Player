@@ -5,8 +5,9 @@ import { describe, expect, it } from 'vitest';
 
 import {
     MATROSKA_VFW_CODEC_ID,
-    readMatroskaVC1DecoderDescription,
-    readMatroskaWMV3DecoderDescription,
+    readMatroskaVFWCodecPrivate,
+    readVFWVC1DecoderDescription,
+    readVFWWMV3DecoderDescription,
     type VC1DecoderDescriptionResult
 } from 'webgpu-player/demux/vc1/MatroskaVFWVideoConfiguration';
 
@@ -55,6 +56,16 @@ function requireDescription(result: VC1DecoderDescriptionResult): Uint8Array {
         throw new Error(`Expected a description, got ${result.failure}`);
     }
     return result.description;
+}
+
+/** Reads a Matroska VfW track's WMV3 description, as the VC-1 track configuration reads one from its CodecPrivate. */
+function readMatroskaWMV3DecoderDescription(track: InputVideoTrack, codedWidth: number, codedHeight: number): VC1DecoderDescriptionResult {
+    return readVFWWMV3DecoderDescription(readMatroskaVFWCodecPrivate(track), codedWidth, codedHeight);
+}
+
+/** Reads a Matroska VfW track's VC-1 description, as the VC-1 track configuration reads one from its CodecPrivate. */
+function readMatroskaVC1DecoderDescription(track: InputVideoTrack): VC1DecoderDescriptionResult {
+    return readVFWVC1DecoderDescription(readMatroskaVFWCodecPrivate(track));
 }
 
 function readFourCC(description: Uint8Array): string {

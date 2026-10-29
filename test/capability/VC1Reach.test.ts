@@ -155,7 +155,10 @@ describe('VC-1 and WMV3 reach', () => {
         // The fork's demuxer reads VC-1 under its registration descriptor, in MPEG-TS and M2TS
         [ TRANSPORT_STREAM_CONTAINER, 'vc1', 'ac3', true ],
         [ 'm2ts', 'vc1', 'ac3', true ],
-        [ ASF_CONTAINER, 'wmv3', null, false ]
+        // The fork's ASF demuxer reads WMV3 and WVC1 streams, which the worker restamps in presentation order
+        [ ASF_CONTAINER, 'wmv3', 'wmav2', true ],
+        [ ASF_CONTAINER, 'vc1', 'wmapro', true ],
+        [ ASF_CONTAINER, 'h264', null, false ]
     ] as const)('places %s %s with %s audio: %s', (container, videoCodec, audioCodec, supported) => {
         expect(supportsCustomContainerCodecCombination([ container ], videoCodec, audioCodec)).toBe(supported);
     });
@@ -167,7 +170,7 @@ describe('VC-1 and WMV3 reach', () => {
     it.each([
         [ 'an Advanced profile WMV3 stream', { Codec: 'wmv3', Profile: 'Advanced' }, MATROSKA_CONTAINER ],
         [ 'a WMV3 stream in an ISO base media file', { Codec: 'wmv3', Profile: 'Main' }, ISO_BASE_MEDIA_CONTAINER ],
-        [ 'a WMV3 stream in ASF', { Codec: 'wmv3', Profile: 'Main' }, ASF_CONTAINER ],
+        [ 'a WMV3 stream in an MPEG transport stream', { Codec: 'wmv3', Profile: 'Main' }, TRANSPORT_STREAM_CONTAINER ],
         [ 'a Main profile VC-1 stream', { Codec: 'vc1', Profile: 'Main' }, MATROSKA_CONTAINER ]
     ])('rejects %s from selection', (_label: string, fields: StreamFields, container: string) => {
         expect(hasPotentialCustomPlaybackVideoRoute(createItem(fields, container))).toBe(false);

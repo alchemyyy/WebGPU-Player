@@ -48,7 +48,8 @@ const HEVC_ITEM = Object.freeze({
     MediaStreams: [ { BitDepth: 8, Codec: 'hevc', PixelFormat: 'yuv420p', Profile: 'Main', Type: 'Video', VideoRange: 'SDR', VideoRangeType: 'SDR' } ]
 });
 const VP8_ITEM = Object.freeze({ MediaStreams: [ { BitDepth: 8, Codec: 'vp8', Type: 'Video', VideoRange: 'SDR', VideoRangeType: 'SDR' } ] });
-const AUDIO_CONFIGURATION_COUNT = CUSTOM_WEB_CODECS_AUDIO_CODECS.length + CUSTOM_NATIVE_SURROUND_AUDIO_CODECS.length;
+// Each surround codec has a 5.1 and a 7.1 configuration
+const AUDIO_CONFIGURATION_COUNT = CUSTOM_WEB_CODECS_AUDIO_CODECS.length + (2 * CUSTOM_NATIVE_SURROUND_AUDIO_CODECS.length);
 
 /** Creates an environment where every configuration is supported, and every video decode matches unless a driver now fails it. */
 function createHarness(videoOutputSupported = true): ProbeHarness {
@@ -121,10 +122,10 @@ function countSurroundConfigurations(harness: ProbeHarness): number {
     return harness.audioProbe.mock.calls.filter(([ config ]) => config.numberOfChannels === SURROUND_CHANNEL_COUNT).length;
 }
 
-/** Counts the stereo decodes of a codec, leaving out its 5.1 probe. */
+/** Counts the stereo decodes of a codec, leaving out its 5.1 and 7.1 probes. */
 function countOutputProbes(harness: ProbeHarness, codec: string): number {
     return harness.nativeAudioOutputProbe.mock.calls.filter(([ probeRequest ]) => (
-        probeRequest.configuration.codec === codec && probeRequest.configuration.numberOfChannels !== SURROUND_CHANNEL_COUNT
+        probeRequest.configuration.codec === codec && probeRequest.configuration.numberOfChannels < SURROUND_CHANNEL_COUNT
     )).length;
 }
 
@@ -289,6 +290,25 @@ describe('stored capability probe verdicts', () => {
             'native-surround-audio',
             'native-ultra-hd:hevc'
         ]));
+    });
+
+    it('keep a stored 5.1 verdict from before the 7.1 probe, and probe only 7.1', async () => {
+        const storage = createMemoryStorage();
+        await createProbe(createHarness(), { store: createStore(storage) }).probe(MPEG2_ITEM);
+        // An entry written before the 7.1 probe existed has no verdict under its name
+        const [ [ key, text ] ] = [ ...storage.entries ];
+        const entry = JSON.parse(text) as { verdicts: Record<string, unknown> };
+        delete entry.verdicts['native-seven-point-one-audio'];
+        storage.entries.set(key, JSON.stringify(entry));
+        const laterHarness = createHarness();
+
+        const capabilities = await createProbe(laterHarness, { store: createStore(storage), waitForIdle: createIdleGate().waitForIdle }).probe(MPEG2_ITEM);
+
+        expect(laterHarness.audioProbe.mock.calls.map(([ config ]) => config.numberOfChannels)).toEqual(
+            CUSTOM_NATIVE_SURROUND_AUDIO_CODECS.map(() => 8)
+        );
+        expect(capabilities.nativeSurroundAudio?.aac).toMatchObject({ inputChannelCount: 6, status: 'supported' });
+        expect(capabilities.nativeSevenPointOneAudio?.aac).toMatchObject({ inputChannelCount: 8, status: 'supported' });
     });
 
     it('never keep an unknown result', async () => {

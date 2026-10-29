@@ -15,11 +15,11 @@ import {
     type default as AudioOutputStageModule
 } from '../audio/processing/AudioOutputStageModule';
 import {
-    CUSTOM_SEVEN_POINT_ONE_OUTPUT_CHANNEL_COUNT,
+    CUSTOM_MAXIMUM_OUTPUT_CHANNEL_COUNT,
     prepareCustomAudioOutputChannelData,
     type CustomAudioChannelLayout
 } from '../audio/processing/CustomAudioChannelLayout';
-import { getQualifiedCustomWaveChannelLayout } from '../audio/processing/CustomWaveChannelLayout';
+import { getCustomAudioOutputChannelMask, getQualifiedCustomWaveChannelLayout } from '../audio/processing/CustomWaveChannelLayout';
 import DecodedAudioOutputStage, {
     UnsupportedDecodedAudioFormatError,
     type BoundDecodedAudioInput
@@ -43,6 +43,7 @@ import {
     type AudioDecodeWorkerPCMBatch,
     type AudioDecodeWorkerPCMSample,
     type AudioDecodeWorkerResponse,
+    type AudioDecodeWorkerUpdateBinauralRequest,
     type AudioDecodeWorkerUpdateDownmixSettingsRequest
 } from './AudioDecodeWorkerProtocol';
 import {
@@ -72,8 +73,7 @@ const MAXIMUM_AUDIO_OUTPUT_CHUNK_FRAME_COUNT = requireAudioOutputChunkFrameBound
         / MAX_DECODED_AUDIO_SAMPLE_CREDITS
 ));
 // Every chunk in flight to the worklet, at the widest output layout, returns its channel buffers
-const MAXIMUM_SPARE_AUDIO_OUTPUT_CHANNEL_BUFFERS = MAX_DECODED_AUDIO_SAMPLE_CREDITS * CUSTOM_SEVEN_POINT_ONE_OUTPUT_CHANNEL_COUNT;
-const STEREO_OUTPUT_CHANNEL_COUNT = 2;
+const MAXIMUM_SPARE_AUDIO_OUTPUT_CHANNEL_BUFFERS = MAX_DECODED_AUDIO_SAMPLE_CREDITS * CUSTOM_MAXIMUM_OUTPUT_CHANNEL_COUNT;
 const MISSING_AUDIO_OUTPUT_MESSAGE = 'Decoded audio has no channel to the worklet';
 const INVALID_AUDIO_OUTPUT_MESSAGE = 'The channel to the worklet is invalid';
 const INPUT_CREDIT_MESSAGE = 'Decoded audio input exceeded its credits';
@@ -98,6 +98,8 @@ type AudioDecodeAttempt = {
     completion: Promise<void>
     /** Set once the decode worker sent the attempt's last batch */
     finishRequested: boolean
+    /** The `objectCount` the attempt last reported, or null before its first block that carries one */
+    objectCount: number | null
     readonly generation: number
     readonly inputBatches: AudioDecodeWorkerInputBatch[]
     /** Batches received and not yet credited back */
@@ -110,6 +112,8 @@ type AudioDecodeAttempt = {
     producer: WorkletPCMProducer | null
     /** A broken input contract, which the attempt's next wait throws */
     protocolFailure: string | null
+    /** Binaural rendering of a stereo attempt, which a live switch changes before the next packet */
+    renderBinaural: boolean
     streamingDownmixSettings: StreamingAudioDownmixSettings | null
     readonly wakeWaiters: Array<() => void>
 };
@@ -202,7 +206,10 @@ function getTimestampToleranceMicroseconds(options: AudioDecodeWorkerOpenAttempt
     return getCodecTimestampToleranceMicroseconds(options.routeCodec, options.timeResolution);
 }
 
-/** Creates the attempt's package decoder, loading its package on first use, or returns null for samples Mediabunny decoded. */
+/**
+ * Creates the attempt's package decoder, loading its package on first use, and configures it with the track's codec private data before its first packet;
+ * returns null for samples Mediabunny decoded.
+ */
 async function createPackageAudioDecoder(options: AudioDecodeWorkerOpenAttemptRequest): Promise<PackageSoftwareAudioDecoder | null> {
     switch (options.decoderBackend) {
         case 'package': {
@@ -210,7 +217,7 @@ async function createPackageAudioDecoder(options: AudioDecodeWorkerOpenAttemptRe
             if (!packageDecoder) {
                 throw new TypeError(INPUT_KIND_MESSAGE);
             }
-            return PackageSoftwareAudioDecoder.create(packageDecoder.source, packageDecoder.codec);
+            return PackageSoftwareAudioDecoder.create(packageDecoder.source, packageDecoder.codec, options.packageCodecPrivate);
         }
         case 'pcm':
             return null;
@@ -229,7 +236,7 @@ function prepareOutputChannelData(
         return prepareCustomAudioOutputChannelData(
             inputChannelData,
             inputChannelLayout,
-            options.outputChannelCount,
+            options.outputLayout,
             options.audioDownmixAlgorithm,
             options.audioDownmixSettings
         );
@@ -239,11 +246,19 @@ function prepareOutputChannelData(
     return prepareCustomAudioOutputChannelData(
         inputChannelData,
         inputChannelLayout,
-        options.outputChannelCount,
+        options.outputLayout,
         options.audioDownmixAlgorithm,
         settingsBlock.settings,
         settingsBlock.ramp
     );
+}
+
+/** Sets the output layout's mask and the attempt's binaural rendering on its package decoder; a package that declares neither option is untouched. */
+function setRenderTarget(attempt: AudioDecodeAttempt, decoder: PackageSoftwareAudioDecoder | null): void {
+    decoder?.setRenderTarget({
+        binaural: attempt.renderBinaural,
+        channelMask: getCustomAudioOutputChannelMask(attempt.options.outputLayout)
+    });
 }
 
 function wakeWaiters(waiters: Array<() => void>): void {
@@ -324,6 +339,9 @@ class AudioDecodeWorkerRuntime {
             case 'update-downmix-settings':
                 this.updateDownmixSettings(value);
                 return;
+            case 'update-binaural':
+                this.updateBinaural(value);
+                return;
         }
     }
 
@@ -347,7 +365,9 @@ class AudioDecodeWorkerRuntime {
             outstandingInputCount: 0,
             pendingAudioOutput: request.audioOutput,
             producer: null,
+            objectCount: null,
             protocolFailure: null,
+            renderBinaural: request.renderBinaural,
             streamingDownmixSettings: null,
             wakeWaiters: []
         };
@@ -423,6 +443,14 @@ class AudioDecodeWorkerRuntime {
         }
     }
 
+    /** Takes a live binaural switch, which only a stereo attempt renders; its package takes it before the next packet. */
+    private updateBinaural(request: AudioDecodeWorkerUpdateBinauralRequest): void {
+        const attempt = this.currentAttempt;
+        if (attempt?.generation === request.generation) {
+            attempt.renderBinaural = request.binauralHeadphones && attempt.options.outputLayout === 'stereo';
+        }
+    }
+
     /**
      * Runs one attempt from its open to its finish, its failure, or its close; it never rejects.
      * The decoder and output stage go with the run, and the producer stays open until the attempt closes, so the worklet plays out what it holds.
@@ -433,12 +461,14 @@ class AudioDecodeWorkerRuntime {
         try {
             const options = attempt.options;
             // Every stereo output takes live gains, since any decoded layout can fold down to it
-            attempt.streamingDownmixSettings = options.outputChannelCount === STEREO_OUTPUT_CHANNEL_COUNT ?
+            attempt.streamingDownmixSettings = options.outputLayout === 'stereo' ?
                 new StreamingAudioDownmixSettings(options.generation, options.sourceSampleRate, options.audioDownmixSettings) :
                 null;
             // Loads beside the decoder; a failed load resolves null and the JavaScript output stage renders
             const outputStageModulePromise = loadPlaybackAudioOutputStageModule();
             decoder = await createPackageAudioDecoder(options);
+            // An object audio package renders into the output layout from its first packet
+            setRenderTarget(attempt, decoder);
             const outputStageModule = await outputStageModulePromise;
             if (attempt.cancelled) {
                 return;
@@ -453,6 +483,10 @@ class AudioDecodeWorkerRuntime {
                 this.post({ ...getAttemptKey(attempt), inputCredits: 1, type: 'input-credit' });
             }
             if (attempt.cancelled) {
+                return;
+            }
+            // The track ended, so a package decoder outputs the frames it held back before the output stage's tails
+            if (decoder && !await this.renderDrainedOutputs(attempt, decoder, outputStage)) {
                 return;
             }
             if (!await this.submitOutputs(attempt, outputStage.finalize(), false)) {
@@ -499,7 +533,7 @@ class AudioDecodeWorkerRuntime {
                 }
             },
             onTimelineCorrection: logAudioTimelineCorrection,
-            outputChannelCount: attempt.options.outputChannelCount,
+            outputLayout: attempt.options.outputLayout,
             outputStageModule,
             routeCodec: attempt.options.routeCodec,
             timestampToleranceMicroseconds: getTimestampToleranceMicroseconds(attempt.options)
@@ -557,6 +591,8 @@ class AudioDecodeWorkerRuntime {
             if (!await this.reserveOutputCredit(attempt)) {
                 return false;
             }
+            // A live binaural switch reaches the package between packets
+            setRenderTarget(attempt, decoder);
             const outputs = this.decodePacket(
                 attempt,
                 decoder,
@@ -569,6 +605,21 @@ class AudioDecodeWorkerRuntime {
             }
         }
         return true;
+    }
+
+    /** Renders what a package decoder outputs when it drains at the end of the track, under one output credit; returns false once the attempt closed. */
+    private async renderDrainedOutputs(
+        attempt: AudioDecodeAttempt,
+        decoder: PackageSoftwareAudioDecoder,
+        outputStage: DecodedAudioOutputStage
+    ): Promise<boolean> {
+        if (!await this.reserveOutputCredit(attempt)) {
+            return false;
+        }
+        const outputs = decoder.drain().flatMap((output: PackageDecodedAudioOutput): StreamingAudioResamplerOutput[] => (
+            this.normalizeDecodedOutput(attempt, outputStage, output)
+        ));
+        return this.submitOutputs(attempt, outputs, true);
     }
 
     private decodePacket(
@@ -608,9 +659,12 @@ class AudioDecodeWorkerRuntime {
         outputStage: DecodedAudioOutputStage,
         output: PackageDecodedAudioOutput
     ): StreamingAudioResamplerOutput[] {
+        this.reportObjectCount(attempt, output.objectCount);
         const boundInput = outputStage.bind({
             channelCount: output.channelData.length,
             layout: output.channelLayout,
+            // A block with dynamic objects is the package's render, which sums them into the speakers
+            rendered: (output.objectCount ?? 0) > 0,
             sampleRate: output.sampleRate
         }, attempt.streamingDownmixSettings);
         const sampleWindow = getAudioSampleWindow(
@@ -630,6 +684,15 @@ class AudioDecodeWorkerRuntime {
             inputChannelData.push(channel.subarray(sampleWindow.frameOffset, endFrame));
         }
         return this.pushToPipeline(attempt, boundInput, inputChannelData, sampleWindow.mediaTimeMicroseconds);
+    }
+
+    /** Reports a package's rendered object count when a block changes it, so the page shows whether object audio renders. */
+    private reportObjectCount(attempt: AudioDecodeAttempt, objectCount: number | null): void {
+        if (objectCount === null || objectCount === attempt.objectCount || attempt.cancelled) {
+            return;
+        }
+        attempt.objectCount = objectCount;
+        this.post({ ...getAttemptKey(attempt), objectCount, type: 'object-count' });
     }
 
     /** Normalizes one sample Mediabunny decoded, which the decode worker already cut to the start. */

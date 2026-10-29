@@ -1,0 +1,81 @@
+{
+    "decoderOptions": [
+        "-cpuflags",
+        "0"
+    ],
+    "ffmpeg": "2026-03-01-git-862338fe31-full_build-www.gyan.dev",
+    "vectors": [
+        {
+            "channelCount": 2,
+            "channelMask": 3,
+            "codec": "wmav1",
+            "file": "wmav1.avi",
+            "frameCount": 22528,
+            "pcmSHA256": "2f78fd20e0818be2ba5d9639536617ffe66733f81901ce25bc5ad69f46433945",
+            "sampleRate": 48000
+        },
+        {
+            "channelCount": 2,
+            "channelMask": 3,
+            "codec": "wmav1",
+            "file": "wmav1.mkv",
+            "frameCount": 22528,
+            "pcmSHA256": "2f78fd20e0818be2ba5d9639536617ffe66733f81901ce25bc5ad69f46433945",
+            "sampleRate": 48000
+        },
+        {
+            "channelCount": 2,
+            "channelMask": 3,
+            "codec": "wmav2",
+            "file": "wmav2.avi",
+            "frameCount": 20480,
+            "pcmSHA256": "7b2ed248538cadc7b6e97cad54ab227b249ba9cce8955dbb9f5332be1a0eaa2d",
+            "sampleRate": 44100
+        },
+        {
+            "channelCount": 2,
+            "channelMask": 3,
+            "codec": "wmav2",
+            "file": "wmav2.mkv",
+            "frameCount": 20480,
+            "pcmSHA256": "7b2ed248538cadc7b6e97cad54ab227b249ba9cce8955dbb9f5332be1a0eaa2d",
+            "sampleRate": 44100
+        },
+        {
+            "channelCount": 6,
+            "channelMask": 63,
+            "codec": "wmapro",
+            "file": "wmapro-5.1.mkv",
+            "frameCount": 143360,
+            "pcmSHA256": "f8884839d13300d23c47184a3ebac0224198e80a58611ca79c38df1cbef14353",
+            "sampleRate": 48000
+        },
+        {
+            "channelCount": 2,
+            "channelMask": 3,
+            "codec": "wmalossless",
+            "file": "wmalossless-16.mkv",
+            "frameCount": 16384,
+            "pcmSHA256": "6962eb989ace95167ac1f5038770e863a603c1950d8f77467bf7cb49bbc85fd3",
+            "sampleRate": 44100
+        },
+        {
+            "channelCount": 2,
+            "channelMask": 3,
+            "codec": "wmalossless",
+            "file": "wmalossless-24.mkv",
+            "frameCount": 18432,
+            "pcmSHA256": "80f24c686eff89c4df44ba71c067f4808cf2d96ba98ef6510516c18e928957d2",
+            "sampleRate": 48000
+        },
+        {
+            "channelCount": 1,
+            "channelMask": 4,
+            "codec": "wmavoice",
+            "file": "wmavoice.mkv",
+            "frameCount": 10560,
+            "pcmSHA256": "accc6dc56f573e4b8a948d1526d93f756709f0193012e6e065c849617543bbb6",
+            "sampleRate": 8000
+        }
+    ]
+}

@@ -3,7 +3,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { ALL_FORMATS, BufferSource, Input } from 'mediabunny';
+import { ALL_FORMATS, BufferSource, Input, PacketCursor } from 'mediabunny';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -48,7 +48,9 @@ const TRANSPORT_STREAM_VECTORS: readonly TransportStreamVectorExpectation[] = [
     { codec: 'mpeg2video', descriptionByteLength: 22, fileName: 'mpeg2video-bframes-ac3.ts', firstStartCode: MPEG_SEQUENCE_HEADER_CODE, mediabunnyCodec: 'mpeg2' },
     { codec: 'mpeg2video', descriptionByteLength: 22, fileName: 'mpeg2video-bframes-ac3.m2ts', firstStartCode: MPEG_SEQUENCE_HEADER_CODE, mediabunnyCodec: 'mpeg2' },
     { codec: 'vc1', descriptionByteLength: 30, fileName: 'vc1-advanced.ts', firstStartCode: VC1_SEQUENCE_HEADER_CODE, mediabunnyCodec: 'vc1' },
-    { codec: 'vc1', descriptionByteLength: 30, fileName: 'vc1-advanced.m2ts', firstStartCode: VC1_SEQUENCE_HEADER_CODE, mediabunnyCodec: 'vc1' }
+    { codec: 'vc1', descriptionByteLength: 30, fileName: 'vc1-advanced.m2ts', firstStartCode: VC1_SEQUENCE_HEADER_CODE, mediabunnyCodec: 'vc1' },
+    // The same stream with its PMT stripped of the VC-1 registration descriptor, which FFmpeg's demuxer does not need either
+    { codec: 'vc1', descriptionByteLength: 30, fileName: 'vc1-advanced-unregistered.ts', firstStartCode: VC1_SEQUENCE_HEADER_CODE, mediabunnyCodec: 'vc1' }
 ];
 
 function createUnit(startCode: number, payload: readonly number[]): number[] {
@@ -124,5 +126,36 @@ describe('the video configuration of MPEG-TS and M2TS tracks', () => {
         expect(result.description.byteLength).toBe(vector.descriptionByteLength);
         expect([ ...result.description.subarray(0, START_CODE_PREFIX.length + 1) ]).toEqual([ ...START_CODE_PREFIX, vector.firstStartCode ]);
         input.dispose();
+    });
+
+    it('reads a VC-1 stream whose PMT lacks the VC-1 registration descriptor exactly like the registered stream', async () => {
+        const readVector = async (fileName: string) => {
+            const input = new Input({ formats: ALL_FORMATS, source: new BufferSource(readFileSync(join(TRANSPORT_STREAM_VECTOR_DIRECTORY, fileName))) });
+            const track = await input.getPrimaryVideoTrack();
+            if (!track) {
+                throw new Error(`video-track-missing: ${fileName}`);
+            }
+            const description = await readTransportStreamVideoDecoderDescription('vc1', track);
+            const packets: number[][] = [];
+            for await (const packet of new PacketCursor(track)) {
+                packets.push([ packet.timestamp, packet.type === 'key' ? 1 : 0, ...packet.data ]);
+            }
+            const result = {
+                codec: await track.getCodec(),
+                description: description.status === 'read' ? [ ...description.description ] : description.failure,
+                height: await track.getCodedHeight(),
+                packets,
+                width: await track.getCodedWidth()
+            };
+            input.dispose();
+            return result;
+        };
+
+        const registered = await readVector('vc1-advanced.ts');
+        const unregistered = await readVector('vc1-advanced-unregistered.ts');
+
+        expect(unregistered.codec).toBe('vc1');
+        expect(unregistered.packets).toHaveLength(12);
+        expect(unregistered).toEqual(registered);
     });
 });

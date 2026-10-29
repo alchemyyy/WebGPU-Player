@@ -8,6 +8,13 @@ import {
 import { isSupportedCustomAudioSampleRate } from '../../audio/CustomAudioSampleRate';
 import type { CustomAudioChannelLayout } from '../../audio/processing/CustomAudioChannelLayout';
 import { getQualifiedCustomWaveChannelLayout } from '../../audio/processing/CustomWaveChannelLayout';
+import {
+    AUDIO_DECODER_OBJECT_COUNT_ATTRIBUTE,
+    AUDIO_DECODER_RENDER_BINAURAL_OPTION,
+    AUDIO_DECODER_RENDER_CHANNEL_MASK_OPTION,
+    declaresAudioDecoderOption,
+    isAudioDecoderObjectCount
+} from './AudioDecoderManifest';
 import AudioDecoderPackageInstance, { type AudioDecoderModuleSource, type AudioDecoderPackageBlock } from './AudioDecoderPackageInstance';
 
 /** The most frames one block of a package may hold. */
@@ -20,7 +27,15 @@ export type PackageDecodedAudioOutput = Readonly<{
     channelMask: number
     frameCount: number
     mediaTimeMicroseconds: Microseconds
+    /** How many dynamic objects the package rendered into the block, or null for a package that reports no `objectCount` */
+    objectCount: number | null
     sampleRate: number
+}>;
+
+/** The output an object audio package renders into: the output layout's WAVE mask, and binaural headphone rendering of a stereo output. */
+export type PackageAudioRenderTarget = Readonly<{
+    binaural: boolean
+    channelMask: number
 }>;
 
 /**
@@ -44,6 +59,11 @@ export function createPackageAudioOutput(
     if (!qualifiedLayout || qualifiedLayout.channelCount !== channelData.length) {
         throw new RangeError(`${subject} channel mask 0x${channelMask.toString(16)} is unqualified`);
     }
+    const objectCount = block.attributes.get(AUDIO_DECODER_OBJECT_COUNT_ATTRIBUTE);
+    // A count past the bound the page's messages take fails this attempt, not the audio decode worker
+    if (objectCount !== undefined && !isAudioDecoderObjectCount(objectCount)) {
+        throw new RangeError(`${subject} object count ${objectCount} is invalid`);
+    }
     const mediaTimeMicroseconds = block.timestampMicroseconds !== null ?
         requireMicroseconds(block.timestampMicroseconds, `${subject} decoded timestamp`) :
         addMicroseconds(packetMediaTimeMicroseconds, audioFramesToMicroseconds(precedingPacketFrameCount, sampleRate));
@@ -53,6 +73,7 @@ export function createPackageAudioOutput(
         channelMask,
         frameCount,
         mediaTimeMicroseconds,
+        objectCount: objectCount ?? null,
         sampleRate
     };
 }
@@ -60,39 +81,97 @@ export function createPackageAudioOutput(
 /** Owns one decoder of an audio decoder package in the audio decode worker. */
 export default class PackageSoftwareAudioDecoder {
     private readonly decoder: AudioDecoderPackageInstance;
+    /** The timestamp of the last packet sent, which drained blocks without a timestamp start at when no block was output before them */
+    private lastPacketMicroseconds: Microseconds | null = null;
+    /** Where the last output ended, which a drained block without a timestamp of its own continues from; null before any output */
+    private outputEndMicroseconds: Microseconds | null = null;
+    private readonly rendersBinaural: boolean;
+    private readonly rendersObjects: boolean;
+    private renderTarget: PackageAudioRenderTarget | null = null;
     private readonly subject: string;
 
-    private constructor(decoder: AudioDecoderPackageInstance, subject: string) {
+    private constructor(decoder: AudioDecoderPackageInstance, source: AudioDecoderModuleSource) {
         this.decoder = decoder;
-        this.subject = subject;
+        this.rendersObjects = declaresAudioDecoderOption(source.manifest, AUDIO_DECODER_RENDER_CHANNEL_MASK_OPTION);
+        this.rendersBinaural = declaresAudioDecoderOption(source.manifest, AUDIO_DECODER_RENDER_BINAURAL_OPTION);
+        this.subject = `Audio decoder ${source.manifest.name}`;
     }
 
-    /** Creates a decoder of one of the package's codecs on its own instance of the package. */
-    public static async create(source: AudioDecoderModuleSource, codec: string): Promise<PackageSoftwareAudioDecoder> {
+    /**
+     * Creates a decoder of one of the package's codecs on its own instance of the package, configured with the track's codec private data, if any,
+     * before its first packet.
+     */
+    public static async create(source: AudioDecoderModuleSource, codec: string, codecPrivate: Uint8Array | null): Promise<PackageSoftwareAudioDecoder> {
         const decoder = await AudioDecoderPackageInstance.create(source, codec);
-        return new PackageSoftwareAudioDecoder(decoder, `Audio decoder ${source.manifest.name}`);
+        try {
+            decoder.configure(codecPrivate);
+        } catch (error) {
+            decoder.close();
+            throw error;
+        }
+        return new PackageSoftwareAudioDecoder(decoder, source);
+    }
+
+    /**
+     * Sets the output an object audio package renders into, before the next packet: `renderChannelMask` and `renderBinaural` on a package that declares them.
+     * A package that declares neither is untouched, and an unchanged option is not set again.
+     */
+    public setRenderTarget(renderTarget: PackageAudioRenderTarget): void {
+        const previousTarget = this.renderTarget;
+        this.renderTarget = renderTarget;
+        if (this.rendersObjects && previousTarget?.channelMask !== renderTarget.channelMask) {
+            this.decoder.setOption(AUDIO_DECODER_RENDER_CHANNEL_MASK_OPTION, renderTarget.channelMask);
+        }
+        if (this.rendersBinaural && previousTarget?.binaural !== renderTarget.binaural) {
+            this.decoder.setOption(AUDIO_DECODER_RENDER_BINAURAL_OPTION, renderTarget.binaural ? 1 : 0);
+        }
     }
 
     /** Decodes one packet into its checked blocks; a packet the decoder dropped, or one before a sync point, decodes to none. */
     public decode(data: Uint8Array, mediaTimeMicroseconds: Microseconds): readonly PackageDecodedAudioOutput[] {
         requireMicroseconds(mediaTimeMicroseconds, `${this.subject} packet timestamp`);
+        this.lastPacketMicroseconds = mediaTimeMicroseconds;
         const result = this.decoder.decode(data, mediaTimeMicroseconds);
         if (result.kind !== 'decoded') {
             return [];
         }
-        const outputs: PackageDecodedAudioOutput[] = [];
-        let emittedFrameCount = 0;
-        for (const block of result.blocks) {
-            const output = createPackageAudioOutput(block, mediaTimeMicroseconds, emittedFrameCount, this.subject);
-            outputs.push(output);
-            emittedFrameCount += output.frameCount;
+        return this.createOutputs(result.blocks, mediaTimeMicroseconds);
+    }
+
+    /**
+     * Ends the track: decodes the frames the package's decoder held back, when its module drains, as checked blocks after the last output.
+     * Without an earlier output, as after a seek onto a track's last packet, a drained block without a timestamp starts at the last packet's time;
+     * without a packet either, the drain outputs nothing. The decoder takes no packet after it until `clear`.
+     */
+    public drain(): readonly PackageDecodedAudioOutput[] {
+        const blocks = this.decoder.drain();
+        if (blocks.length === 0) {
+            return [];
         }
-        return outputs;
+        const firstTimestamp = blocks[0].timestampMicroseconds;
+        const startMicroseconds = this.outputEndMicroseconds
+            ?? (firstTimestamp === null ? this.lastPacketMicroseconds : requireMicroseconds(firstTimestamp, `${this.subject} drained timestamp`));
+        return startMicroseconds === null ? [] : this.createOutputs(blocks, startMicroseconds);
     }
 
     /** Clears inter-frame state before a seek or a source change. */
     public clear(): void {
         this.decoder.clear();
+        this.lastPacketMicroseconds = null;
+        this.outputEndMicroseconds = null;
+    }
+
+    /** Checks a packet's or a drain's blocks, which start at a media time unless they carry their own, and notes where the last one ends. */
+    private createOutputs(blocks: readonly AudioDecoderPackageBlock[], mediaTimeMicroseconds: Microseconds): PackageDecodedAudioOutput[] {
+        const outputs: PackageDecodedAudioOutput[] = [];
+        let emittedFrameCount = 0;
+        for (const block of blocks) {
+            const output = createPackageAudioOutput(block, mediaTimeMicroseconds, emittedFrameCount, this.subject);
+            outputs.push(output);
+            emittedFrameCount += output.frameCount;
+            this.outputEndMicroseconds = addMicroseconds(output.mediaTimeMicroseconds, audioFramesToMicroseconds(output.frameCount, output.sampleRate));
+        }
+        return outputs;
     }
 
     /** Releases the decoder exactly once. */

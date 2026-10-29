@@ -1,7 +1,7 @@
 // The sandbox's playback session: it probes a picked file with ffprobe, chooses the route through the engine's eligibility, and drives the engine's presenter, controller, and frame loop.
 import { CUSTOM_AUDIO_OUTPUT_SAMPLE_RATE } from 'webgpu-player/audio/CustomAudioOutputPolicy';
 import CustomDecodeNativeAudioBridge from 'webgpu-player/audio/native/CustomDecodeNativeAudioBridge';
-import { selectCustomAudioOutputChannelCountForMaximum } from 'webgpu-player/audio/NativeMultichannelAudioOutput';
+import { selectCustomAudioOutputLayout, selectCustomAudioSpeakerLayout } from 'webgpu-player/audio/NativeMultichannelAudioOutput';
 import { prewarmBrowserAudioContext, type BrowserAudioContextPrewarmLease } from 'webgpu-player/audio/output/BrowserAudioContextPrewarm';
 import {
     createBrowserCustomAudioOutputFactory,
@@ -11,7 +11,11 @@ import { getWebGPUAudioOutputManager } from 'webgpu-player/audio/output/WebGPUAu
 import { createDefaultAudioDownmixSettings } from 'webgpu-player/audio/processing/CustomAudioDownmix';
 import { DEFAULT_CUSTOM_AUDIO_DOWNMIX_ALGORITHM } from 'webgpu-player/audio/processing/CustomAudioDownmixAlgorithm';
 import { probeCustomDecodeCapabilities } from 'webgpu-player/capability/CustomDecodeCapabilities';
-import { getCustomPlaybackEligibility, type EligibleCustomPlayback } from 'webgpu-player/capability/CustomPlaybackEligibility';
+import {
+    getCustomPlaybackEligibility,
+    type CustomAudioRenderTarget,
+    type EligibleCustomPlayback
+} from 'webgpu-player/capability/CustomPlaybackEligibility';
 import { getCustomPlaybackRuntimeAvailability } from 'webgpu-player/capability/CustomPlaybackRuntime';
 import { probeCachedNativeMediaAudioCapabilities } from 'webgpu-player/capability/NativeMediaAudioCapabilities';
 import { type Microseconds } from 'webgpu-player/MediaTime';
@@ -68,6 +72,7 @@ import {
     type BuiltShaderPass,
     type PlaybackState,
     type PlaybackStatus,
+    type AudioOutputSettings,
     type RouteOverride,
     type SandboxFailure,
     type SandboxFilePass,
@@ -185,21 +190,30 @@ function describeShaderFile(id: string, origin: string, source: string, paramete
     return { id, origin, parameters, passes, source };
 }
 
-/** Returns the controller's play options for the eligibility's route from a time; decoded PCM takes the default downmix and the widest output the device has. */
+/**
+ * Returns the controller's play options for the eligibility's route from a time.
+ * Decoded PCM takes the default downmix, the binaural setting, and the output layout the speaker layout gives the source: the whole layout for object audio, else its floor.
+ */
 function createPlayOptions(
     eligibility: EligibleCustomPlayback,
     startTimeMicroseconds: Microseconds,
     decodedAudio: boolean,
-    maximumChannelCount: number | null
+    audioRenderTarget: CustomAudioRenderTarget
 ): CustomPlaybackPlayOptions {
     return {
         ...(eligibility.audioDecoder ? { audioDecoder: eligibility.audioDecoder } : {}),
         audioDownmixAlgorithm: decodedAudio ? DEFAULT_CUSTOM_AUDIO_DOWNMIX_ALGORITHM : undefined,
         audioDownmixSettings: decodedAudio ? createDefaultAudioDownmixSettings() : undefined,
         audioOutputMode: eligibility.audioOutputMode ?? undefined,
+        audioRendersObjects: decodedAudio ? eligibility.audioRendersObjects === true : undefined,
         audioTrackIndex: eligibility.audioTrackIndex,
-        decodedAudioOutputChannelCount: decodedAudio ?
-            selectCustomAudioOutputChannelCountForMaximum(maximumChannelCount, eligibility.audioSourceChannelCount) :
+        binauralHeadphones: decodedAudio ? audioRenderTarget.binauralHeadphones : undefined,
+        decodedAudioOutputLayout: decodedAudio ?
+            selectCustomAudioOutputLayout(
+                audioRenderTarget.speakerLayout,
+                eligibility.audioSourceChannelCount,
+                eligibility.audioRendersObjects === true
+            ) :
             undefined,
         dolbyVisionProfile: eligibility.dolbyVisionProfile,
         durationMicroseconds: eligibility.durationMicroseconds,
@@ -566,9 +580,19 @@ export function createSandboxSession(options: SandboxSessionOptions): SandboxSes
         if (!isCurrent()) {
             return;
         }
+        // The speaker layout the setting resolves to on the session's audio context, which decides whether Atmos objects render
+        const audioOutputSettings = store.getState().audioOutput;
+        const audioRenderTarget: CustomAudioRenderTarget = {
+            binauralHeadphones: audioOutputSettings.binauralHeadphones,
+            speakerLayout: selectCustomAudioSpeakerLayout(
+                audioOutputSettings.speakerLayout,
+                current.audioPrewarm?.audioContext.destination.maxChannelCount ?? null
+            )
+        };
         const eligibility = getCustomPlaybackEligibility(playOptions, narrowCapabilitiesForDecoder(capabilities, override.decoder), {
             ...narrowPresentationOptionsForTransport(presentationOptions, override.transport),
             audioDecoders: decoderPackages.getAudioDecoders(),
+            audioRenderTarget,
             gpuVideoDecoders,
             nativeMediaAudioCapabilities,
             runtimeAvailability: getCustomPlaybackRuntimeAvailability()
@@ -623,8 +647,7 @@ export function createSandboxSession(options: SandboxSessionOptions): SandboxSes
         });
         current.frameLoop = frameLoop;
         frameLoop.synchronizePageVisibility(isPageVisible());
-        const maximumChannelCount = audioPrewarm?.audioContext.destination.maxChannelCount ?? null;
-        const result = await controller.play(createPlayOptions(eligibility, startTimeMicroseconds, decodedAudio, maximumChannelCount));
+        const result = await controller.play(createPlayOptions(eligibility, startTimeMicroseconds, decodedAudio, audioRenderTarget));
         handleStartResult(current, controller, result);
     };
 
@@ -877,6 +900,10 @@ export function createSandboxSession(options: SandboxSessionOptions): SandboxSes
             renderSettingsOverride = settings;
             presenter.updateRenderSettings(settings, presentationGeneration, false);
             store.setState((state: SandboxState): Partial<SandboxState> => ({ presentation: { ...state.presentation, renderSettings: presenter.getRenderSettings() } }));
+        },
+        setAudioOutputSettings: (settings: AudioOutputSettings): Promise<void> => {
+            store.setState({ audioOutput: settings });
+            return playback ? restartRoute('audio-output-settings-failed') : Promise.resolve();
         },
         setRouteOverride: (override: RouteOverride): Promise<void> => {
             store.setState((state: SandboxState): Partial<SandboxState> => ({ route: { ...state.route, override } }));

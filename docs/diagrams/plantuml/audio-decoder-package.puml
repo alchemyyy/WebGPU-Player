@@ -18,12 +18,15 @@ decoder -> instance : audio_decoder_abi_version() == 1\naudio_decoder_create(ind
 opt the track has codec private data
   decoder -> instance : audio_decoder_reserve_input(handle, n), copy it,\naudio_decoder_configure(handle, n) -> 0
 end
-opt an option the manifest names
+opt an option the manifest names, such as renderChannelMask and renderBinaural for object audio
   decoder -> instance : audio_decoder_set_option(handle, key, value) -> 0
 end
 
 == Each packet, in decode order ==
 track -> decoder : packet, timestamp in microseconds
+opt the host switched binaural rendering since the last packet
+  decoder -> instance : audio_decoder_set_option(handle, renderBinaural key, 0 or 1) -> 0
+end
 decoder -> instance : audio_decoder_reserve_input(handle, n), copy the packet,\naudio_decoder_send(handle, n, timestamp)
 alt 1: dropped, or 2: awaiting sync
   decoder -> decoder : no output, no failure
@@ -42,6 +45,9 @@ decoder -> instance : audio_decoder_error_code, audio_decoder_error_value
 decoder --> track : the attempt fails: audio decoder <error name>: <value>
 
 == Attempt end: the track ended, a seek, a track switch, or a stop ==
+opt the track ended and the module exports audio_decoder_drain
+  decoder -> instance : audio_decoder_drain(handle), then audio_decoder_receive\nuntil it returns 0, at most 64 blocks
+end
 decoder -> instance : audio_decoder_destroy(handle); the instance and its memory go
 note over track, pipeline
   A seek starts a new attempt on a new instance, so a decoder never sees a jump in its packets.

@@ -12,6 +12,7 @@ import {
     type AudioDecodeWorkerAttemptKey,
     type AudioDecodeWorkerInputBatch,
     type AudioDecodeWorkerOpenAttemptRequest,
+    type AudioDecodeWorkerObjectCountResponse,
     type AudioDecodeWorkerPacketBatch,
     type AudioDecodeWorkerPCMBatch,
     type AudioDecodeWorkerPCMSample,
@@ -38,6 +39,7 @@ export type AudioDecodeWorkerAttemptFailure = Readonly<{
 export type AudioDecodeWorkerAttemptListener = Readonly<{
     /** An input credit returned, or the attempt finished or failed */
     onChange: () => void
+    onObjectCount: (response: AudioDecodeWorkerObjectCountResponse) => void
     onProgress: (response: AudioDecodeWorkerProgressResponse) => void
     onSourceFormat: (response: AudioDecodeWorkerSourceFormatResponse) => void
 }>;
@@ -172,6 +174,11 @@ export class AudioDecodeWorkerAttempt {
                     this.listener.onProgress(response);
                 }
                 return;
+            case 'object-count':
+                if (!this.closed) {
+                    this.listener.onObjectCount(response);
+                }
+                return;
             case 'source-format':
                 if (!this.closed) {
                     this.listener.onSourceFormat(response);
@@ -270,6 +277,11 @@ export default class AudioDecodeWorkerClient {
     /** Sends live downmix gains to the run's open stereo attempt. */
     public updateDownmixSettings(generation: number, audioDownmixSettings: AudioDownmixSettings): void {
         this.post({ audioDownmixSettings, generation, type: 'update-downmix-settings' }, []);
+    }
+
+    /** Switches binaural rendering of the run's open attempt live. */
+    public updateBinaural(generation: number, binauralHeadphones: boolean): void {
+        this.post({ binauralHeadphones, generation, type: 'update-binaural' }, []);
     }
 
     private post(request: AudioDecodeWorkerRequest, transfer: Transferable[]): boolean {

@@ -8,6 +8,7 @@ import {
     type DecodeWorkerStartRequest
 } from 'webgpu-player/pipeline/DecodeWorkerProtocol';
 
+import { createASF, type SyntheticASFObject } from '../helpers/asfMedia';
 import {
     createWorkerStartRequest,
     decodeToEnd,
@@ -31,6 +32,7 @@ import {
 
 const MATROSKA_FILE_NAME = 'vc1.mkv';
 const ISO_BASE_MEDIA_FILE_NAME = 'vc1.mp4';
+const ASF_FILE_NAME = 'vc1.wmv';
 const CODED_WIDTH = 320;
 const CODED_HEIGHT = 240;
 // The WMV3 file's BITMAPINFOHEADER disagrees with its pixel size; the decoder must get the container's, as FFmpeg's does
@@ -80,6 +82,11 @@ function createAdvancedPackets(timestampsMilliseconds: readonly number[]): Synth
         keyframe: kind === 'I',
         timestampMilliseconds: timestampsMilliseconds[packetIndex]
     }));
+}
+
+/** The packets as media objects of an ASF file's one stream, at the same decode times. */
+function toASFObjects(packets: readonly SyntheticVC1Packet[]): SyntheticASFObject[] {
+    return packets.map((packet: SyntheticVC1Packet): SyntheticASFObject => ({ ...packet, streamIndex: 0 }));
 }
 
 async function startWorker(fileName: string, media: Uint8Array): Promise<Awaited<ReturnType<typeof startDecodeWorker>>> {
@@ -138,6 +145,35 @@ describe('CustomDecode.worker VC-1 and WMV3 frame-pool routes', () => {
 
         const responses = await decodeToEnd(workerScope, createWorkerStartRequest(ISO_BASE_MEDIA_FILE_NAME, { ...FRAME_POOL_ROUTE, gpuVideoCodec: 'vc1' }));
 
+        expect(getCodecPrivate(responses)).toEqual(extradata);
+        expect(getPacketResponses(responses).map(packet => packet.timestampMicroseconds)).toEqual([ FRAME_MICROSECONDS, 3 * FRAME_MICROSECONDS, 2 * FRAME_MICROSECONDS ]);
+        expect(getPacketResponses(responses).map(packet => new Uint8Array(packet.data))).toEqual(packets.map(packet => packet.data));
+    });
+
+    it('posts an ASF WMV3 stream\'s media objects in presentation time with its STRUCT_C behind a header of its coded size', async () => {
+        const structC = createWMV3SequenceHeader(WMV3_FIELDS);
+        const stream = { bitmapInfoHeader: createVFWCodecPrivate('WMV3', CODED_WIDTH, CODED_HEIGHT, structC), codedHeight: CODED_HEIGHT, codedWidth: CODED_WIDTH, kind: 'video' } as const;
+        const workerScope = await startWorker(ASF_FILE_NAME, createASF([ stream ], toASFObjects(createWMV3Packets())));
+
+        const responses = await decodeToEnd(workerScope, createWorkerStartRequest(ASF_FILE_NAME, { ...FRAME_POOL_ROUTE, gpuVideoCodec: 'wmv3' }));
+
+        const description = getCodecPrivate(responses);
+        expect(getReadyResponse(responses)).toMatchObject({ codec: 'wmv3', codedHeight: CODED_HEIGHT, codedWidth: CODED_WIDTH });
+        expect(String.fromCharCode(...description.subarray(FOURCC_OFFSET, FOURCC_OFFSET + FOURCC_BYTE_LENGTH))).toBe('WMV3');
+        expect(description.subarray(BITMAP_INFO_HEADER_BYTE_LENGTH)).toEqual(structC);
+        // ASF stamps media objects in decode order, as FFmpeg reads them, so the anchors take the next anchor's time, or the end
+        expect(getPacketResponses(responses).map(packet => packet.timestampMicroseconds)).toEqual([ FRAME_MICROSECONDS, 3 * FRAME_MICROSECONDS, 2 * FRAME_MICROSECONDS ]);
+    });
+
+    it('posts an ASF WVC1 stream\'s media objects in presentation time with the extradata after its BITMAPINFOHEADER', async () => {
+        const extradata = createVC1AdvancedExtradata(CODED_WIDTH, CODED_HEIGHT, false, WVC1_SIZE_BYTE);
+        const stream = { bitmapInfoHeader: createVFWCodecPrivate('WVC1', CODED_WIDTH, CODED_HEIGHT, extradata), codedHeight: CODED_HEIGHT, codedWidth: CODED_WIDTH, kind: 'video' } as const;
+        const packets = createAdvancedPackets([ 0, MILLISECONDS_PER_FRAME, 2 * MILLISECONDS_PER_FRAME ]);
+        const workerScope = await startWorker(ASF_FILE_NAME, createASF([ stream ], toASFObjects(packets)));
+
+        const responses = await decodeToEnd(workerScope, createWorkerStartRequest(ASF_FILE_NAME, { ...FRAME_POOL_ROUTE, gpuVideoCodec: 'vc1' }));
+
+        expect(getReadyResponse(responses)).toMatchObject({ codec: 'vc1' });
         expect(getCodecPrivate(responses)).toEqual(extradata);
         expect(getPacketResponses(responses).map(packet => packet.timestampMicroseconds)).toEqual([ FRAME_MICROSECONDS, 3 * FRAME_MICROSECONDS, 2 * FRAME_MICROSECONDS ]);
         expect(getPacketResponses(responses).map(packet => new Uint8Array(packet.data))).toEqual(packets.map(packet => packet.data));

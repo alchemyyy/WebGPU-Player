@@ -4,14 +4,17 @@ import {
     type CustomMediabunnyPCMAudioCodec
 } from './CustomAudioCodec';
 import {
+    CUSTOM_AUDIO_OUTPUT_LAYOUTS,
     CUSTOM_FIVE_POINT_ONE_INPUT_CHANNEL_COUNT,
     CUSTOM_MONO_INPUT_CHANNEL_COUNT,
     CUSTOM_STEREO_INPUT_CHANNEL_COUNT,
     CUSTOM_STEREO_OUTPUT_CHANNEL_COUNT,
-    CUSTOM_FIVE_POINT_ONE_OUTPUT_CHANNEL_COUNT,
-    CUSTOM_SEVEN_POINT_ONE_OUTPUT_CHANNEL_COUNT,
+    CUSTOM_SEVEN_POINT_ONE_INPUT_CHANNEL_COUNT,
     CUSTOM_THREE_CHANNEL_INPUT_CHANNEL_COUNT,
-    type CustomAudioOutputChannelCount
+    getCustomAudioOutputChannelCount,
+    getCustomAudioOutputChannelLayout,
+    type CustomAudioChannelLayout,
+    type CustomAudioOutputLayout
 } from './processing/CustomAudioChannelLayout';
 import {
     DTS_SUPPORTED_INPUT_ROUTES,
@@ -30,11 +33,12 @@ export const CUSTOM_AUDIO_OUTPUT_CHANNEL_INTERPRETATION = 'speakers' as const;
 export const CUSTOM_AUDIO_OUTPUT_BUFFERED_SECONDS = 2;
 export const CUSTOM_SURROUND_INPUT_CHANNEL_COUNT = CUSTOM_FIVE_POINT_ONE_INPUT_CHANNEL_COUNT;
 export { CUSTOM_STEREO_INPUT_CHANNEL_COUNT };
-export const CUSTOM_AUDIO_OUTPUT_CHANNEL_COUNTS: readonly CustomAudioOutputChannelCount[] = [
-    CUSTOM_STEREO_OUTPUT_CHANNEL_COUNT,
-    CUSTOM_FIVE_POINT_ONE_OUTPUT_CHANNEL_COUNT,
-    CUSTOM_SEVEN_POINT_ONE_OUTPUT_CHANNEL_COUNT
-];
+/** The channel counts of the output layouts: stereo, 5.1, 7.1 and 5.1.2, 5.1.4 and 7.1.2, and 7.1.4 */
+export const CUSTOM_AUDIO_OUTPUT_CHANNEL_COUNTS: readonly number[] = Object.freeze([
+    ...new Set(CUSTOM_AUDIO_OUTPUT_LAYOUTS.map(getCustomAudioOutputChannelCount))
+]);
+/** The codecs whose decoder packages may render object audio into the output layout: E-AC-3 with JOC and TrueHD with Atmos */
+export const CUSTOM_OBJECT_AUDIO_CODECS: readonly CustomAudioCodec[] = Object.freeze([ 'eac3', 'truehd' ]);
 /** The source layouts every decoded PCM route covers without multichannel evidence */
 export const CUSTOM_NON_SURROUND_INPUT_CHANNEL_COUNTS: readonly number[] = Object.freeze([
     CUSTOM_MONO_INPUT_CHANNEL_COUNT,
@@ -71,6 +75,11 @@ const CUSTOM_SURROUND_INPUT_CHANNEL_COUNTS: readonly number[] = [
     CUSTOM_THREE_CHANNEL_INPUT_CHANNEL_COUNT,
     CUSTOM_SURROUND_INPUT_CHANNEL_COUNT
 ];
+// The WebCodecs surround decoders also decode 7.1 in WAVE order; eligibility asks the codec's 5.1 verdict for 6 channels and its 7.1 verdict for 8
+const CUSTOM_WEBCODECS_SURROUND_INPUT_CHANNEL_COUNTS: readonly number[] = Object.freeze([
+    ...CUSTOM_SURROUND_INPUT_CHANNEL_COUNTS,
+    CUSTOM_SEVEN_POINT_ONE_INPUT_CHANNEL_COUNT
+]);
 // Three-channel AC-3 transcodes: 2/1 and 3/0 both reach Jellyfin as "3.0", which drops the "(back)" suffix, and no evidence covers either bed
 const CUSTOM_AC3_INPUT_CHANNEL_COUNTS: readonly number[] = [
     CUSTOM_MONO_INPUT_CHANNEL_COUNT,
@@ -94,6 +103,17 @@ const CUSTOM_MLP_INPUT_CHANNEL_COUNTS = getSortedChannelCounts(
         .filter(route => route.codec === 'mlp')
         .map(route => route.channelCount)
 );
+// FFmpeg's WMA v1 and v2 decoder takes at most two channels, and its WMA Voice decoder one
+const CUSTOM_WMA_INPUT_CHANNEL_COUNTS: readonly number[] = CUSTOM_NON_SURROUND_INPUT_CHANNEL_COUNTS;
+const CUSTOM_WMA_VOICE_INPUT_CHANNEL_COUNTS: readonly number[] = Object.freeze([ CUSTOM_MONO_INPUT_CHANNEL_COUNT ]);
+// WMA Pro and WMA Lossless declare their speaker mask, which a package reports: the beds the output stage lays out, without 6.1, which no route presents
+const CUSTOM_WMA_PRO_INPUT_CHANNEL_COUNTS: readonly number[] = Object.freeze([
+    CUSTOM_MONO_INPUT_CHANNEL_COUNT,
+    CUSTOM_STEREO_INPUT_CHANNEL_COUNT,
+    CUSTOM_THREE_CHANNEL_INPUT_CHANNEL_COUNT,
+    CUSTOM_FIVE_POINT_ONE_INPUT_CHANNEL_COUNT,
+    CUSTOM_SEVEN_POINT_ONE_INPUT_CHANNEL_COUNT
+]);
 const CUSTOM_PCM_INPUT_CHANNEL_COUNTS: readonly number[] = CUSTOM_SURROUND_INPUT_CHANNEL_COUNTS;
 const CUSTOM_THREE_CHANNEL_METADATA_LAYOUTS: readonly string[] = Object.freeze([ '3.0' ]);
 const CUSTOM_MEDIABUNNY_PCM_AUDIO_CODEC_SET = new Set<string>(CUSTOM_MEDIABUNNY_PCM_AUDIO_CODECS);
@@ -119,7 +139,7 @@ export function getSupportedCustomAudioInputChannelCounts(codec: CustomAudioCode
         case 'flac':
         case 'opus':
         case 'vorbis':
-            return CUSTOM_SURROUND_INPUT_CHANNEL_COUNTS;
+            return CUSTOM_WEBCODECS_SURROUND_INPUT_CHANNEL_COUNTS;
         case 'ac3':
             return CUSTOM_AC3_INPUT_CHANNEL_COUNTS;
         case 'eac3':
@@ -132,6 +152,14 @@ export function getSupportedCustomAudioInputChannelCounts(codec: CustomAudioCode
             return CUSTOM_TRUEHD_INPUT_CHANNEL_COUNTS;
         case 'mp3':
             return CUSTOM_NON_SURROUND_INPUT_CHANNEL_COUNTS;
+        case 'wmav1':
+        case 'wmav2':
+            return CUSTOM_WMA_INPUT_CHANNEL_COUNTS;
+        case 'wmapro':
+        case 'wmalossless':
+            return CUSTOM_WMA_PRO_INPUT_CHANNEL_COUNTS;
+        case 'wmavoice':
+            return CUSTOM_WMA_VOICE_INPUT_CHANNEL_COUNTS;
     }
 }
 
@@ -154,7 +182,7 @@ export function isSupportedCustomAudioInputLayout(
         case 'flac':
         case 'opus':
         case 'vorbis':
-            return CUSTOM_SURROUND_INPUT_CHANNEL_COUNTS.includes(channelCount);
+            return CUSTOM_WEBCODECS_SURROUND_INPUT_CHANNEL_COUNTS.includes(channelCount);
         case 'ac3':
             return CUSTOM_AC3_INPUT_CHANNEL_COUNTS.includes(channelCount);
         case 'eac3':
@@ -166,6 +194,14 @@ export function isSupportedCustomAudioInputLayout(
             return isSupportedTrueHDInputRoute(codec, channelCount, sampleRate);
         case 'mp3':
             return CUSTOM_NON_SURROUND_INPUT_CHANNEL_COUNTS.includes(channelCount);
+        case 'wmav1':
+        case 'wmav2':
+            return CUSTOM_WMA_INPUT_CHANNEL_COUNTS.includes(channelCount);
+        case 'wmapro':
+        case 'wmalossless':
+            return CUSTOM_WMA_PRO_INPUT_CHANNEL_COUNTS.includes(channelCount);
+        case 'wmavoice':
+            return CUSTOM_WMA_VOICE_INPUT_CHANNEL_COUNTS.includes(channelCount);
         default:
             return false;
     }
@@ -185,16 +221,28 @@ export function isSupportedCustomAudioInputMetadataLayout(
             || hasCustomAudioMetadataLayout(channelLayout, CUSTOM_THREE_CHANNEL_METADATA_LAYOUTS));
 }
 
-/** Accepts the measured stereo, 5.1, and 7.1 worklet layouts at 48 kHz. */
+/**
+ * Accepts a decoded layout a package rendered object audio into: an E-AC-3 or TrueHD package renders into the output layout, heights included,
+ * which the codec's input routes do not list.
+ */
+export function isSupportedCustomAudioRenderedLayout(codec: string, layout: CustomAudioChannelLayout, sampleRate: unknown): boolean {
+    return CUSTOM_OBJECT_AUDIO_CODECS.includes(codec as CustomAudioCodec)
+        && isSupportedCustomAudioSampleRate(sampleRate)
+        && CUSTOM_AUDIO_OUTPUT_LAYOUTS.some(
+            (outputLayout: CustomAudioOutputLayout): boolean => getCustomAudioOutputChannelLayout(outputLayout).id === layout.id
+        );
+}
+
+/** Accepts the stereo, 5.1, 7.1, and height worklet layouts at 48 kHz: 2, 6, 8, 10, or 12 channels. */
 export function isSupportedCustomAudioOutputLayout(channelCount: unknown, sampleRate: unknown): boolean {
     return typeof channelCount === 'number'
-        && CUSTOM_AUDIO_OUTPUT_CHANNEL_COUNTS.includes(channelCount as CustomAudioOutputChannelCount)
+        && CUSTOM_AUDIO_OUTPUT_CHANNEL_COUNTS.includes(channelCount)
         && sampleRate === CUSTOM_AUDIO_OUTPUT_SAMPLE_RATE;
 }
 
 /** Rejects decoded output that exceeds the measured audio presentation route. */
 export function assertSupportedCustomAudioOutputLayout(channelCount: unknown, sampleRate: unknown): void {
     if (!isSupportedCustomAudioOutputLayout(channelCount, sampleRate)) {
-        throw new RangeError(`Custom audio output requires 2, 6, or 8 channels at ${CUSTOM_AUDIO_OUTPUT_SAMPLE_RATE} Hz`);
+        throw new RangeError(`Custom audio output requires 2, 6, 8, 10, or 12 channels at ${CUSTOM_AUDIO_OUTPUT_SAMPLE_RATE} Hz`);
     }
 }

@@ -2,7 +2,7 @@
 // each packet decodes to the outcome its test scripts, and each block's planes sit in a real memory that the package instance copies them from.
 // A test file mocks instantiateDecoderPackage with instantiateScriptedAudioDecoderModule, so the engine's own package instance drives these exports.
 import type { AudioDecoderManifest } from 'webgpu-player/decode/audio/AudioDecoderManifest';
-import { AUDIO_DECODER_EXPORTS, type AudioDecoderModuleSource } from 'webgpu-player/decode/audio/AudioDecoderPackageInstance';
+import { AUDIO_DECODER_EXPORTS, AUDIO_DECODER_OPTIONAL_EXPORTS, type AudioDecoderModuleSource } from 'webgpu-player/decode/audio/AudioDecoderPackageInstance';
 import { DECODER_PACKAGE_MAXIMUM_MEMORY_PAGES } from 'webgpu-player/decode/packages/DecoderPackageImports';
 
 import { encodeWebAssemblyModule } from './webAssemblyModuleEncoder';
@@ -36,6 +36,10 @@ export type ScriptedAudioPacket =
 export type ScriptedAudioDecoderScript = Readonly<{
     /** Attributes outside any block, by manifest name, such as `libraryVersion` */
     attributes?: Readonly<Record<string, number>>
+    /** The failure its configure call reports, or none when it accepts any codec private data */
+    configureFailure?: ScriptedAudioFailure
+    /** The blocks its `audio_decoder_drain` export outputs at the end of a track; without them the module has no such export */
+    drainedBlocks?: readonly ScriptedAudioBlock[]
     manifest: AudioDecoderManifest
     /** What each packet decodes to, in order; a packet past the list decodes to the last one */
     packets: readonly ScriptedAudioPacket[]
@@ -45,6 +49,19 @@ export type ScriptedAudioDecoderScript = Readonly<{
 export type ScriptedSentPacket = Readonly<{
     bytes: Uint8Array
     timestampMicroseconds: number
+}>;
+
+/** Codec private data as a decoder received it, and how many packets its package had been sent by then. */
+export type ScriptedConfiguration = Readonly<{
+    bytes: Uint8Array
+    sentPacketCount: number
+}>;
+
+/** An option as a decoder received it, by manifest name, and how many packets its package had been sent by then. */
+export type ScriptedOption = Readonly<{
+    name: string
+    sentPacketCount: number
+    value: number
 }>;
 
 type ScriptedExportKey = keyof typeof AUDIO_DECODER_EXPORTS;
@@ -75,10 +92,14 @@ let nextScriptID = 1;
 /** One scripted decoder package: what it decodes, and what its decoders were asked to do. */
 export class ScriptedAudioDecoderModule {
     public readonly clearedHandles: number[] = [];
+    /** The codec private data its decoders were configured with, in order */
+    public readonly configurations: ScriptedConfiguration[] = [];
     public readonly createdCodecIndices: number[] = [];
     public readonly destroyedHandles: number[] = [];
-    /** The options set on its decoders, by manifest name */
-    public readonly options: [ string, number ][] = [];
+    /** The options set on its decoders, in order */
+    public readonly options: ScriptedOption[] = [];
+    /** How many times its decoders were drained */
+    public drainCount = 0;
     public receiveCount = 0;
     public readonly sentPackets: ScriptedSentPacket[] = [];
     public readonly source: AudioDecoderModuleSource;
@@ -107,7 +128,7 @@ export class ScriptedAudioDecoderModule {
     /** Instantiates the script: a memory of its own, and exports that play its packets back in order. */
     public instantiate(): { instance: WebAssembly.Instance; memory: WebAssembly.Memory } {
         const memory = new WebAssembly.Memory({ initial: INITIAL_MEMORY_PAGES, maximum: DECODER_PACKAGE_MAXIMUM_MEMORY_PAGES });
-        const { attributes, manifest, packets } = this.script;
+        const { attributes, configureFailure, manifest, packets } = this.script;
         let packetIndex = 0;
         let reservedByteLength = 0;
         let pendingBlocks: ScriptedAudioBlock[] = [];
@@ -182,7 +203,10 @@ export class ScriptedAudioDecoderModule {
                 pendingReceiveFailure = null;
                 return SUCCESS_STATUS;
             },
-            configure: (): number => SUCCESS_STATUS,
+            configure: (_handle: number, byteLength: number): number => {
+                this.configurations.push({ bytes: readInput(byteLength), sentPacketCount: this.sentPackets.length });
+                return configureFailure ? fail(configureFailure) : SUCCESS_STATUS;
+            },
             create: (codecIndex: number): number => {
                 this.createdCodecIndices.push(codecIndex);
                 return SCRIPTED_AUDIO_DECODER_HANDLE;
@@ -203,7 +227,7 @@ export class ScriptedAudioDecoderModule {
             sampleRate: (): number => currentBlock?.sampleRate ?? 0,
             send,
             setOption: (_handle: number, key: number, value: number): number => {
-                this.options.push([ manifest.options.get(key) ?? '', value ]);
+                this.options.push({ name: manifest.options.get(key) ?? '', sentPacketCount: this.sentPackets.length, value });
                 return SUCCESS_STATUS;
             },
             timestamp: (): number => currentBlock?.timestampMicroseconds ?? NO_TIMESTAMP
@@ -211,6 +235,14 @@ export class ScriptedAudioDecoderModule {
         const exports: Record<string, ScriptedExport> = {};
         for (const [ key, name ] of Object.entries(AUDIO_DECODER_EXPORTS) as [ ScriptedExportKey, string ][]) {
             exports[name] = implementations[key];
+        }
+        if (this.script.drainedBlocks) {
+            const drainedBlocks = this.script.drainedBlocks;
+            exports[AUDIO_DECODER_OPTIONAL_EXPORTS.drain] = (): number => {
+                this.drainCount += 1;
+                pendingBlocks = [ ...drainedBlocks ];
+                return SUCCESS_STATUS;
+            };
         }
         return { instance: { exports } as unknown as WebAssembly.Instance, memory };
     }
