@@ -80,11 +80,14 @@ describe('native multichannel audio output', () => {
         { expected: 'stereo', maximum: null, source: 6 },
         { expected: 'stereo', maximum: null, source: 7 },
         { expected: 'stereo', maximum: null, source: 8 },
-        // Three-channel and 5.1 sources use a 5.1 sink
+        // Three-channel, 5.0, and 5.1 sources use a 5.1 sink
         { expected: 'stereo', maximum: 2, source: 3 },
         { expected: 'stereo', maximum: 5, source: 3 },
         { expected: '5.1', maximum: 6, source: 3 },
         { expected: '5.1', maximum: 8, source: 3 },
+        { expected: 'stereo', maximum: 5, source: 5 },
+        { expected: '5.1', maximum: 6, source: 5 },
+        { expected: '5.1', maximum: 8, source: 5 },
         { expected: 'stereo', maximum: 5, source: 6 },
         { expected: '5.1', maximum: 6, source: 6 },
         { expected: '5.1', maximum: 8, source: 6 },
@@ -105,7 +108,6 @@ describe('native multichannel audio output', () => {
         { expected: 'stereo', maximum: 8, source: 1 },
         { expected: 'stereo', maximum: 8, source: 2 },
         { expected: 'stereo', maximum: 8, source: 4 },
-        { expected: 'stereo', maximum: 8, source: 5 },
         { expected: 'stereo', maximum: 12, source: 12 },
         { expected: 'stereo', maximum: 8, source: null }
     ] as const)('plays a $source-channel source on a $maximum-channel destination to $expected', ({

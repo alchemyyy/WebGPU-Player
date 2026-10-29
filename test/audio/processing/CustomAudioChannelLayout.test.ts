@@ -8,6 +8,8 @@ import {
     CUSTOM_FIVE_POINT_ONE_POINT_FOUR_CHANNEL_LAYOUT,
     CUSTOM_FIVE_POINT_ONE_POINT_TWO_CHANNEL_LAYOUT,
     CUSTOM_FIVE_POINT_ONE_SIDE_POINT_TWO_CHANNEL_LAYOUT,
+    CUSTOM_FIVE_POINT_ZERO_BACK_CHANNEL_LAYOUT,
+    CUSTOM_FIVE_POINT_ZERO_CHANNEL_LAYOUT,
     CUSTOM_MONO_CHANNEL_LAYOUT,
     CUSTOM_SIX_POINT_ONE_CHANNEL_LAYOUT,
     CUSTOM_SEVEN_POINT_ONE_CHANNEL_LAYOUT,
@@ -56,7 +58,8 @@ describe('CustomAudioChannelLayout', () => {
         expect(getCustomAudioChannelLayout(8)).toBe(CUSTOM_SEVEN_POINT_ONE_CHANNEL_LAYOUT);
         expect(getCustomAudioChannelLayout(0)).toBeNull();
         expect(getCustomAudioChannelLayout(4)).toBeNull();
-        expect(getCustomAudioChannelLayout(5)).toBeNull();
+        // Five channels without a mask are FFmpeg's 5.0, whose surrounds are sides like its 5.1's
+        expect(getCustomAudioChannelLayout(5)).toBe(CUSTOM_FIVE_POINT_ZERO_CHANNEL_LAYOUT);
     });
 
     it('uses the shared 6.1 matrix in explicit WAVE channel order', () => {
@@ -131,6 +134,21 @@ describe('CustomAudioChannelLayout', () => {
             CUSTOM_FIVE_POINT_ONE_CHANNEL_LAYOUT
         )).toThrow('5.1-side audio requires exactly 6 input channels');
     });
+
+    it.each([ CUSTOM_FIVE_POINT_ZERO_CHANNEL_LAYOUT, CUSTOM_FIVE_POINT_ZERO_BACK_CHANNEL_LAYOUT ])(
+        'mixes $id to stereo as the 5.1 it maps to, through each algorithm',
+        layout => {
+            const channels = createNumberedChannels(5);
+            const fivePointOne = [ ...channels.slice(0, 3), new Float32Array([ 0 ]), ...channels.slice(3) ];
+
+            for (const algorithm of Object.values(CUSTOM_AUDIO_DOWNMIX_ALGORITHMS)) {
+                expect(getFirstFrames(mixCustomAudioToStereo(channels, layout, algorithm)))
+                    .toEqual(getFirstFrames(mixCustomAudioToStereo(fivePointOne, CUSTOM_FIVE_POINT_ONE_CHANNEL_LAYOUT, algorithm)));
+            }
+            expect(requiresCustomAudioFoldDown(layout, 'stereo')).toBe(true);
+            expect(requiresCustomAudioFoldDown(layout, '5.1')).toBe(false);
+        }
+    );
 
     it('applies the selected matrix only when stereo conversion is required', () => {
         const channels = [ 1, 2, 3, 4, 5, 6 ].map(value => (
@@ -244,6 +262,27 @@ describe('CustomAudioChannelLayout', () => {
             expectedFrames: [ 1, 2, 0, 3, 0, 0 ],
             layout: CUSTOM_TWO_POINT_ONE_CHANNEL_LAYOUT,
             outputLayout: '5.1'
+        },
+        // 5.0 fills 5.1 without its LFE, and 7.1 by the names of its sides or backs
+        {
+            expectedFrames: [ 1, 2, 3, 0, 4, 5 ],
+            layout: CUSTOM_FIVE_POINT_ZERO_CHANNEL_LAYOUT,
+            outputLayout: '5.1'
+        },
+        {
+            expectedFrames: [ 1, 2, 3, 0, 4, 5 ],
+            layout: CUSTOM_FIVE_POINT_ZERO_BACK_CHANNEL_LAYOUT,
+            outputLayout: '5.1'
+        },
+        {
+            expectedFrames: [ 1, 2, 3, 0, 0, 0, 4, 5 ],
+            layout: CUSTOM_FIVE_POINT_ZERO_CHANNEL_LAYOUT,
+            outputLayout: '7.1'
+        },
+        {
+            expectedFrames: [ 1, 2, 3, 0, 4, 5, 0, 0 ],
+            layout: CUSTOM_FIVE_POINT_ZERO_BACK_CHANNEL_LAYOUT,
+            outputLayout: '7.1'
         },
         {
             expectedFrames: [ 1, 2, 3, 0, 0, 0 ],

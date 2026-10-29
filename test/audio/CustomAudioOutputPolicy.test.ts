@@ -85,14 +85,17 @@ describe('CustomAudioOutputPolicy', () => {
         }
         // Mediabunny's PCM route stays at 5.1
         expect(isSupportedCustomAudioInputLayout('pcm_s16le', 8, 48_000)).toBe(false);
-        // Jellyfin reports AC-3 2/1 and 3/0 alike as 3.0, so three-channel AC-3 transcodes
+        // Jellyfin reports AC-3 2/1 and 3/0 alike as 3.0, so three-channel AC-3 transcodes; five channels are 3/2, which may gain its LFE
         expect(getSupportedCustomAudioInputChannelCounts('ac3')).toEqual([
             1,
             CUSTOM_AUDIO_OUTPUT_CHANNEL_COUNT,
+            5,
             CUSTOM_SURROUND_INPUT_CHANNEL_COUNT
         ]);
         expect(isSupportedCustomAudioInputLayout('ac3', 1, 48_000)).toBe(true);
         expect(isSupportedCustomAudioInputLayout('ac3', 3, 48_000)).toBe(false);
+        expect(isSupportedCustomAudioInputLayout('ac3', 4, 48_000)).toBe(false);
+        expect(isSupportedCustomAudioInputLayout('ac3', 5, 48_000)).toBe(true);
         expect(isSupportedCustomAudioInputLayout('ac3', 6, 48_000)).toBe(true);
         expect(getSupportedCustomAudioInputChannelCounts('mp3')).toEqual([ 1, 2 ]);
         expect(getSupportedCustomAudioInputChannelCounts('mp3'))

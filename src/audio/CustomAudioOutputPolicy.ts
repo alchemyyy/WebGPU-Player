@@ -6,6 +6,7 @@ import {
 import {
     CUSTOM_AUDIO_OUTPUT_LAYOUTS,
     CUSTOM_FIVE_POINT_ONE_INPUT_CHANNEL_COUNT,
+    CUSTOM_FIVE_POINT_ZERO_INPUT_CHANNEL_COUNT,
     CUSTOM_MONO_INPUT_CHANNEL_COUNT,
     CUSTOM_STEREO_INPUT_CHANNEL_COUNT,
     CUSTOM_STEREO_OUTPUT_CHANNEL_COUNT,
@@ -80,10 +81,13 @@ const CUSTOM_WEBCODECS_SURROUND_INPUT_CHANNEL_COUNTS: readonly number[] = Object
     ...CUSTOM_SURROUND_INPUT_CHANNEL_COUNTS,
     CUSTOM_SEVEN_POINT_ONE_INPUT_CHANNEL_COUNT
 ]);
-// Three-channel AC-3 transcodes: 2/1 and 3/0 both reach Jellyfin as "3.0", which drops the "(back)" suffix, and no evidence covers either bed
+// Three-channel AC-3 transcodes: 2/1 and 3/0 both reach Jellyfin as "3.0", which drops the "(back)" suffix, and no evidence covers either bed.
+// Five channels play as 3/2, which the package reports as 5.0(side) and which may gain its LFE mid-stream, as the output stage rebinds to; a 3/1 or 2/2 bed
+// with an LFE reports a mask no layout has and fails its attempt.
 const CUSTOM_AC3_INPUT_CHANNEL_COUNTS: readonly number[] = [
     CUSTOM_MONO_INPUT_CHANNEL_COUNT,
     CUSTOM_STEREO_INPUT_CHANNEL_COUNT,
+    CUSTOM_FIVE_POINT_ZERO_INPUT_CHANNEL_COUNT,
     CUSTOM_SURROUND_INPUT_CHANNEL_COUNT
 ];
 const CUSTOM_EAC3_INPUT_CHANNEL_COUNTS = getSortedChannelCounts(EAC3_SUPPORTED_INPUT_ROUTES.map(route => route.channelCount));

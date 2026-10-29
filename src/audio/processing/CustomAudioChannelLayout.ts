@@ -15,6 +15,7 @@ import type { AudioDownmixSettingsRamp } from './StreamingAudioDownmixSettings';
 export const CUSTOM_MONO_INPUT_CHANNEL_COUNT = 1;
 export const CUSTOM_STEREO_INPUT_CHANNEL_COUNT = 2;
 export const CUSTOM_THREE_CHANNEL_INPUT_CHANNEL_COUNT = 3;
+export const CUSTOM_FIVE_POINT_ZERO_INPUT_CHANNEL_COUNT = 5;
 export const CUSTOM_FIVE_POINT_ONE_INPUT_CHANNEL_COUNT = 6;
 export const CUSTOM_SIX_POINT_ONE_INPUT_CHANNEL_COUNT = 7;
 export const CUSTOM_SEVEN_POINT_ONE_INPUT_CHANNEL_COUNT = 8;
@@ -41,7 +42,8 @@ export type CustomAudioChannel =
 
 export type CustomAudioChannelLayout = {
     channels: readonly CustomAudioChannel[]
-    id: '2.1' | '3.0' | '3.0-back' | '5.1-back' | '5.1-side' | '5.1.2' | '5.1.2-side' | '5.1.4' | '6.1' | '7.1' | '7.1.2' | '7.1.4' | 'mono' | 'stereo'
+    id: '2.1' | '3.0' | '3.0-back' | '5.0-back' | '5.0-side' | '5.1-back' | '5.1-side' | '5.1.2' | '5.1.2-side' | '5.1.4' | '6.1' | '7.1' | '7.1.2' | '7.1.4' | 'mono'
+        | 'stereo'
 };
 
 /**
@@ -86,6 +88,29 @@ export const CUSTOM_THREE_POINT_ZERO_BACK_CHANNEL_LAYOUT: CustomAudioChannelLayo
         'back-center'
     ] as const),
     id: '3.0-back'
+});
+
+// FFmpeg's 5.0(side), the 3/2 bed of AC-3 and DTS without their LFE
+export const CUSTOM_FIVE_POINT_ZERO_CHANNEL_LAYOUT: CustomAudioChannelLayout = Object.freeze({
+    channels: Object.freeze([
+        'front-left',
+        'front-right',
+        'front-center',
+        'side-left',
+        'side-right'
+    ] as const),
+    id: '5.0-side'
+});
+
+export const CUSTOM_FIVE_POINT_ZERO_BACK_CHANNEL_LAYOUT: CustomAudioChannelLayout = Object.freeze({
+    channels: Object.freeze([
+        'front-left',
+        'front-right',
+        'front-center',
+        'back-left',
+        'back-right'
+    ] as const),
+    id: '5.0-back'
 });
 
 export const CUSTOM_FIVE_POINT_ONE_CHANNEL_LAYOUT: CustomAudioChannelLayout = Object.freeze({
@@ -318,8 +343,8 @@ export function hasCustomAudioOutputHeights(outputLayout: CustomAudioOutputLayou
 
 /**
  * Maps a decoded channel count to its layout when the decoder reports no speaker mask.
- * Three channels are 3.0 (FL, FR, FC), the order AAC, FLAC, Opus, and Vorbis decode to.
- * 2.1, 3.0(back), and the height layouts come only from a decoder's speaker mask.
+ * Three channels are 3.0 (FL, FR, FC), the order AAC, FLAC, Opus, and Vorbis decode to, and five and six are FFmpeg's 5.0 and 5.1, whose surrounds are sides.
+ * 2.1, 3.0(back), 5.0(back), and the height layouts come only from a decoder's speaker mask.
  */
 export function getCustomAudioChannelLayout(channelCount: number): CustomAudioChannelLayout | null {
     switch (channelCount) {
@@ -329,6 +354,8 @@ export function getCustomAudioChannelLayout(channelCount: number): CustomAudioCh
             return CUSTOM_STEREO_CHANNEL_LAYOUT;
         case CUSTOM_THREE_CHANNEL_INPUT_CHANNEL_COUNT:
             return CUSTOM_THREE_POINT_ZERO_CHANNEL_LAYOUT;
+        case CUSTOM_FIVE_POINT_ZERO_INPUT_CHANNEL_COUNT:
+            return CUSTOM_FIVE_POINT_ZERO_CHANNEL_LAYOUT;
         case CUSTOM_FIVE_POINT_ONE_INPUT_CHANNEL_COUNT:
             return CUSTOM_FIVE_POINT_ONE_CHANNEL_LAYOUT;
         case CUSTOM_SIX_POINT_ONE_INPUT_CHANNEL_COUNT:
@@ -476,7 +503,7 @@ function mapCustomAudioToSurround(
 
 /**
  * Mixes a decoded layout to stereo: mono is duplicated, stereo passes through, and every larger bed uses its downmix.
- * A height layout first folds its heights into its 5.1 or 7.1 floor, which the floor's downmix then mixes.
+ * A 5.0 bed maps to 5.1, and a height layout first folds its heights into its 5.1 or 7.1 floor, which the floor's downmix then mixes.
  */
 export function mixCustomAudioToStereo(
     channelData: readonly Float32Array[],
@@ -530,6 +557,8 @@ export function mixCustomAudioToStereo(
                 downmixSettings,
                 downmixSettingsRamp
             );
+        case '5.0-back':
+        case '5.0-side':
         case '5.1.2':
         case '5.1.2-side':
         case '5.1.4':

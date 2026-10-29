@@ -1,0 +1,16 @@
+AC-3 3/2 then 3/2 with LFE test vector provenance
+
+ac3-5.0-then-5.1.mka is FFmpeg's AC-3 encode of one sine per source channel
+at amplitude 0.25, five syncframes of 5.0(side) (FL 400, FR 600, FC 800,
+SL 1000, SR 1200 Hz) followed by five of 5.1(side) (the same and LFE 60 Hz),
+remuxed into one Matroska track, which declares the first syncframe's five
+channels. It stands for a track whose bed gains its LFE mid-stream.
+The recorded commands are:
+
+  ffmpeg -fflags +bitexact -f lavfi -i "aevalsrc=0.25*sin(2*PI*400*t)|0.25*sin(2*PI*600*t)|0.25*sin(2*PI*800*t)|0.25*sin(2*PI*1000*t)|0.25*sin(2*PI*1200*t):s=48000:c=5.0(side):d=0.16" -c:a ac3 -b:a 448k -flags +bitexact -f ac3 a50.ac3
+  ffmpeg -fflags +bitexact -f lavfi -i "aevalsrc=0.25*sin(2*PI*400*t)|0.25*sin(2*PI*600*t)|0.25*sin(2*PI*800*t)|0.25*sin(2*PI*60*t)|0.25*sin(2*PI*1000*t)|0.25*sin(2*PI*1200*t):s=48000:c=5.1(side):d=0.16" -c:a ac3 -b:a 448k -flags +bitexact -f ac3 a51.ac3
+  cat a50.ac3 a51.ac3 > a5051.ac3
+  ffmpeg -fflags +bitexact -i a5051.ac3 -c copy -f matroska ac3-5.0-then-5.1.mka
+
+Other FFmpeg builds write slightly different bytes, so the committed file is
+the reference.
