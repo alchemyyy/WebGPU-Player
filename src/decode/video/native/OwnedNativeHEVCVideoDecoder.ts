@@ -2,6 +2,7 @@ import type { EncodedPacket } from 'mediabunny';
 
 import {
     hasHEVCRASLPicture,
+    hasHEVCSPS,
     rewriteHEVCAccessUnitColorDescriptionToBT709,
     sanitizeHEVCAccessUnitForChromium,
     type HEVCNALFormat
@@ -33,10 +34,10 @@ export type OwnedNativeHEVCVideoDecoderOptions = {
 };
 
 /**
- * Returns a key access unit's alternative transfer characteristics SEI value.
+ * Returns an access unit's alternative transfer characteristics SEI value.
  * As in FFmpeg, SEI errors are not fatal: a malformed SEI counts as absent, so the SPS VUI alone must prove the route.
  */
-function findKeyPacketPreferredTransferCharacteristics(accessUnit: Uint8Array, format: HEVCNALFormat): number | null {
+function findAccessUnitPreferredTransferCharacteristics(accessUnit: Uint8Array, format: HEVCNALFormat): number | null {
     try {
         return findHEVCPreferredTransferCharacteristics(accessUnit, format);
     } catch (error) {
@@ -152,13 +153,14 @@ export default class OwnedNativeHEVCVideoDecoder extends OwnedNativeVideoDecoder
         if (this.options.neutralizeHDRColorMetadata !== true) {
             return packetData;
         }
-        if (packet.type === 'key') {
+        // Any access unit may carry an SPS, not only a key packet: a sync-sample table that lists only IDR pictures leaves each CRA, with its SPS, a delta packet
+        if (hasHEVCSPS(packetData, this.inputFormat)) {
             // The SEI that names an HLG-compatible stream's transfer travels in the access unit of its SPS
             const neutralizedData = rewriteHEVCAccessUnitColorDescriptionToBT709(
                 packetData,
                 this.inputFormat,
                 this.requireNativeHDRTransfer(),
-                findKeyPacketPreferredTransferCharacteristics(packetData, this.inputFormat)
+                findAccessUnitPreferredTransferCharacteristics(packetData, this.inputFormat)
             );
             if (neutralizedData) {
                 this.nativeHDRColorDescriptionValidated = true;
