@@ -39,6 +39,9 @@ const VC1_M2TS_FILE_NAME = 'vc1-advanced.m2ts';
 const UNREGISTERED_VC1_FILE_NAME = 'vc1-advanced-unregistered.ts';
 // The MPEG-2 and stereo AC-3 encode with every timestamp 600 s on, as a Blu-ray title's program clock starts, and 1.4 s more by FFmpeg's muxer delay
 const START600_FILE_NAMES = [ 'mpeg2video-ac3-start600.ts', 'mpeg2video-ac3-start600.m2ts' ] as const;
+// DTS core alone, as a Blu-ray program carries it: a container without a video track
+const AUDIO_ONLY_FILE_NAME = 'dts-core.m2ts';
+const NO_VIDEO_TRACK_MESSAGE = 'The container has no video track';
 // What FFprobe reads of them, in ticks of the 90 kHz program clock: the AC-3 track starts first, at the format's start_time, and the video 5.3 ms later
 const PROGRAM_CLOCK_RATE = 90_000;
 const START600_AUDIO_START_TICKS = 54_125_520;
@@ -102,7 +105,7 @@ const TRANSPORT_STREAM_ROUTES: readonly TransportStreamRouteExpectation[] = [
 ];
 
 const MEDIA_FILES = new Map<string, Uint8Array>(
-    [ MPEG1_FILE_NAME, MPEG2_FILE_NAME, MPEG2_M2TS_FILE_NAME, VC1_FILE_NAME, VC1_M2TS_FILE_NAME, UNREGISTERED_VC1_FILE_NAME, ...START600_FILE_NAMES ].map(
+    [ MPEG1_FILE_NAME, MPEG2_FILE_NAME, MPEG2_M2TS_FILE_NAME, VC1_FILE_NAME, VC1_M2TS_FILE_NAME, UNREGISTERED_VC1_FILE_NAME, AUDIO_ONLY_FILE_NAME, ...START600_FILE_NAMES ].map(
         (fileName: string): [string, Uint8Array] => [ fileName, new Uint8Array(readFileSync(join(TRANSPORT_STREAM_VECTOR_DIRECTORY, fileName))) ]
     )
 );
@@ -212,6 +215,15 @@ describe('the playback worker\'s focused routes on MPEG-TS and M2TS', () => {
         const responses = await runToStop(createFramePoolRequest(VC1_FILE_NAME, 'mpeg2video'));
 
         expect(responses.filter(response => response.type === 'error').map(response => response.type === 'error' ? response.message : null)).toEqual([ MISMATCH_MESSAGE ]);
+    });
+
+    it('fails a container without a video track as a source no route plays, before its readiness', async () => {
+        const responses = await runToStop(createWorkerStartRequest(AUDIO_ONLY_FILE_NAME));
+
+        expect(responses.map(response => response.type)).not.toContain('ready');
+        expect(responses.filter(response => response.type === 'error')).toEqual([
+            expect.objectContaining({ failureKind: 'source-unsupported', message: NO_VIDEO_TRACK_MESSAGE })
+        ]);
     });
 });
 
