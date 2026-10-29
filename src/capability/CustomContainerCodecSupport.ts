@@ -198,6 +198,16 @@ export const CUSTOM_CONTAINER_CODEC_RULES: readonly CustomContainerCodecRule[] =
         profileContainers: Object.freeze([ 'ts', 'm2ts', 'mts' ]),
         // The fork's demuxer reads MPEG-1, MPEG-2, and VC-1 streams, which the worker gives their first sequence header's extradata
         videoCodecs: Object.freeze([ 'h264', 'hevc', 'mpeg1video', 'mpeg2video', 'vc1' ] as const)
+    }),
+    Object.freeze({
+        // The fork's program stream demuxer reads MPEG audio, of which only Layer III has a route, and DVD-Video's AC-3 and DTS
+        audioCodecs: Object.freeze([ 'mp3', 'ac3', 'dts' ] as const),
+        // The file extensions of program streams, by which a file library, such as the sandbox's, finds them
+        containerAliases: Object.freeze([ 'mpg', 'vob' ]),
+        // Jellyfin names every program stream, an MPEG-1 system stream or an MPEG-2 program stream such as a VOB, by ffprobe's format name
+        profileContainers: Object.freeze([ 'mpeg' ]),
+        // The worker gives MPEG-1 and MPEG-2 their first sequence header's extradata, as in a transport stream
+        videoCodecs: Object.freeze([ 'mpeg1video', 'mpeg2video' ] as const)
     })
 ]);
 

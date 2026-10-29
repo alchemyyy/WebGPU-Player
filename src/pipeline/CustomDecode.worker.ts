@@ -5,6 +5,7 @@ import {
     AviInputFormat,
     BlobSource,
     Input,
+    MpegPsInputFormat,
     MpegTsInputFormat,
     PacketReader,
     UrlSource,
@@ -888,8 +889,8 @@ type FocusedVideoTrackInput = Readonly<{
     displayWidth: number
     internalCodecID: unknown
     request: Extract<DecodeWorkerRequest, { type: 'start' }>
-    /** Whether the track is an MPEG-TS or M2TS track, whose codec Mediabunny names and which carries no codec private data */
-    transportStream: boolean
+    /** Whether the track is an MPEG-TS, M2TS, or MPEG program stream track, whose codec Mediabunny names and which carries no codec private data */
+    mpegSystemStream: boolean
     videoTrack: InputVideoTrack
 }>;
 
@@ -1012,14 +1013,15 @@ function getFocusedVideoRoute(request: Extract<DecodeWorkerRequest, { type: 'sta
  * MPEG-1 and MPEG-2 take their track's CodecPrivate when it has one; VC-1, WMV3, MPEG-4 Part 2, H.263, and MS-MPEG4 always take codec private data,
  * and a VfW track of VC-1 or WMV3, or an AVI or VfW track of MPEG-4 Part 2, restamps its packets in presentation order.
  * JPEG 2000 takes none, and a VfW track of it must name a JPEG 2000 FourCC.
- * An MPEG-TS or M2TS track has no codec private data, so it takes its first sequence header's extradata, and stamps its packets in presentation order already.
+ * An MPEG-TS, M2TS, or MPEG program stream track has no codec private data, so it takes its first sequence header's extradata, and stamps its packets in
+ * presentation order already.
  */
 async function readFocusedVideoTrackConfiguration(
     route: FocusedVideoRoute,
     internalCodecID: string,
     input: FocusedVideoTrackInput
 ): Promise<Readonly<{ description: Uint8Array | null, videoTrack: InputVideoTrack }>> {
-    const transportStreamCodec = input.transportStream ? getTransportStreamVideoCodec(input.containerCodec) : null;
+    const transportStreamCodec = input.mpegSystemStream ? getTransportStreamVideoCodec(input.containerCodec) : null;
     if (transportStreamCodec !== null) {
         return requireFocusedTrackConfiguration(route, await readTransportStreamVideoDecoderDescription(transportStreamCodec, input.videoTrack), input.videoTrack);
     }
@@ -1074,8 +1076,8 @@ function requireFocusedTrackConfiguration(
 
 /** Returns the check a track or its request fails for a focused route, as `code: detail`, or null when both match it. */
 function findFocusedVideoRouteMismatch(route: FocusedVideoRoute, input: FocusedVideoTrackInput): string | null {
-    // A transport stream track matches by the codec Mediabunny names, the other containers' tracks by their codec IDs
-    if (input.transportStream) {
+    // An MPEG system stream track matches by the codec Mediabunny names, the other containers' tracks by their codec IDs
+    if (input.mpegSystemStream) {
         if (getTransportStreamVideoCodec(input.containerCodec) !== route.codec) {
             return `container-codec: ${input.containerCodec}`;
         }
@@ -1110,7 +1112,7 @@ async function prepareFocusedVideoTrack(input: FocusedVideoTrackInput): Promise<
     if (mismatch !== null) {
         throw new UnsupportedCustomDecodeSourceError(`The selected video track does not match the negotiated ${route.errorName} route: ${mismatch}`);
     }
-    // A matching track's codec ID is one of the route's, or its transport stream's stream type
+    // A matching track's codec ID is one of the route's, or its MPEG system stream's stream type or stream ID
     const internalCodecID = String(input.internalCodecID);
 
     const colorSpace = route.includeColorSpace ? await input.videoTrack.getColorSpace() : null;
@@ -1287,6 +1289,14 @@ function getFourCCContainer(inputFormat: InputFormat): 'asf' | 'avi' | null {
     return inputFormat instanceof AsfInputFormat ? 'asf' : null;
 }
 
+/**
+ * Returns whether a format is an MPEG system stream: MPEG-TS and M2TS, and MPEG program streams (MPG and VOB), which the fork reads alike.
+ * Their tracks are named by codec, carry no codec private data, and keep their PES timestamps.
+ */
+function isMPEGSystemStreamFormat(inputFormat: InputFormat): boolean {
+    return inputFormat instanceof MpegTsInputFormat || inputFormat instanceof MpegPsInputFormat;
+}
+
 /** Refuses a video track Mediabunny identifies but no route can play as it demuxes it. */
 async function requireDemuxableVideoTrack(input: Input, videoTrack: InputVideoTrack): Promise<void> {
     const unsupportedVideoFeature = await findUnsupportedTrackFeature(videoTrack);
@@ -1356,7 +1366,7 @@ async function prepareVideoTrack(
         fourCCContainer,
         internalCodecID,
         request,
-        transportStream: inputFormat instanceof MpegTsInputFormat,
+        mpegSystemStream: isMPEGSystemStreamFormat(inputFormat),
         videoTrack
     });
     if (focusedTrack) {

@@ -20,7 +20,8 @@ It does not play live streams, HLS or DASH, or a server transcode.
 | MPEG-TS, M2TS, MTS | H.264, HEVC, MPEG-1, MPEG-2, VC-1 | AAC, MP3, AC-3, E-AC-3, DTS |
 | AVI | H.264, HEVC, VP8, VP9, AV1, MPEG-4 Part 2, H.263, MS-MPEG4 | AAC, MP3, AC-3, FLAC, Vorbis, WMA, PCM |
 | ASF (ASF, WMV, WMA files) | VC-1, WMV3, MPEG-4 Part 2, H.263, MS-MPEG4 | AAC, MP3, AC-3, FLAC, Vorbis, WMA, PCM |
-| FLV, MPEG program streams (MPG, VOB), Ogg, RealMedia, MXF, and every other container | Not supported | Not supported |
+| MPEG program streams (MPG, VOB) | MPEG-1, MPEG-2 | MP3, AC-3, DTS |
+| FLV, Ogg, RealMedia, MXF, and every other container | Not supported | Not supported |
 
 PCM in Matroska is 8-bit unsigned, 16, 24, or 32-bit integer in either byte order, or little-endian 32 or 64-bit float.
 PCM in MP4, M4V, and MOV is 16, 24, or 32-bit integer or 32 or 64-bit float, in either byte order; MOV also carries 8-bit, mu-law, and A-law PCM.
@@ -44,6 +45,10 @@ ASF is read by the fork's ASF demuxer, as FFmpeg's `asfdec_f.c` reads it: the He
 Those timestamps are in decode order, as FFmpeg reads them and as its muxer writes them, so the worker restamps VC-1, WMV3, and MPEG-4 Part 2 B-frames into presentation order, as for Matroska Video for Windows tracks; H.264 and HEVC in ASF, which the fork would hand on in decode order, are refused.
 A stream opens by its FourCC or format tag as an AVI stream does: `WVC1` and `WMVA` as VC-1, and WMV3, WMA, and the MPEG-4 Part 2 and MS-MPEG4 FourCCs codec-less, with the FourCC or the tag, in decimal, as its codec ID.
 A DRM-protected ASF file (a Content Encryption, Extended Content Encryption, or Advanced Content Encryption Object, or a stream flagged as encrypted) is refused, and so is a live broadcast, whose data packets vary in size; WMV1 and WMV2 have no route.
+MPEG program streams, MPEG-1 system streams and MPEG-2 program streams such as DVD-Video's VOB files, are read by the fork's program stream demuxer: MPEG-1 and MPEG-2 video and MPEG audio by their stream IDs, and the AC-3, DTS, and LPCM substreams of private stream 1 as FFmpeg's `mpeg.c` numbers them.
+Its tracks come in the order of their first PES packets, as FFmpeg's demuxer creates them, and their packets are FFmpeg's, split as in MPEG-TS and stamped with the PTS of the PES packets they begin in.
+A picture whose PES packet carries no PTS, as on DVD-Video, which often stamps only the I pictures, is timed by MPEG video's display order.
+MPEG audio Layer II (`mp2`) has no route, and neither does DVD-Video's LPCM, which Jellyfin names `pcm_dvd`; subpictures and DVD-Video navigation packets are skipped.
 A `.wma` file is audio only, so it falls back to the host as every audio-only file does.
 An AIFF file opens, but the pipeline plays only sources with video, so AIFF, like every audio-only file, falls back to the host.
 A track whose edit list Mediabunny cannot honor, as `getUnsupportedFeatures()` reports, is refused rather than played out of sync.
@@ -57,8 +62,8 @@ A track whose edit list Mediabunny cannot honor, as `getUnsupportedFeatures()` r
 | VP8 | Profile 0 | WebCodecs | |
 | VP9 | Profile 0 at 8 bits: SDR; Profile 2 at 10 bits: SDR, HDR10, HDR10+, and HLG | WebCodecs; Profile 2 in software | Profiles 1 and 3 (4:2:2 and 4:4:4) |
 | AV1 | Main at 8 bits: SDR; Main at 10 bits: SDR, HDR10, HDR10+, HLG, and Dolby Vision Profile 10; High 4:4:4 at 8 and 10 bits and Professional 4:2:2 at 8 and 10 bits from raw planes, Dolby Vision Profile 10 among them | WebCodecs; 10 bits and the High and Professional profiles in software | Professional at 12 bits, which Chrome's WebCodecs refuses, outside a decoder package |
-| MPEG-1 | In Matroska and MPEG-TS | A GPU decoder package | Program streams (MPG, VOB), which nothing demuxes |
-| MPEG-2 | Every profile, at 4:2:0, 4:2:2, and 4:4:4, in Matroska, MPEG-TS, and M2TS | A GPU decoder package | MP4 and program streams, whose MPEG-2 streams Mediabunny does not read |
+| MPEG-1 | In Matroska, MPEG-TS, and program streams (MPG) | A GPU decoder package | |
+| MPEG-2 | Every profile, at 4:2:0, 4:2:2, and 4:4:4, in Matroska, MPEG-TS, M2TS, and program streams (MPG, VOB) | A GPU decoder package | MP4, whose MPEG-2 streams Mediabunny does not read |
 | VC-1 | Advanced profile (`WVC1` and `WMVA`), in Matroska, MP4, MOV, MPEG-TS, M2TS, and ASF, in a transport stream with or without its `VC-1` registration descriptor | A GPU decoder package | The Simple and Main profiles, which FFmpeg names `wmv3` (the WMV3 row) |
 | WMV3 | The Simple, Main, and Complex profiles, in Matroska and ASF | A GPU decoder package | AVI, MP4, and MPEG-TS |
 | MPEG-4 Part 2 | Every profile FFmpeg's decoder decodes at 8 bits, B-VOPs, quarter-pel, and global motion compensation among them, in Matroska (its own tracks and Video for Windows), MP4, MOV, 3GP, AVI, and ASF | A GPU decoder package | Studio profiles and deeper streams, and MPEG-TS, which Mediabunny does not demux it from |

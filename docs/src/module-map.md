@@ -178,7 +178,7 @@ All worker code unless marked.
 ### demux/mpeg/
 
 - `MatroskaMPEGVideoConfiguration.ts`: a Matroska `V_MPEG1` or `V_MPEG2` track's CodecPrivate, the sequence header FFmpeg hands its decoder, or none.
-- `MPEGTransportStreamVideoConfiguration.ts`: the engine codec of an MPEG-TS or M2TS MPEG-1, MPEG-2, or VC-1 track, and its codec private data, the extradata of its first packet with a sequence header, as FFmpeg's `extract_extradata` takes it.
+- `MPEGTransportStreamVideoConfiguration.ts`: the engine codec of an MPEG-TS, M2TS, or MPEG program stream MPEG-1, MPEG-2, or VC-1 track, and its codec private data, the extradata of its first packet with a sequence header, as FFmpeg's `extract_extradata` takes it.
 
 ### demux/vc1/
 

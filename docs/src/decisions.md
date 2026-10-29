@@ -81,6 +81,17 @@ Commit hashes refer to the Jellyfin Web fork's `webgpu-player` branch, where the
   A stream opens as the AVI demuxer's does: `WVC1` and `WMVA` as VC-1, WMV3 and the MPEG-4, MS-MPEG4, and WMA tags codec-less with the FourCC or tag as their codec ID, and the BITMAPINFOHEADER or WAVEFORMATEX in their stream format, which `VFWStreamFormat.ts` and `WaveFormatAudioConfiguration.ts` read.
   With it, a codec-less AVI MPEG-4, H.263, or MS-MPEG4 track also gets its `strf` extradata as codec private data, rather than none, as FFmpeg's `avidec.c` hands every video stream's extradata to its decoder; FFmpeg's `M4S2` encodes in ASF carry their video object layer only there.
   The VC-1 and WMV3 routes read FourCC codec IDs from ASF streams only, as no container rule places VC-1 in AVI.
+- MPEG program streams play through a program stream demuxer in the fork (10-29).
+  Mediabunny reads no program stream, so `.mpg` and DVD-Video `.vob` files, which Jellyfin names `mpeg` by ffprobe's format name, fell back to the host; the fork's `src/mpeg-ps/` (branch `v2-mpeg-ps-demuxer`) reads MPEG-1 system streams and MPEG-2 program streams from their pack headers, as ISO/IEC 11172-1 and 13818-1 and FFmpeg's `mpeg.c` read them.
+  It reads MPEG-1 and MPEG-2 video and MPEG audio by their stream IDs, and the AC-3, DTS, and 16-bit LPCM substreams of private stream 1 by their substream IDs; it skips subpictures, DVD-Video navigation packets, and padding.
+  Streams become tracks in the order of their first PES packets in the file's first 5 MB or 5 seconds, as FFmpeg's demuxer creates them while it probes, so tracks keep FFmpeg's, and so Jellyfin's, order.
+  Frames are split by the reading context of the fork's MPEG-TS demuxer, which the two share, so each MPEG video packet is FFmpeg's `mpeg1_find_frame_end` frame; the packets, sizes, key flags, data, and set PTS of files from FFmpeg's `mpeg` and `vob` muxers, and of a DVD-Video VOB, matched `ffprobe -show_packets`.
+  A packet takes the PTS of the PES packet it begins in, at 90 kHz, unwrapped as in MPEG-TS.
+  DVD-Video often stamps only the I pictures, so a picture without a PTS of its own is timed by MPEG video's display order, a B picture when it is decoded and an I or P picture after the B pictures that follow it, each shown for the fields its `repeat_first_field` gives, which are the times FFmpeg's decoder presents.
+  A search bisects the packs by their SCR, then reads forward, starting further back in doubling windows when nothing qualifies.
+  The worker treats a program stream track as it treats a transport stream track, named by its codec, with its first sequence header's extradata as codec private data, by one predicate on the input format (`isMPEGSystemStreamFormat`).
+  The container rule carries MPEG-1 and MPEG-2 with MP3, AC-3, and DTS.
+  MPEG audio Layer II, which Jellyfin names `mp2`, has no route, and neither has LPCM: Jellyfin names it `pcm_dvd` whatever its sample depth, the engine has no such codec, and the fork reads only 16-bit LPCM, as `pcm-s16be`.
 - A known codec without a route is refused as such (10-15, 10-27).
   Mediabunny identifies MPEG-4 Part 2, and until 10-27 no WebCodecs decoder or package decoded it, so eligibility answered `video-codec-without-route` for it, H.263, MS-MPEG4, and Theora, and the worker refused an MPEG-4 Part 2 track with `The selected video codec has no decode route: mpeg4`.
   Since 10-27 the `mpeg4` decoder package decodes MPEG-4 Part 2, H.263, and MS-MPEG4 v1 to v3, so they are package-only codecs and the worker's refusal is gone; Theora is the one codec left without a route.
@@ -593,7 +604,7 @@ These were settled on stock Chrome on Windows, with a Chromium 153 source audit.
   Each internal is checked, and a change fails the track with a named check; only the Advanced profile's `dvc1` is read, as FFmpeg reads it.
   Mediabunny 1.61.5 still skips `dvc1` (10-15).
   The fork reads a `vc-1` sample entry as codec `vc1`, with the `dvc1` box's sequence header and entry point as its description for the Advanced profile only, as FFmpeg reads it (branch `v2-isobmff-vc1-dvc1`), so `ISOBaseMediaVC1Configuration.ts` takes the description from the track's decoder configuration, without internals, and fails as `dvc1-missing` without one (10-27).
-  The worker takes the transport stream rule only for an MPEG-TS or M2TS track, by its input format, since a `vc1` track no longer means a transport stream.
+  The worker takes the transport stream rule only for an MPEG-TS or M2TS track, by its input format, since a `vc1` track no longer means a transport stream; since 10-29 it takes it for an MPEG program stream track too.
 - AV1's codec private data reads through Mediabunny's internals too (10-14).
   Mediabunny 1.52.2 reads an `av1C` box only for its codec string and keeps a Matroska `V_AV1` CodecPrivate without handing it on, so an AV1 package's parser saw no sequence header before the first temporal unit and could declare no maximum frame size.
   On the frame-pool route `AV1CodecConfigurationRecord.ts` reads the CodecPrivate from the internal track, or the `av1C` box of an `av01` or `dav1` sample entry through the `moov` reader the `dvc1` path now shares (`ISOBaseMediaSampleEntryChildBox.ts`), and copies the record unchecked, as FFmpeg's demuxers do.

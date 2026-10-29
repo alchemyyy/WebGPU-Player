@@ -46,6 +46,7 @@ GENERATOR_STEPS: Final = (
     GeneratorStep("generate_HDR10_plus_VP9_vectors.py"),
     GeneratorStep("generate_AVI_demux_vectors.py"),
     GeneratorStep("generate_transport_stream_demux_vectors.py"),
+    GeneratorStep("generate_program_stream_demux_vectors.py"),
     GeneratorStep("generate_chroma_siting_vectors.py"),
 )
 
