@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
-"""Generate the JPEG 2000 decoder project's self-test media: one small multi-frame stream per output format.
+"""Generate the JPEG 2000 decoder project's media: one small multi-frame stream per output format, and a Digital Cinema stream in Matroska.
 
 FFmpeg's native jpeg2000 encoder and libopenjpeg encode them, varying the wavelet, tiles, quality layers, progression orders, and SOP and EPH
 markers. Most are QuickTime files whose samples are whole JP2 files, as FFmpeg's encoders write them; two are Motion JPEG 2000 files this
 script muxes itself, one holding each frame's codestream in a Contiguous Codestream box as ISO/IEC 15444-3 writers do, one holding JP2 files.
+The Matroska stream is libopenjpeg's Digital Cinema 2K profile in X'Y'Z', which FFmpeg's Matroska muxer writes as a Video for Windows track of
+bare codestreams, beside 5.1 FLAC and a JPEG cover attachment; FFmpeg decodes it to xyz12le, which no output format is, so decoder.json lists
+only the others.
 Another FFmpeg build encodes different bytes, so regenerated media never replaces a committed file; --check fails unless they are identical.
 """
 
@@ -203,6 +206,15 @@ VECTORS: Final = (
     ),
 )
 
+# The Digital Cinema stream: its file, picture, audio, and cover
+DIGITAL_CINEMA_FILE_NAME: Final = "openjpeg-97-cinema2k-xyz12.mkv"
+DIGITAL_CINEMA_WIDTH: Final = 160
+DIGITAL_CINEMA_HEIGHT: Final = 90
+DIGITAL_CINEMA_AUDIO_SOURCE: Final = "sine=frequency=440:sample_rate=48000,aformat=channel_layouts=5.1"
+DIGITAL_CINEMA_AUDIO_SECONDS: Final = FRAME_COUNT / FRAME_RATE
+COVER_SOURCE: Final = "testsrc2=size=64x96:rate=24"
+COVER_FILE_NAME: Final = "cover.jpg"
+
 
 def resolve_tool_path(tool_name: str, explicit_path: Path | None) -> Path:
     """Resolves a tool from its explicit flag, otherwise from PATH."""
@@ -368,6 +380,30 @@ def generate_vector(vector: DecoderVector, ffmpeg_path: Path, ffprobe_path: Path
         return install_or_check_output(VECTOR_DIRECTORY / vector.file_name, content, check=check)
 
 
+def generate_digital_cinema_medium(ffmpeg_path: Path, *, check: bool) -> bool:
+    """Encodes the Digital Cinema stream with its audio and cover, and installs it when it is missing, or compares it with the committed file."""
+
+    with tempfile.TemporaryDirectory(prefix="webgpu-jpeg2000-vector-") as temporary_directory:
+        cover_path = Path(temporary_directory) / COVER_FILE_NAME
+        encoded_path = Path(temporary_directory) / "encoded.mkv"
+        common = ["-hide_banner", "-loglevel", "error", "-map_metadata", "-1", "-fflags", "+bitexact"]
+        commands = (
+            ["-f", "lavfi", "-i", COVER_SOURCE, "-frames:v", "1", *common, "-flags:v", "+bitexact", "-pix_fmt", "yuvj420p", "-c:v", "mjpeg",
+             "-f", "image2", "-y", str(cover_path)],
+            ["-f", "lavfi", "-i", SOURCE_PATTERN.format(width=DIGITAL_CINEMA_WIDTH, height=DIGITAL_CINEMA_HEIGHT, rate=FRAME_RATE),
+             "-f", "lavfi", "-i", DIGITAL_CINEMA_AUDIO_SOURCE, "-map", "0:v", "-map", "1:a", "-frames:v", str(FRAME_COUNT),
+             "-t", str(DIGITAL_CINEMA_AUDIO_SECONDS), *common, "-flags:v", "+bitexact", "-flags:a", "+bitexact",
+             "-c:v", "libopenjpeg", "-pix_fmt", "xyz12le", "-profile:v", "cinema2k", "-cinema_mode", "2k_24", "-format", "j2k",
+             "-c:a", "flac", "-sample_fmt", "s32", "-attach", str(cover_path), "-metadata:s:t", "mimetype=image/jpeg",
+             "-metadata:s:t", f"filename={COVER_FILE_NAME}", "-f", "matroska", "-y", str(encoded_path)],
+        )
+        for arguments in commands:
+            result = subprocess.run([str(ffmpeg_path), *arguments], capture_output=True, check=False, stdin=subprocess.DEVNULL)
+            if result.returncode != 0:
+                raise VectorGenerationError(f"FFmpeg failed on {DIGITAL_CINEMA_FILE_NAME}:\n{result.stderr.decode('utf-8', errors='replace')}")
+        return install_or_check_output(VECTOR_DIRECTORY / DIGITAL_CINEMA_FILE_NAME, encoded_path.read_bytes(), check=check)
+
+
 def get_decoder_declarations() -> list[dict[str, object]]:
     """Returns the vector declarations of wgpud/jpeg2000/decoder.json that match these media, for --print-declarations."""
 
@@ -400,11 +436,13 @@ def main(command_arguments: Sequence[str] | None = None) -> int:
         ffmpeg_path = resolve_tool_path("ffmpeg", arguments.ffmpeg)
         ffprobe_path = resolve_tool_path("ffprobe", arguments.ffprobe)
         written = [vector.file_name for vector in VECTORS if generate_vector(vector, ffmpeg_path, ffprobe_path, check=arguments.check)]
+        if generate_digital_cinema_medium(ffmpeg_path, check=arguments.check):
+            written.append(DIGITAL_CINEMA_FILE_NAME)
     except (VectorGenerationError, GeneratedOutputError, OSError) as error:
         print(error, file=sys.stderr)
         return 1
     action = "Verified" if arguments.check else "Generated"
-    print(f"{action} {len(VECTORS)} JPEG 2000 decoder vectors in {VECTOR_DIRECTORY}" + (f"; wrote {', '.join(written)}" if written else ""))
+    print(f"{action} {len(VECTORS) + 1} JPEG 2000 decoder media in {VECTOR_DIRECTORY}" + (f"; wrote {', '.join(written)}" if written else ""))
     return 0
 
 

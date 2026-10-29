@@ -47,6 +47,9 @@ A codec-less AVI or ASF track's extradata is the one after its BITMAPINFOHEADER 
 The codec private data is a 40-byte BITMAPINFOHEADER of the track's coded size and FourCC (`mp4v`, `s263`, or `MP43` for a track without one), then the track's extradata (see [Decoder packages](decoder-packages.md)).
 AVI, ASF, and Matroska VfW stamp packets in decode order, so `MPEG4PresentationOrder.ts` restamps an MPEG-4 Part 2 track from them that FFmpeg outputs one VOP late: its video object layer, from the extradata or else the first key packet, clears `low_delay` in its `vol_control_parameters`, or has none and is neither Simple nor Advanced Simple, or has none and its first group holds a B-VOP.
 An I, P, or S-VOP then takes the time of the next coded VOP that is no B-VOP, passing over N-VOPs, for which FFmpeg outputs nothing, and a B-VOP keeps its own.
+A JPEG 2000 track must be an MJ2 `mjp2` sample entry or a Matroska `V_MS/VFW/FOURCC` track (`codec-id`), whose FourCC must be one `riff.c` maps to JPEG 2000, compared upper-cased (`fourcc`), such as the `mjp2` FFmpeg's Matroska muxer writes.
+Its blocks are bare codestreams, every one a key packet stamped in presentation order, and the decoder takes no codec private data, as FFmpeg's decoder reads no extradata.
+A Matroska attachment, such as a cover image, is no track, so it never shifts the video track ordinal.
 AVI audio takes the same routes as any container's: Mediabunny reads a WAVE_FORMAT_EXTENSIBLE track's codec from its SubFormat, and gives FLAC and Vorbis the decoder descriptions their `strf` extradata holds.
 A track whose container declares a WAVE channel mask, which Mediabunny's `getChannelMask` reports for WAVE_FORMAT_EXTENSIBLE, is laid out by that mask: the worker takes its layout from `CustomWaveChannelLayout.ts` and passes the mask to the audio decode worker's attempt, whose output stage binds Mediabunny's decoded samples to it.
 So a three-channel 2.1 track feeds its third channel to the LFE, and 3.0(back) splits it across the surround pair, as FFmpeg's decode does, where three channels without a mask are 3.0.
@@ -176,6 +179,7 @@ A package may carry a parser module (`//! parser:`), which the selection carries
 
 - The output format: a range extension's own, else the one that holds the stream's pixel format (`getGPUDecoderPixelFormatHolding`: yuv422p is I422, and 9-bit samples take the 10-bit format, shifted up), else 4:2:0 at the stream's bit depth.
   An explicit BitDepth must agree with the pixel format's samples, and a pixel format no frame pool holds, such as RGB or 4:1:1, has no route.
+  JPEG 2000's `xyz12le`, the Digital Cinema profiles' X'Y'Z', takes I444P12, into which the JPEG 2000 package writes it as limited-range BT.709 Y'CbCr, so it needs a stream whose color metadata is BT.709 SDR at limited range, as an untagged stream's is.
 - For a 4:0:0 pixel format, such as gray10le, which takes the 4:2:0 format of its depth: a decoder whose header declares `monochrome`.
 - The decoder's stream constraint, over the pool's coded size and the format's bit depth.
   The pool takes the container's coded size rounded up to 64 (`GPU_DECODE_POOL_CODED_SIZE_ALIGNMENT`), the largest coding block, and the decoder's header crops it, such as by a conformance window.

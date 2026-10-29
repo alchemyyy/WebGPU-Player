@@ -207,7 +207,7 @@ The `config` binding holds what the decode worker reads from the track for its c
 | `vc1` | The sequence header and entry point FFmpeg's `vc1` decoder gets: a Matroska `WVC1` or `WMVA` track's extradata, or an ISO base media `dvc1` box's after its 7-byte VC1DecSpecStruc |
 | `wmv3` | A 40-byte BITMAPINFOHEADER of the track's coded size and the `WMV3` FourCC, then the STRUCT_C sequence header, which holds no frame size of its own |
 | `mpeg4`, `h263`, `msmpeg4v1`, `msmpeg4v2`, `msmpeg4v3` | A 40-byte BITMAPINFOHEADER of the track's coded size and FourCC, then the track's extradata, an MPEG-4 Part 2 track's VOS and VOL headers, or nothing; a Matroska, MP4, or MOV track without a FourCC gets `mp4v`, `s263`, or `MP43` by its codec, and FFmpeg's MPEG-4 workarounds read the FourCC |
-| `jpeg2000` | Nothing |
+| `jpeg2000` | Nothing, for an MJ2 sample entry and a Matroska Video for Windows track alike |
 
 ### How a session decodes
 
@@ -530,6 +530,7 @@ A block with objects passes through the output stage's peak limiter, since the p
 - For audio it prefers passing the track through to the browser, then the browser's own decoder, then the first package whose `accepts` names the track's codec, on the decoded PCM route.
 - The output format of a stream is its HEVC range extension format when it has one, otherwise the format that holds its pixel format, such as I422 for `yuv422p`, or 4:2:0 at its bit depth when the stream names no pixel format.
   A 4:0:0 pixel format, `gray`, `gray9`, `gray10`, or `gray12` in either byte order, takes the 4:2:0 format of its depth, and only a decoder whose header declares `monochrome` is offered it.
+  A JPEG 2000 stream in `xyz12le` takes I444P12, which a JPEG 2000 decoder writes as limited-range BT.709 Y'CbCr of FFmpeg's conversion of its X'Y'Z' to R'G'B'.
 - The controller takes `gpuVideoDecodeSessionFactory: createGPUVideoDecodeSessionFactory(presenter, { slicing })`, where `slicing` is the host's choice of sliced decode submits, and `play()` takes the eligibility's `gpuVideoDecoder` and `audioDecoder`.
 - An audio track switch passes the new track's `audioDecoder` from its own eligibility to `setAudioStreamIndex`; the previous track's package never carries over.
 

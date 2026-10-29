@@ -97,7 +97,7 @@ It is a minimal project that builds one package and runs nowhere on its own.
 | --- | --- | --- | --- | --- |
 | `av1` | AV1 Main, High, and Professional at 8 to 12 bits, 4:0:0 to 4:4:4, on the GPU | libaom's decoder, running its parse-only pass, and the C bridge in `parser/` | One stream per output format in `vectors/`, from FFmpeg's libaom encoder | [libaom](https://aomedia.googlesource.com/aom), BSD-2-Clause with the Alliance for Open Media patent license |
 | `hevc` | HEVC Main, Main 10, and the range extensions, on the GPU | The Rust parser in `parser/` | The nine HEVC range extension vectors | None, MIT |
-| `jpeg2000` | JPEG 2000 YUV pictures at 4:2:0, 4:2:2, and 4:4:4, 8 to 12 bits, on the GPU | The Rust parser in `parser/` | One stream per output format in `vectors/`, from FFmpeg's and OpenJPEG's encoders | None, MIT |
+| `jpeg2000` | JPEG 2000 YUV pictures at 4:2:0, 4:2:2, and 4:4:4, 8 to 12 bits, and Digital Cinema X'Y'Z' pictures as BT.709 Y'CbCr, on the GPU | The Rust parser in `parser/` | One stream per output format in `vectors/`, from FFmpeg's and OpenJPEG's encoders, beside a Digital Cinema stream in Matroska for the route tests | None, MIT |
 | `mpeg2` | MPEG-1 and MPEG-2 Video at 4:2:0, 4:2:2, and 4:4:4, on the GPU | The Rust parser in `parser/`, which reads sequence headers | One stream per chroma format in `vectors/`, from its own syntax exerciser | None, MIT |
 | `mpeg4` | MPEG-4 Part 2, H.263, and MS-MPEG4 versions 1 to 3 at 8-bit 4:2:0, on the GPU | The Rust parser in `parser/` | One Xvid stream with GMC, quarter-sample motion, and B-VOPs in `vectors/`, beside the media of every codec and container its routes take | None, MIT |
 | `vc1` | VC-1 Advanced and WMV3 (Simple, Main, and Complex), on the GPU | The Rust parser in `parser/` | The VC-1 Advanced stream in `src/capability/vectors/qualification/vc1/` | None, MIT |
@@ -182,6 +182,8 @@ npx vitest --watch=false wgpud/hevc
 It reads a JP2 file, a `jp2c` box, or a bare codestream, picks the pixel format as FFmpeg does, runs tier-2, and writes one GPU record per picture: the code blocks with their bytes, terminations, and dequantization, the wavelet tables, and the output planes.
 One parse unit is one tile, so the parse workers split a picture by its tiles.
 The WGSL decodes each code block in one 32-lane workgroup, runs the inverse wavelet, and writes the output planes.
+An XYZ picture, which FFmpeg picks for the Digital Cinema profiles, is laid out as the 12-bit X', Y', and Z' codes FFmpeg's converter reads, at 4:4:4, and the record's output transform makes the output stage convert them as libswscale's `xyz12Torgb48` does, its gamma tables and fixed-point matrix included, then write the R'G'B' as limited-range BT.709 Y'CbCr in I444P12.
+Its planes therefore equal no FFmpeg decode, so decoder.json lists no XYZ vector; FFmpeg's `rgb48le` decode of the Matroska stream in `vectors/` is the conversion's reference.
 As for HEVC, the WGSL declares the record's layout and the error codes once, and `build.rs` generates the Rust constants from them and fails unless the two agree, and every packet is one picture of version 2 of the parser interface.
 The parser bounds what a crafted codestream can make it allocate and parse, and fails such a stream as `resourceLimit`.
 It fails greyscale pictures as `colourSpace`, so the header declares no `monochrome`, and eligibility never offers the package a 4:0:0 stream.

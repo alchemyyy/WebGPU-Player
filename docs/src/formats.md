@@ -13,7 +13,7 @@ It does not play live streams, HLS or DASH, or a server transcode.
 
 | Container | Video | Audio |
 | --- | --- | --- |
-| Matroska | H.264, HEVC, VP8, VP9, AV1, MPEG-1, MPEG-2, VC-1, WMV3, MPEG-4 Part 2, H.263, MS-MPEG4 | AAC, Opus, FLAC, MP3, Vorbis, AC-3, E-AC-3, DTS, TrueHD, MLP, WMA, PCM |
+| Matroska | H.264, HEVC, VP8, VP9, AV1, MPEG-1, MPEG-2, VC-1, WMV3, MPEG-4 Part 2, H.263, MS-MPEG4, JPEG 2000 | AAC, Opus, FLAC, MP3, Vorbis, AC-3, E-AC-3, DTS, TrueHD, MLP, WMA, PCM |
 | WebM | VP8, VP9, AV1 | Opus, Vorbis |
 | MP4, M4V, MOV, 3GP, 3G2 | H.264, HEVC, VP8, VP9, AV1, VC-1, MPEG-4 Part 2, H.263 | AAC, Opus, FLAC, MP3, Vorbis, AC-3, E-AC-3, DTS, TrueHD, PCM |
 | MOV, MJ2 | JPEG 2000 | AAC, Opus, FLAC, MP3, Vorbis, AC-3, E-AC-3, PCM |
@@ -63,13 +63,14 @@ A track whose edit list Mediabunny cannot honor, as `getUnsupportedFeatures()` r
 | MPEG-4 Part 2 | Every profile FFmpeg's decoder decodes at 8 bits, B-VOPs, quarter-pel, and global motion compensation among them, in Matroska (its own tracks and Video for Windows), MP4, MOV, 3GP, AVI, and ASF | A GPU decoder package | Studio profiles and deeper streams, and MPEG-TS, which Mediabunny does not demux it from |
 | H.263 | What FFmpeg's `h263` decoder decodes, the H.263+ annexes among them, in Matroska Video for Windows tracks, MP4, MOV, 3GP, AVI, and ASF | A GPU decoder package | A stream FFmpeg names `h263p` or `h263i` |
 | MS-MPEG4 | Versions 1, 2, and 3 (DivX 3), in Matroska, AVI, and ASF | A GPU decoder package | MP4 and MOV |
-| JPEG 2000 | YUV at 4:2:0, 4:2:2, and 4:4:4, at 8, 9, 10, and 12 bits, in MOV and MJ2 | A GPU decoder package | RGB, grey, XYZ, and palette pictures, 11-bit and deeper samples, 4:4:0, 4:1:1, and 4:1:0 chroma, and HTJ2K |
+| JPEG 2000 | YUV at 4:2:0, 4:2:2, and 4:4:4, at 8, 9, 10, and 12 bits, and the Digital Cinema profiles' X'Y'Z' at 12 bits, in MOV, MJ2, and Matroska Video for Windows tracks | A GPU decoder package | RGB, grey, and palette pictures, X'Y'Z' below 12 bits or tagged other than BT.709, 11-bit and deeper YUV samples, 4:4:0, 4:1:1, and 4:1:0 chroma, and HTJ2K |
 
 Every other video codec is not supported, among them WMV1, WMV2, Theora, VVC, ProRes, DNxHD, and Motion JPEG.
 Eligibility refuses Theora as a known codec with no route (`video-codec-without-route`), and the others as unsupported (`codec-unsupported`).
 WebCodecs is the browser's own decoder.
 A GPU decoder package is WGSL a host loads, which decodes on the presenter's device; it plays only what no native route plays, and the decoder projects in `wgpud/` build one for HEVC, MPEG-1 with MPEG-2, VC-1 with WMV3, MPEG-4 Part 2 with H.263 and MS-MPEG4, and JPEG 2000.
 A package's frames take the format that holds the stream's pixel format, so 4:2:2 and 4:4:4 streams keep their chroma.
+The JPEG 2000 package converts X'Y'Z' (`xyz12le`) to R'G'B' as FFmpeg's converter does, gamma 2.6, the XYZ to BT.709 matrix, then gamma 1/2.2, and writes it as limited-range BT.709 Y'CbCr at 12-bit 4:4:4, which presents as an untagged SDR stream's BT.709.
 
 | Property | Plays | Does not play |
 | --- | --- | --- |

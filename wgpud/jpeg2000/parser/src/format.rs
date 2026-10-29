@@ -1,12 +1,15 @@
 // The pixel format FFmpeg's decoder picks for a codestream, and how this decoder writes it into the engine's planar YUV formats.
 // FFmpeg tries its candidate formats in order: XYZ first for Digital Cinema profiles, then by the JP2 colour space, RGB first when none is given.
-// Only its YUV and YUVA picks map onto the engine's formats, at 4:2:0, 4:2:2, or 4:4:4 and up to 12 bits; any other pick is recorded as
-// the picture's format error, which the GPU reports, so a test may still decode the components into planes.
+// Its YUV and YUVA picks map onto the engine's formats, at 4:2:0, 4:2:2, or 4:4:4 and up to 12 bits, and its XYZ pick onto 12-bit 4:4:4,
+// which the output stage converts to BT.709 Y'CbCr; any other pick is recorded as the picture's format error, which the GPU reports,
+// so a test may still decode the components into planes.
 
 use crate::codestream::{ImageSize, MAXIMUM_COMPONENTS};
 use crate::container::ColourInfo;
 use crate::error::{DecodeResult, fail};
-use crate::layout::{ERROR_BIT_DEPTH, ERROR_CHROMA_FORMAT, ERROR_CODE_SHIFT, ERROR_COLOUR_SPACE, ERROR_COMPONENT_COUNT};
+use crate::layout::{
+    ERROR_BIT_DEPTH, ERROR_CHROMA_FORMAT, ERROR_CODE_SHIFT, ERROR_COLOUR_SPACE, ERROR_COMPONENT_COUNT, OUTPUT_TRANSFORM_NONE, OUTPUT_TRANSFORM_XYZ,
+};
 
 // Enumerated colour spaces of a JP2 colr box that pick FFmpeg's candidate list
 const COLOUR_SPACE_SRGB: u32 = 16;
@@ -25,11 +28,12 @@ const OUTPUT_DEPTH_10: u32 = 10;
 const OUTPUT_DEPTH_12: u32 = 12;
 /// FFmpeg writes every component of a picture at or below 8 bits as 8-bit samples
 const BYTE_PRECISION: i32 = 8;
-// The families of formats the engine cannot show, the failing value of a colourSpace error
+// The families of formats the engine cannot show, the failing value of a colourSpace error; XYZ, 3, shows since its conversion
 pub const FAMILY_RGB: u32 = 1;
 pub const FAMILY_GREY: u32 = 2;
-pub const FAMILY_XYZ: u32 = 3;
 pub const FAMILY_PALETTE: u32 = 4;
+/// FFmpeg writes XYZ in 16-bit samples, each shifted up from its component's precision, which its converter reads at 12 bits
+const XYZ_PRECISION: i32 = 12;
 
 /// What kind of picture a pixel format holds.
 // The project spells acronyms in capitals
@@ -259,13 +263,15 @@ pub struct OutputPlane {
     pub shift: u32,
 }
 
-/// How a picture's components become the engine's planes: its chroma format and bit depth, each plane's source, and the error word
-/// for a pixel format the engine cannot show, 0 when it can.
+/// How a picture's components become the engine's planes: its chroma format and bit depth, each plane's source, the conversion the
+/// output stage applies, and the error word for a pixel format the engine cannot show, 0 when it can.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct OutputLayout {
     pub chroma_format: u32,
     pub bit_depth: u32,
     pub planes: [OutputPlane; 3],
+    /// OUTPUT_TRANSFORM_XYZ for an XYZ picture, whose X', Y', and Z' planes the output stage converts, else OUTPUT_TRANSFORM_NONE
+    pub output_transform: u32,
     pub format_error: u32,
     /// Which components feed planes, so tier-1 skips the others
     pub decoded_components: [bool; MAXIMUM_COMPONENTS],
@@ -291,14 +297,23 @@ fn output_depth(precision: i32) -> Option<u32> {
 
 /// Lays out a picture's planes as FFmpeg writes them in its chosen format. A format the engine cannot show still gets a layout,
 /// the components in plane order at 4:4:4, with the error word that names why.
+/// An XYZ picture's planes hold the 12-bit X', Y', and Z' codes FFmpeg's converter reads, at 4:4:4 and 12 bits.
 pub fn plan_output(size: &ImageSize, colour: &ColourInfo, format: &PixelFormat) -> OutputLayout {
     let channel_definitions: [i32; MAXIMUM_COMPONENTS] = effective_channel_definitions(size, colour, format);
     let components: usize = size.component_count;
     let precision: i32 = size.precision;
-    let write_precision: i32 = if precision <= BYTE_PRECISION { BYTE_PRECISION } else { precision };
+    let xyz: bool = format.kind == FormatKind::XYZ;
+    let write_precision: i32 = if xyz {
+        XYZ_PRECISION
+    } else if precision <= BYTE_PRECISION {
+        BYTE_PRECISION
+    } else {
+        precision
+    };
     let mut layout: OutputLayout = OutputLayout::default();
     let depth: u32 = output_depth(write_precision).unwrap_or(OUTPUT_DEPTH_12);
     layout.bit_depth = depth;
+    layout.output_transform = if xyz { OUTPUT_TRANSFORM_XYZ } else { OUTPUT_TRANSFORM_NONE };
     layout.chroma_format = match (format.chroma_width_log2, format.chroma_height_log2) {
         (1, 1) => CHROMA_FORMAT_420,
         (1, 0) => CHROMA_FORMAT_422,
@@ -339,7 +354,9 @@ pub fn plan_output(size: &ImageSize, colour: &ColourInfo, format: &PixelFormat) 
         FormatKind::YUV => 0,
         FormatKind::RGB => error_word(ERROR_COLOUR_SPACE, FAMILY_RGB),
         FormatKind::Grey => error_word(ERROR_COLOUR_SPACE, FAMILY_GREY),
-        FormatKind::XYZ => error_word(ERROR_COLOUR_SPACE, FAMILY_XYZ),
+        // At 8 bits or fewer FFmpeg writes bytes into XYZ's 16-bit samples, which no format holds
+        FormatKind::XYZ if precision <= BYTE_PRECISION => error_word(ERROR_BIT_DEPTH, precision as u32),
+        FormatKind::XYZ => 0,
         FormatKind::Palette => error_word(ERROR_COLOUR_SPACE, FAMILY_PALETTE),
     };
     layout
@@ -415,11 +432,36 @@ mod tests {
     }
 
     #[test]
-    fn reads_digital_cinema_profiles_as_xyz() {
-        let mut cinema: ImageSize = image(12, 1, 1);
+    fn reads_digital_cinema_profiles_as_xyz_planes_at_12_bits() {
+        for profile in [PROFILE_DIGITAL_CINEMA_2K, PROFILE_DIGITAL_CINEMA_4K] {
+            let mut cinema: ImageSize = image(12, 1, 1);
+            cinema.profile = profile;
+            // The profile picks XYZ ahead of the colour box's sYCC
+            let layout: OutputLayout = plan_output(&cinema, &SYCC, &choose_pixel_format(&cinema, &SYCC, None).unwrap());
+            assert_eq!((layout.chroma_format, layout.bit_depth, layout.output_transform, layout.format_error), (CHROMA_FORMAT_444, 12, OUTPUT_TRANSFORM_XYZ, 0));
+            assert_eq!(layout.planes.map(|plane: OutputPlane| (plane.component, plane.shift)), [(0, 0), (1, 0), (2, 0)]);
+        }
+    }
+
+    #[test]
+    fn shifts_shallower_xyz_components_to_the_12_bits_ffmpeg_converts_and_refuses_8_bit_xyz() {
+        let mut ten: ImageSize = image(10, 1, 1);
+        ten.profile = PROFILE_DIGITAL_CINEMA_2K;
+        let layout: OutputLayout = plan_output(&ten, &UNSPECIFIED, &choose_pixel_format(&ten, &UNSPECIFIED, None).unwrap());
+        // FFmpeg writes a 10-bit sample 6 bits up in 16 bits, and its converter reads the top 12
+        assert_eq!((layout.bit_depth, layout.planes[0].shift, layout.format_error), (12, 2, 0));
+        let mut eight: ImageSize = image(8, 1, 1);
+        eight.profile = PROFILE_DIGITAL_CINEMA_2K;
+        let byte_layout: OutputLayout = plan_output(&eight, &UNSPECIFIED, &choose_pixel_format(&eight, &UNSPECIFIED, None).unwrap());
+        assert_eq!(byte_layout.format_error, error_word(ERROR_BIT_DEPTH, 8));
+    }
+
+    #[test]
+    fn reads_subsampled_digital_cinema_components_as_yuv_without_a_transform() {
+        let mut cinema: ImageSize = image(12, 2, 2);
         cinema.profile = PROFILE_DIGITAL_CINEMA_2K;
         let layout: OutputLayout = plan_output(&cinema, &UNSPECIFIED, &choose_pixel_format(&cinema, &UNSPECIFIED, None).unwrap());
-        assert_eq!(layout.format_error, error_word(ERROR_COLOUR_SPACE, FAMILY_XYZ));
+        assert_eq!((layout.chroma_format, layout.output_transform, layout.format_error), (CHROMA_FORMAT_420, OUTPUT_TRANSFORM_NONE, 0));
     }
 
     #[test]

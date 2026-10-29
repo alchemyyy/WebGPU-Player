@@ -645,7 +645,19 @@ These were settled on stock Chrome on Windows, with a Chromium 153 source audit.
   Its integer path, the one `-flags bitexact` selects, lifts in fixed point with defined rounding, so the decoder implements that, and the 9/7 vectors pin `-flags bitexact`.
   Playback therefore equals FFmpeg's bitexact decode and differs from its default decode only in rounding.
   Tier-1 runs on the GPU and tier-2 on the CPU, as measured: a native single-threaded CPU tier-1 and wavelet took 229 ms for a 249 Mbit/s 1080p picture, where the GPU takes about 6 ms and tier-2 1 to 7 ms.
-  RGB, grey, XYZ, and palette pictures fail as `colourSpace`, because the frame pool holds only YUV; they need planar RGB formats, a luma-only format, and the DCI XYZ transform in presentation.
+  RGB, grey, and palette pictures fail as `colourSpace`, because the frame pool holds only YUV; they need planar RGB formats and a luma-only format.
+  XYZ pictures failed the same way until 10-29, when the package took FFmpeg's conversion of them (see the next entries).
+- JPEG 2000 plays from Matroska Video for Windows tracks (10-29).
+  FFmpeg's Matroska muxer writes JPEG 2000 as a `V_MS/VFW/FOURCC` track of `mjp2`, which Mediabunny leaves codec-less with that codec ID, and whose blocks are bare codestreams, each a key packet stamped in presentation order.
+  The route takes such a track when its BITMAPINFOHEADER names a FourCC `riff.c` maps to JPEG 2000, compared upper-cased as for MPEG-4 Part 2, and passes its blocks unchanged without codec private data, as FFmpeg's decoder reads no extradata; the Mediabunny fork needed no change.
+  A cover image is a Matroska attachment, which Mediabunny opens as no track and Jellyfin lists as an embedded image, so it moves neither the video ordinal nor the selection.
+- Digital Cinema JPEG 2000 converts its X'Y'Z' in the package, as FFmpeg's converter does (10-29).
+  FFmpeg decodes the Digital Cinema profiles to `xyz12le`, which no frame pool holds, and shows it, as a transcode does, through libswscale's `xyz12Torgb48`: a 2.6 gamma into 16-bit linear light, a fixed-point XYZ to BT.709 matrix without white adaptation, a clip, and a 1/2.2 gamma.
+  The package's parser lays an XYZ picture out as the 12-bit X', Y', and Z' codes that converter reads, and its output stage converts them the same way, its gamma tables computed with `pow` and its matrix in integers, then writes the R'G'B' as limited-range BT.709 Y'CbCr in I444P12, which presents as an untagged SDR stream does.
+  Presentation through ST 428-1's primaries and transfer instead would need an XYZ matrix, primaries set, and transfer the presenter's color types lack, and would not show what FFmpeg shows, since ST 428 scales by 52.37/48 and its white differs from D65.
+  Emulated in single precision, the conversion matches FFmpeg's `rgb48le` codes for every sample of the Matroska vector and for all but 100 of 5.3 million samples of a 2048x858 Digital Cinema 2K frame, each of those by one code; after the 12-bit Y'CbCr round trip, the presented R'G'B' is within 2.3 of 4095 of FFmpeg's, a seventh of an 8-bit step.
+  An X'Y'Z' stream needs BT.709 SDR color metadata at limited range, which an untagged one takes, since other tags would misstate the Y'CbCr, and 12-bit samples, the profiles' depth.
+  Unlike 4:0:0, no header directive declares it: X'Y'Z' is JPEG 2000's alone, and a JPEG 2000 package that predates the conversion fails the first picture as `colourSpace: 3`, which ends the attempt, so the host falls back.
 - MPEG-1 is a codec of its own (10-13).
   FFmpeg names it `mpeg1video`, so as an alias of `mpeg2video` a host could not advertise it, and a package that decodes MPEG-2 alone would be offered it.
   The `mpeg2` project's package accepts both, since its WGSL follows FFmpeg's MPEG-1 paths too.

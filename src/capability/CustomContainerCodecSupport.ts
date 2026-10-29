@@ -72,8 +72,8 @@ const CUSTOM_ISO_BASE_MEDIA_VIDEO_CODECS: readonly CustomVideoCodec[] = Object.f
     'mpeg4',
     'h263'
 ]);
-// The worker reads MPEG-1 and MPEG-2 from their own tracks, VC-1 and WMV3 from Video for Windows tracks, and MPEG-4 Part 2, H.263, and MS-MPEG4
-// from their own tracks and Video for Windows tracks
+// The worker reads MPEG-1 and MPEG-2 from their own tracks, VC-1, WMV3, and JPEG 2000 from Video for Windows tracks, and MPEG-4 Part 2, H.263, and
+// MS-MPEG4 from their own tracks and Video for Windows tracks
 const CUSTOM_MATROSKA_VIDEO_CODECS: readonly CustomVideoCodec[] = Object.freeze([
     ...CUSTOM_NATIVE_VIDEO_CODECS,
     'mpeg1video',
@@ -84,7 +84,8 @@ const CUSTOM_MATROSKA_VIDEO_CODECS: readonly CustomVideoCodec[] = Object.freeze(
     'h263',
     'msmpeg4v1',
     'msmpeg4v2',
-    'msmpeg4v3'
+    'msmpeg4v3',
+    'jpeg2000'
 ]);
 export const CUSTOM_MATROSKA_PROFILE_CONTAINER = 'mkv';
 // The fork's AVI demuxer gives H.264 and HEVC packets presentation timestamps from their pictures' order counts, and the worker restamps MPEG-4

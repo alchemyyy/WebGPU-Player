@@ -143,6 +143,7 @@ All worker code unless marked.
 - `ISOBaseMediaSampleEntryChildBox.ts`: reads a child box of an ISO base media track's first sample entry, such as `fiel`, from the `moov` bytes Mediabunny keeps.
 - `PresentationOrderTrack.ts`: a track whose packets carry presentation timestamps for one that stamps them in decode order, as AVI and Matroska Video for Windows tracks do, by a codec's reader of each packet's picture order: an anchor takes the time of the packet FFmpeg outputs it at, and a B picture keeps its own; a key packet lookup steps back to the anchor that presents by the time.
 - `BitmapInfoHeader.ts`: the BITMAPINFOHEADER of Video for Windows codec private data: its FourCC, printable or as hexadecimal bytes, and the header of a coded size and FourCC the engine builds before a codec's extradata.
+- `JPEG2000TrackConfiguration.ts`: the tracks the JPEG 2000 route reads, an MJ2 `mjp2` sample entry or a Matroska Video for Windows track of a FourCC FFmpeg's `riff.c` maps to JPEG 2000, which pass no codec private data.
 
 ### demux/av1/
 

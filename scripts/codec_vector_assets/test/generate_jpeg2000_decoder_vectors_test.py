@@ -61,6 +61,8 @@ VISUAL_SAMPLE_ENTRY_LENGTH = 78
 UNSIGNED_WORD = ">I"
 OTHER_BYTES = b"other bytes"
 FAILED_ENCODE_MESSAGE = b"Unknown encoder"
+# What the fake encoder writes as the Digital Cinema stream's cover, which the stream's committed bytes already hold
+COVER_BYTES = b"cover"
 
 
 def read_boxes(data: bytes) -> list[tuple[bytes, bytes]]:
@@ -133,8 +135,8 @@ def get_progression_order(vector: generator.DecoderVector) -> str:
 
 
 class FakeTools:
-    """Stands in for FFmpeg and FFprobe: an encode writes the committed QuickTime file, or for an MJ2 vector its name, and a probe returns the
-    committed MJ2 file's samples as the encoder wrote them."""
+    """Stands in for FFmpeg and FFprobe: an encode writes the committed QuickTime or Matroska file, a cover, or for an MJ2 vector its name,
+    and a probe returns the committed MJ2 file's samples as the encoder wrote them."""
 
     def __init__(self, exit_status: int = 0) -> None:
         self.exit_status = exit_status
@@ -144,8 +146,13 @@ class FakeTools:
     def run(self, command: Sequence[str], **_options: object) -> subprocess.CompletedProcess[bytes]:
         if self.exit_status != 0:
             return subprocess.CompletedProcess(command, self.exit_status, b"", FAILED_ENCODE_MESSAGE)
-        vector = self.vectors_by_scale[command[command.index("-vf") + 1]]
         output_path = Path(command[-1])
+        # The Digital Cinema stream's cover, then the stream itself, which scale no source
+        if "-vf" not in command:
+            is_cover = output_path.name == generator.COVER_FILE_NAME
+            output_path.write_bytes(COVER_BYTES if is_cover else (COMMITTED_VECTOR_DIRECTORY / generator.DIGITAL_CINEMA_FILE_NAME).read_bytes())
+            return subprocess.CompletedProcess(command, 0, b"", b"")
+        vector = self.vectors_by_scale[command[command.index("-vf") + 1]]
         if vector.container == generator.CONTAINER_MOV:
             output_path.write_bytes((COMMITTED_VECTOR_DIRECTORY / vector.file_name).read_bytes())
         else:
@@ -284,20 +291,20 @@ class GenerationTests(unittest.TestCase):
             status, output, error = self.run_generator(directory, FakeTools(), [])
 
             self.assertEqual((status, error), (0, ""))
-            self.assertIn(f"Generated {len(generator.VECTORS)} JPEG 2000 decoder vectors", output)
-            for vector in generator.VECTORS:
-                self.assertEqual((directory / "vectors" / vector.file_name).read_bytes(), (COMMITTED_VECTOR_DIRECTORY / vector.file_name).read_bytes())
+            self.assertIn(f"Generated {len(generator.VECTORS) + 1} JPEG 2000 decoder media", output)
+            for file_name in [*(vector.file_name for vector in generator.VECTORS), generator.DIGITAL_CINEMA_FILE_NAME]:
+                self.assertEqual((directory / "vectors" / file_name).read_bytes(), (COMMITTED_VECTOR_DIRECTORY / file_name).read_bytes())
 
     def test_check_passes_on_identical_vectors(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             directory = Path(temporary_directory)
             (directory / "vectors").mkdir()
-            for vector in generator.VECTORS:
-                (directory / "vectors" / vector.file_name).write_bytes((COMMITTED_VECTOR_DIRECTORY / vector.file_name).read_bytes())
+            for file_name in [*(vector.file_name for vector in generator.VECTORS), generator.DIGITAL_CINEMA_FILE_NAME]:
+                (directory / "vectors" / file_name).write_bytes((COMMITTED_VECTOR_DIRECTORY / file_name).read_bytes())
             status, output, _ = self.run_generator(directory, FakeTools(), ["--check"])
 
             self.assertEqual(status, 0)
-            self.assertIn(f"Verified {len(generator.VECTORS)} JPEG 2000 decoder vectors", output)
+            self.assertIn(f"Verified {len(generator.VECTORS) + 1} JPEG 2000 decoder media", output)
 
     def test_check_fails_on_a_changed_vector_and_writes_nothing(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

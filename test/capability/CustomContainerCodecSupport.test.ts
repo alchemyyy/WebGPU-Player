@@ -85,11 +85,15 @@ describe('CustomContainerCodecSupport', () => {
         expect(supportsCustomContainerCodecCombination([ container ], videoCodec, audioCodec)).toBe(true);
     });
 
+    it('carries Matroska JPEG 2000 with FLAC, whose Video for Windows track the jpeg2000 package\'s route reads', () => {
+        expect(supportsCustomContainerCodecCombination([ 'mkv' ], 'jpeg2000', 'flac')).toBe(true);
+    });
+
     it.each([
 
         [ 'avi', 'h264', 'eac3' ],
         [ 'avi', 'mpeg2video', 'mp3' ],
-        [ 'mkv', 'jpeg2000', 'flac' ],
+        [ 'avi', 'jpeg2000', 'mp3' ],
         [ 'webm', 'h264', 'opus' ],
         [ 'webm', 'vp9', 'ac3' ],
         [ 'ts', 'wmv3', 'ac3' ],

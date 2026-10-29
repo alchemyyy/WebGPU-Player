@@ -207,6 +207,7 @@ import type { AudioDecoderPackageSelection } from '../decode/audio/AudioDecoderP
 import { readVC1TrackConfiguration, VC1_TRACK_INTERNAL_CODEC_IDS, type VC1TrackCodec } from '../demux/vc1/VC1TrackConfiguration';
 import { MPEG4_TRACK_INTERNAL_CODEC_IDS, readMPEG4TrackConfiguration, type MPEG4TrackCodec } from '../demux/mpeg4/MPEG4TrackConfiguration';
 import { formatFourCC } from '../demux/BitmapInfoHeader';
+import { JPEG2000_TRACK_INTERNAL_CODEC_IDS, readJPEG2000TrackConfiguration } from '../demux/JPEG2000TrackConfiguration';
 import {
     MATROSKA_MPEG1_CODEC_ID,
     MATROSKA_MPEG2_CODEC_ID,
@@ -865,13 +866,14 @@ type FocusedVideoTrackInput = Readonly<{
     videoTrack: InputVideoTrack
 }>;
 
+// JPEG 2000 in MJ2 sample entries and Matroska VfW tracks, by their codec IDs
 const JPEG2000_FOCUSED_ROUTE: FocusedVideoRoute = {
     fourCCTracks: false,
     codec: 'jpeg2000',
     decoderCodec: 'mjp2',
-    errorName: 'MJ2',
+    errorName: 'JPEG 2000',
     includeColorSpace: false,
-    internalCodecIDs: [ 'mjp2' ]
+    internalCodecIDs: JPEG2000_TRACK_INTERNAL_CODEC_IDS
 };
 // VC-1 Advanced profile in Matroska VfW tracks, ISO base media vc-1 sample entries, and ASF streams, by their codec IDs
 const VC1_FOCUSED_ROUTE: FocusedVideoRoute = {
@@ -982,6 +984,7 @@ function getFocusedVideoRoute(request: Extract<DecodeWorkerRequest, { type: 'sta
  * Returns the codec private data a focused route's decoder receives, null for a route without any, and the track its packets come from.
  * MPEG-1 and MPEG-2 take their track's CodecPrivate when it has one; VC-1, WMV3, MPEG-4 Part 2, H.263, and MS-MPEG4 always take codec private data,
  * and a VfW track of VC-1 or WMV3, or an AVI or VfW track of MPEG-4 Part 2, restamps its packets in presentation order.
+ * JPEG 2000 takes none, and a VfW track of it must name a JPEG 2000 FourCC.
  * An MPEG-TS or M2TS track has no codec private data, so it takes its first sequence header's extradata, and stamps its packets in presentation order already.
  */
 async function readFocusedVideoTrackConfiguration(
@@ -994,8 +997,13 @@ async function readFocusedVideoTrackConfiguration(
         return requireFocusedTrackConfiguration(route, await readTransportStreamVideoDecoderDescription(transportStreamCodec, input.videoTrack), input.videoTrack);
     }
     switch (route.codec) {
-        case 'jpeg2000':
+        case 'jpeg2000': {
+            const configuration = readJPEG2000TrackConfiguration(input.videoTrack, internalCodecID);
+            if (configuration.status === 'failed') {
+                throw new UnsupportedCustomDecodeSourceError(`The selected ${route.errorName} track has no decoder configuration: ${configuration.failure}`);
+            }
             return { description: null, videoTrack: input.videoTrack };
+        }
         case 'mpeg1video':
         case 'mpeg2video':
             return { description: readMatroskaMPEGVideoDecoderDescription(input.videoTrack), videoTrack: input.videoTrack };
