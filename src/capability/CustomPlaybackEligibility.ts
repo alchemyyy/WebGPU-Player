@@ -8,6 +8,7 @@ import {
     getPresentationInputColorMetadata,
     getPresentationVideoTrackOrdinal,
     hasExplicitBT2020HDRColorDescription,
+    isContainerVideoStream,
     isDolbyVisionDualLayerProfile,
     type DolbyVisionPresentationDescriptor,
     type DolbyVisionReconstructionProfile
@@ -209,6 +210,8 @@ type MediaStream = {
     Codec?: unknown
     Height?: unknown
     Index?: unknown
+    /** Jellyfin lists the streams of an external file, which the container does not hold, beside the container's own */
+    IsExternal?: unknown
     IsInterlaced?: unknown
     Level?: unknown
     PixelFormat?: unknown
@@ -262,6 +265,7 @@ type PlaybackSourceParseResult = ParsedPlaybackSource | (IneligibleCustomPlaybac
 });
 
 type AudioStreamSelection =
+    | { status: 'external' }
     | { status: 'invalid' }
     | { status: 'none' }
     | { status: 'selected', stream: MediaStream, trackOrdinal: number };
@@ -292,6 +296,11 @@ type TypedStreamCandidate = {
     stream: MediaStream
 };
 
+type AudioStreamCandidate = TypedStreamCandidate & {
+    /** The stream is an external file's, which takes no container ordinal */
+    external: boolean
+};
+
 type AudioOutputSelection =
     | {
         audioDecoder?: AudioDecoderPackageSelection
@@ -315,7 +324,7 @@ type PlaybackAudioSelection =
         status: 'selected'
     }
     | {
-        reason: 'audio-codec-unsupported' | 'audio-layout-unsupported' | 'audio-track-invalid'
+        reason: 'audio-codec-unsupported' | 'audio-layout-unsupported' | 'audio-track-external' | 'audio-track-invalid'
         status: 'invalid'
     };
 
@@ -337,6 +346,7 @@ function getGPUVideoDecoderResult(
 export type CustomPlaybackIneligibilityReason =
     | 'audio-codec-unsupported'
     | 'audio-layout-unsupported'
+    | 'audio-track-external'
     | 'audio-track-invalid'
     | 'codec-unsupported'
     | 'container-unsupported'
@@ -536,11 +546,16 @@ function getJellyfinStreamIndex(stream: MediaStream, fallbackIndex: number): num
         null;
 }
 
+/**
+ * Returns the audio stream Jellyfin selects, its DefaultAudioStreamIndex or else the first by index, with its ordinal among the container's audio tracks.
+ * Jellyfin also lists the audio of external files, which the container does not hold and which the server must mux in: they take no ordinal,
+ * and selecting one is a status of its own.
+ */
 function getSelectedAudioStream(
     mediaSource: MediaSource,
     streams: readonly MediaStream[]
 ): AudioStreamSelection {
-    const audioStreams: TypedStreamCandidate[] = [];
+    const audioStreams: AudioStreamCandidate[] = [];
     for (let streamPosition = 0; streamPosition < streams.length; streamPosition += 1) {
         const stream = streams[streamPosition];
         if (normalizeMetadataValue(stream.Type) !== 'AUDIO') {
@@ -551,6 +566,7 @@ function getSelectedAudioStream(
             return { status: 'invalid' };
         }
         audioStreams.push({
+            external: stream.IsExternal === true,
             jellyfinStreamIndex,
             stream
         });
@@ -561,28 +577,23 @@ function getSelectedAudioStream(
     }
 
     const requestedIndex = mediaSource.DefaultAudioStreamIndex;
-    if (requestedIndex == null) {
-        return {
-            status: 'selected',
-            stream: audioStreams[0].stream,
-            trackOrdinal: 0
-        };
-    }
-    if (!Number.isSafeInteger(requestedIndex) || Number(requestedIndex) < 0) {
+    if (requestedIndex != null && (!Number.isSafeInteger(requestedIndex) || Number(requestedIndex) < 0)) {
         return { status: 'invalid' };
     }
-
-    const trackOrdinal = audioStreams.findIndex(audioStream => (
-        audioStream.jellyfinStreamIndex === requestedIndex
-    ));
-    if (trackOrdinal < 0) {
+    const selectedAudio = requestedIndex == null ?
+        audioStreams[0] :
+        audioStreams.find(audioStream => audioStream.jellyfinStreamIndex === requestedIndex);
+    if (!selectedAudio) {
         return { status: 'invalid' };
+    }
+    if (selectedAudio.external) {
+        return { status: 'external' };
     }
 
     return {
         status: 'selected',
-        stream: audioStreams[trackOrdinal].stream,
-        trackOrdinal
+        stream: selectedAudio.stream,
+        trackOrdinal: audioStreams.filter(audioStream => !audioStream.external).indexOf(selectedAudio)
     };
 }
 
@@ -1527,11 +1538,7 @@ export function getDolbyVisionReconstructionRawFrameFormat(options: unknown): Cu
     if (!Array.isArray(mediaStreams)) {
         return null;
     }
-    const videoStreams = mediaStreams.filter((stream: unknown): stream is MediaStream => (
-        stream !== null
-        && typeof stream === 'object'
-        && normalizeMetadataValue((stream as MediaStream).Type) === 'VIDEO'
-    ));
+    const videoStreams = mediaStreams.filter(isContainerVideoStream) as MediaStream[];
     const baseLayerStream = videoStreams[selection.baseLayerVideoTrackOrdinal];
     const videoCodec = baseLayerStream ?
         VIDEO_CODEC_ALIASES[normalizeMetadataValue(baseLayerStream.Codec) ?? ''] :
@@ -2156,7 +2163,7 @@ function selectVideoStream(options: unknown, streams: readonly MediaStream[]): V
     const videoStreams: TypedStreamCandidate[] = [];
     for (let streamPosition = 0; streamPosition < streams.length; streamPosition += 1) {
         const stream = streams[streamPosition];
-        if (normalizeMetadataValue(stream.Type) !== 'VIDEO') {
+        if (!isContainerVideoStream(stream)) {
             continue;
         }
         const jellyfinStreamIndex = getJellyfinStreamIndex(stream, streamPosition);
@@ -2191,6 +2198,9 @@ function selectPlaybackAudio(
     const selectedAudio = getSelectedAudioStream(mediaSource, streams);
     if (selectedAudio.status === 'invalid') {
         return { reason: 'audio-track-invalid', status: 'invalid' };
+    }
+    if (selectedAudio.status === 'external') {
+        return { reason: 'audio-track-external', status: 'invalid' };
     }
     if (selectedAudio.status === 'none') {
         return {

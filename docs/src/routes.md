@@ -242,7 +242,9 @@ MPEG-1, H.263, MS-MPEG4, VP8, VP9, and AV1 have no interlaced coding.
 <a class="diagram-dark" href="diagrams/audio-output.dark.svg"><img src="diagrams/audio-output.dark.svg" alt="Audio route choice and the decoded PCM and native-media output paths"></a>
 </div>
 
-- Track: `DefaultAudioStreamIndex`, else the first audio stream.
+- Track: `DefaultAudioStreamIndex`, else the first audio stream by index.
+  The worker selects it by its ordinal among the container's audio tracks, which skips the streams Jellyfin lists for external files (`IsExternal`), as the video ordinal does.
+  A selected external audio stream is `audio-track-external`, since only the server can mux an external file in.
   Codec aliases: DCA is dts, EC-3 is eac3, TRUE-HD is truehd; WMA takes FFmpeg's decoder names, wmav1, wmav2, wmapro, wmalossless, and wmavoice.
 - Order: an E-AC-3 or TrueHD stream whose Jellyfin `Profile` names Atmos takes the first offered package that declares `renderChannelMask` when the host's `audioRenderTarget` needs its objects: a height speaker layout, a floor wider than the declared channels (7.1 from a 5.1 core), or binaural headphones on a stereo layout; the declared layout must still pass the codec's input routes, and the eligibility sets `audioRendersObjects`.
   Otherwise the native-media MSE bridge for AC-3 and E-AC-3 (2 or 6 channels, exactly 48 kHz) comes first.

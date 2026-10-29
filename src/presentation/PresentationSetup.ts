@@ -36,6 +36,7 @@ import {
     getPresentationInputColorMetadata,
     getPresentationVideoFields,
     getPresentationVideoTrackOrdinal,
+    isContainerVideoStream,
     isDolbyVisionProfile7HDR10BaseLayerDescriptor,
     isDolbyVisionProfile8HDR10BaseLayerDescriptor,
     isDolbyVisionProfile8HLGBaseLayerDescriptor,
@@ -174,7 +175,6 @@ export const UNAUTHORIZED_PRESENTATION_ELIGIBILITY_OPTIONS: CustomPresentationEl
 const RAW_ONLY_HDR_VIDEO_CODECS = new Set<string>([ 'AV1', 'VP9' ]);
 const AV1_VIDEO_CODEC = 'AV1';
 const HEVC_VIDEO_CODECS: readonly string[] = [ 'H265', 'HEVC' ];
-const VIDEO_STREAM_TYPE = 'VIDEO';
 /** The raw format Dolby Vision reconstruction falls back to when the stream does not name its own. */
 export const DEFAULT_DOLBY_VISION_RAW_FRAME_FORMAT: RawDolbyVisionVideoFrameFormat = 'I420P10';
 const RAW_SDR_ROUTE_KEY_SUFFIX = ':sdr';
@@ -229,11 +229,7 @@ function getPresentationVideoCodec(options: unknown): { codec: string, stream: u
     if (!Array.isArray(mediaStreams) || videoTrackOrdinal === null) {
         return null;
     }
-    const videoStreams = mediaStreams.filter((stream: unknown): boolean => (
-        stream !== null
-        && typeof stream === 'object'
-        && String((stream as { Type?: unknown }).Type ?? '').trim().toUpperCase() === VIDEO_STREAM_TYPE
-    ));
+    const videoStreams = mediaStreams.filter(isContainerVideoStream);
     const videoStream: unknown = videoStreams[videoTrackOrdinal];
     if (!videoStream) {
         return null;
