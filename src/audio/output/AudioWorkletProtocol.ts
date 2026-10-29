@@ -88,9 +88,14 @@ export type CustomAudioWorkletMessage =
     | AudioWorkletPlaybackMessage
     | AudioWorkletSignalAnalysisMessage;
 
+/** The failure a decoded audio output reports when the processor refuses a first chunk past its leading gap bound, on the producer's channel and the page's alike */
+export const AUDIO_WORKLET_LEADING_GAP_FAILURE = 'The first decoded audio starts too far after its start position, over the audio worklet\'s leading gap bound';
+
+/** Why the processor posted telemetry; `leading-gap` refuses a first chunk past the leading gap bound, and `overflow` any other dropped chunk */
 export type AudioWorkletTelemetryReason =
     | 'enqueue'
     | 'flush'
+    | 'leading-gap'
     | 'overflow'
     | 'periodic'
     | 'stale-generation'

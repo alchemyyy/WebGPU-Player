@@ -5,7 +5,11 @@ import AudioWorkletController, {
     type AudioWorkletControllerConfiguration,
     type AudioWorkletOutputController
 } from 'webgpu-player/audio/output/AudioWorkletController';
-import type { AudioWorkletTelemetry, CustomAudioWorkletMessage } from 'webgpu-player/audio/output/AudioWorkletProtocol';
+import {
+    AUDIO_WORKLET_LEADING_GAP_FAILURE,
+    type AudioWorkletTelemetry,
+    type CustomAudioWorkletMessage
+} from 'webgpu-player/audio/output/AudioWorkletProtocol';
 import CustomDecodeAudioBridge, {
     type CustomDecodeAudioSubmission
 } from 'webgpu-player/audio/output/CustomDecodeAudioBridge';
@@ -260,6 +264,18 @@ describe('CustomDecodeAudioBridge', () => {
                 .toBe('stale-generation');
         }
     );
+
+    it('fails the generation once with the leading gap failure, not a drop, when the processor refuses a first chunk past its bound', () => {
+        const harness = createHarness();
+        const { onFailure } = startBridge(harness);
+        dispatchFlushTelemetry(harness);
+
+        harness.port.dispatchTelemetry(createTelemetry(harness.controller.generation, { reason: 'leading-gap' }));
+        harness.port.dispatchTelemetry(createTelemetry(harness.controller.generation, { reason: 'leading-gap' }));
+
+        expect(onFailure).toHaveBeenCalledExactlyOnceWith(AUDIO_WORKLET_LEADING_GAP_FAILURE);
+        expect(harness.bridge.getTelemetry().failed).toBe(true);
+    });
 
     it('ignores the reports of a replaced worklet generation', () => {
         const harness = createHarness();

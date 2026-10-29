@@ -72,6 +72,7 @@ function isTelemetryReason(value: unknown): value is AudioWorkletTelemetryReason
     switch (value) {
         case 'enqueue':
         case 'flush':
+        case 'leading-gap':
         case 'overflow':
         case 'periodic':
         case 'stale-generation':

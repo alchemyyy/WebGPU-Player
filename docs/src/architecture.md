@@ -33,7 +33,7 @@ The engine's sources follow the stages a custom session runs: `src/demux/` reads
 
 - Decoded PCM: the worklet's render time, corrected to physical output time by `BrowserCustomAudioOutput` through `getOutputTimestamp`, re-anchors a `performance.now` `MediaClock`.
   After each flush the worklet renders silence from the flush position up to the first chunk's timestamp, so an audio track that starts later than the video still clocks from the start position.
-  A first chunk more than 30 s on is refused as `leading-gap`, which fails the attempt as `audio-output-failed`, since a gap that long is a timeline fault that silence would hide.
+  A first chunk more than 30 s on is refused with the release and telemetry reason `leading-gap`, which the producer and the page's bridge both report as the leading gap failure, failing the attempt as `audio-output-failed`, since a gap that long is a timeline fault that silence would hide.
   When the output starts, the clock holds its start for the output's estimated latency, so video moves when the first sample is heard.
 - Native-media audio: `<audio>.currentTime`.
   A first fragment more than 40 ms after the start position parks the element at the fragment, and `play()` waits out the gap while the `MediaClock` runs alone.

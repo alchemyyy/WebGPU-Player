@@ -1,6 +1,6 @@
 import type { Microseconds } from '../../MediaTime';
 import type { AudioWorkletOutputController } from './AudioWorkletController';
-import type { AudioWorkletTelemetry } from './AudioWorkletProtocol';
+import { AUDIO_WORKLET_LEADING_GAP_FAILURE, type AudioWorkletTelemetry } from './AudioWorkletProtocol';
 import {
     MAX_DECODED_AUDIO_SAMPLE_CREDITS,
     type DecodeWorkerAudioConfiguration,
@@ -222,7 +222,9 @@ export default class CustomDecodeAudioBridge {
             this.releaseConsumedSamples();
         }
 
-        if (telemetry.reason === 'overflow' || telemetry.reason === 'stale-generation') {
+        if (telemetry.reason === 'leading-gap') {
+            this.notifyFailure(AUDIO_WORKLET_LEADING_GAP_FAILURE);
+        } else if (telemetry.reason === 'overflow' || telemetry.reason === 'stale-generation') {
             this.notifyFailure('The audio worklet dropped a decoded sample');
         }
     };
