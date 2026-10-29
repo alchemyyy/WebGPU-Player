@@ -82,13 +82,21 @@ export type AudioDecoderPackageResult =
     | { kind: 'awaiting-sync' }
     | { kind: 'dropped' };
 
-/** A failed check of an audio decoder: its error code and failing value, named by its manifest. */
+/**
+ * A failed check of an audio decoder: its error code and failing value, named by its manifest.
+ * A failure the engine finds in a package's results rather than one the package reports carries code 0 and its own message.
+ */
 export class AudioDecoderPackageError extends Error {
     readonly code: number;
     readonly value: number;
 
-    constructor(code: number, value: number, errorNames: ReadonlyMap<number, string>) {
-        super(`audio decoder ${getDecoderErrorName(errorNames, code)}: ${value}`);
+    constructor(
+        code: number,
+        value: number,
+        errorNames: ReadonlyMap<number, string>,
+        message = `audio decoder ${getDecoderErrorName(errorNames, code)}: ${value}`
+    ) {
+        super(message);
         this.name = 'AudioDecoderPackageError';
         this.code = code;
         this.value = value;

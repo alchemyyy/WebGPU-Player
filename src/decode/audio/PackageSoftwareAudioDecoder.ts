@@ -15,10 +15,21 @@ import {
     declaresAudioDecoderOption,
     isAudioDecoderObjectCount
 } from './AudioDecoderManifest';
-import AudioDecoderPackageInstance, { type AudioDecoderModuleSource, type AudioDecoderPackageBlock } from './AudioDecoderPackageInstance';
+import AudioDecoderPackageInstance, {
+    AudioDecoderPackageError,
+    type AudioDecoderModuleSource,
+    type AudioDecoderPackageBlock
+} from './AudioDecoderPackageInstance';
 
 /** The most frames one block of a package may hold. */
 export const PACKAGE_AUDIO_MAXIMUM_BLOCK_FRAME_COUNT = 16_384;
+/**
+ * The media time a package may drop packets across, since its last output, before the attempt fails: a stream it cannot decode,
+ * whose every packet it drops, fails as a decode failure within about 2 s of media rather than waiting on the page's startup bound.
+ */
+export const PACKAGE_AUDIO_MAXIMUM_DROPPED_MEDIA_MICROSECONDS = 2_000_000;
+// No package reported the failure, so it names none of the package's error codes
+const DROPPED_PACKETS_ERROR_CODE = 0;
 
 /** One checked block: planar PCM in a qualified speaker layout, at its media time. */
 export type PackageDecodedAudioOutput = Readonly<{
@@ -81,6 +92,10 @@ export function createPackageAudioOutput(
 /** Owns one decoder of an audio decoder package in the audio decode worker. */
 export default class PackageSoftwareAudioDecoder {
     private readonly decoder: AudioDecoderPackageInstance;
+    /** The timestamp of the first packet the package dropped since its last output, or null while it drops none */
+    private firstDroppedPacketMicroseconds: Microseconds | null = null;
+    /** The packets the package dropped since its last output */
+    private droppedPacketCount = 0;
     /** The timestamp of the last packet sent, which drained blocks without a timestamp start at when no block was output before them */
     private lastPacketMicroseconds: Microseconds | null = null;
     /** Where the last output ended, which a drained block without a timestamp of its own continues from; null before any output */
@@ -127,15 +142,42 @@ export default class PackageSoftwareAudioDecoder {
         }
     }
 
-    /** Decodes one packet into its checked blocks; a packet the decoder dropped, or one before a sync point, decodes to none. */
+    /**
+     * Decodes one packet into its checked blocks; a packet the decoder dropped, or one before a sync point, decodes to none.
+     * Packets dropped across the dropped-packet bound of media time with no output between them fail the decoder, while packets before a sync point never do.
+     */
     public decode(data: Uint8Array, mediaTimeMicroseconds: Microseconds): readonly PackageDecodedAudioOutput[] {
         requireMicroseconds(mediaTimeMicroseconds, `${this.subject} packet timestamp`);
         this.lastPacketMicroseconds = mediaTimeMicroseconds;
         const result = this.decoder.decode(data, mediaTimeMicroseconds);
+        if (result.kind === 'dropped') {
+            this.requireDecodableAfterDrop(mediaTimeMicroseconds);
+            return [];
+        }
         if (result.kind !== 'decoded') {
             return [];
         }
-        return this.createOutputs(result.blocks, mediaTimeMicroseconds);
+        const outputs = this.createOutputs(result.blocks, mediaTimeMicroseconds);
+        if (outputs.length > 0) {
+            this.firstDroppedPacketMicroseconds = null;
+            this.droppedPacketCount = 0;
+        }
+        return outputs;
+    }
+
+    /** Counts a dropped packet, and fails once the packets dropped since the last output span the dropped-packet bound of media time. */
+    private requireDecodableAfterDrop(mediaTimeMicroseconds: Microseconds): void {
+        this.firstDroppedPacketMicroseconds ??= mediaTimeMicroseconds;
+        this.droppedPacketCount += 1;
+        if (mediaTimeMicroseconds - this.firstDroppedPacketMicroseconds < PACKAGE_AUDIO_MAXIMUM_DROPPED_MEDIA_MICROSECONDS) {
+            return;
+        }
+        throw new AudioDecoderPackageError(
+            DROPPED_PACKETS_ERROR_CODE,
+            this.droppedPacketCount,
+            new Map(),
+            `${this.subject} dropped all ${this.droppedPacketCount} packets across ${PACKAGE_AUDIO_MAXIMUM_DROPPED_MEDIA_MICROSECONDS / 1_000_000} s of media without an output`
+        );
     }
 
     /**
@@ -157,6 +199,8 @@ export default class PackageSoftwareAudioDecoder {
     /** Clears inter-frame state before a seek or a source change. */
     public clear(): void {
         this.decoder.clear();
+        this.firstDroppedPacketMicroseconds = null;
+        this.droppedPacketCount = 0;
         this.lastPacketMicroseconds = null;
         this.outputEndMicroseconds = null;
     }
