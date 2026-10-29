@@ -222,8 +222,8 @@ The owned WebCodecs paths.
 - `OwnedNativeVideoDecoder.ts`: an owned WebCodecs decoder for packets that decode unchanged, used for AV1 and VP9.
 - `OwnedAV1VideoStream.ts`: one attempt of the owned AV1 path, which every AV1 track takes: each temporal unit's Dolby Vision RPU and HDR10+ metadata, paired with its frame, after an optional color neutralization.
 - `OwnedVP9VideoStream.ts`: one attempt of the owned VP9 path, which every VP9 track takes: the HDR10+ in each packet's container side data, paired with its frame.
-- `OwnedNativeHEVCVideoDecoder.ts`: the engine's own WebCodecs HEVC decoder, built on `OwnedNativeVideoDecoder`: NAL order fix, leading RASL drop, optional SPS neutralization.
-- `NativeHDRHEVCColorNeutralizer.ts`: rewrites the `hvcC` SPS and the decoder colorSpace to limited BT.709 for the native external HDR route.
+- `OwnedNativeHEVCVideoDecoder.ts`: the engine's own WebCodecs HEVC decoder, built on `OwnedNativeVideoDecoder`: NAL order fix, leading RASL drop, repair of an SPS without `default_display_window_flag`, optional SPS neutralization.
+- `NativeHDRHEVCColorNeutralizer.ts`: rewrites the `hvcC` SPS and the decoder colorSpace to limited BT.709 for the native external HDR route, and repairs an `hvcC` SPS without `default_display_window_flag` on any route.
 - `NativeHDRAV1ColorNeutralizer.ts`: the AV1 counterpart: the decoder colorSpace, codecs string, and `av1C`, and each temporal unit's sequence headers, each checked against the route's limited BT.2020 color first.
 - `DolbyVisionFramePairQueue.ts`: BL and EL frame pairing, within the tolerance of `demux/dolby-vision/DolbyVisionProfiles.ts`.
 

@@ -2,12 +2,14 @@ import { describe, expect, it } from 'vitest';
 
 import {
     rewriteHEVCAccessUnitColorDescriptionToBT709,
+    rewriteHEVCAccessUnitSPS,
     type HEVCNALFormat
 } from 'webgpu-player/demux/dolby-vision/DolbyVisionHEVCSplitter';
 import { parseHEVCDecoderConfiguration } from 'webgpu-player/demux/hevc/HEVCDecoderConfiguration';
-import { parseHEVCSPS } from 'webgpu-player/demux/hevc/HEVCSPSParser';
+import { parseHEVCSPS, repairHEVCSPSDefaultDisplayWindow, rewriteHEVCSPSColorDescriptionToBT709 } from 'webgpu-player/demux/hevc/HEVCSPSParser';
 import {
-    neutralizeNativeHDRHEVCDecoderConfigWithValidation
+    neutralizeNativeHDRHEVCDecoderConfigWithValidation,
+    repairHEVCDecoderConfigDefaultDisplayWindow
 } from 'webgpu-player/decode/video/native/NativeHDRHEVCColorNeutralizer';
 
 import { createBytesFromHex } from '../../../helpers/byteArrays';
@@ -18,6 +20,17 @@ const MAIN10_PQ_SPS = createBytesFromHex(
 // A Main10 SPS whose VUI signals BT.2020 primaries and matrix with the BT.2020 10-bit transfer, as HLG-compatible streams do
 const MAIN10_BT2020_10_SPS = createBytesFromHex(
     '42010102200000030090000003000003003fa005020171f2b6595952930bc05a848704820000030002000003003010'
+);
+// MAIN10_PQ_SPS with its default_display_window_flag, a 0 after frame_field_info_present_flag, removed, as old x265 builds wrote the VUI
+const MAIN10_PQ_SPS_WITHOUT_DEFAULT_DISPLAY_WINDOW_FLAG = createBytesFromHex(
+    '4201010220000003009000000300000300ffa005020169365959a4932bc05a848804840000030004000003000420'
+);
+// An old x265 build's Main 10 SDR SPS without the flag, and the SPS FFmpeg's reading of it implies
+const X265_MISSING_DEFAULT_DISPLAY_WINDOW_SPS = createBytesFromHex(
+    '420101022000000300900000030000030096a001e0200649f4d96666924c2e02000007d20000bb8010'
+);
+const X265_REPAIRED_DEFAULT_DISPLAY_WINDOW_SPS = createBytesFromHex(
+    '420101022000000300900000030000030096a001e0200649f4d96666924c2e0100000303e900005dc008'
 );
 const HLG_PREFERRED_TRANSFER_CHARACTERISTICS = 18;
 const PQ_PREFERRED_TRANSFER_CHARACTERISTICS = 16;
@@ -247,6 +260,49 @@ describe('NativeHDRHEVCColorNeutralizer', () => {
                     transfer: 'bt709'
                 });
         }
+    });
+
+    it('restores a missing default_display_window_flag before neutralizing, in HVCC and in band', () => {
+        const neutralizedSPS = rewriteHEVCSPSColorDescriptionToBT709(MAIN10_PQ_SPS, 'pq');
+        const neutralized = neutralizeNativeHDRHEVCDecoderConfigWithValidation(
+            createDecoderConfig(createHVCCDescriptionWithSPS([ MAIN10_PQ_SPS_WITHOUT_DEFAULT_DISPLAY_WINDOW_FLAG ])),
+            'pq'
+        );
+        expect(neutralized.decoderDescriptionValidated).toBe(true);
+        expect(parseHEVCDecoderConfiguration(neutralized.configuration.description as Uint8Array).sequenceParameterSets).toEqual([ neutralizedSPS ]);
+
+        const format = { kind: 'length-prefixed', lengthSize: 4 } as const;
+        const rewritten = rewriteHEVCAccessUnitColorDescriptionToBT709(
+            encodeAccessUnit([ MAIN10_PQ_SPS_WITHOUT_DEFAULT_DISPLAY_WINDOW_FLAG, IDR ], format),
+            format,
+            'pq'
+        );
+        expect(rewritten).toEqual(encodeAccessUnit([ neutralizedSPS, IDR ], format));
+    });
+
+    it('repairs an HVCC SPS without default_display_window_flag on any route, and keeps a configuration that needs no repair', () => {
+        const configuration = createDecoderConfig(createHVCCDescriptionWithSPS([ X265_MISSING_DEFAULT_DISPLAY_WINDOW_SPS ]));
+        const repaired = repairHEVCDecoderConfigDefaultDisplayWindow(configuration);
+        expect(repaired).toEqual({
+            ...configuration,
+            description: createHVCCDescriptionWithSPS([ X265_REPAIRED_DEFAULT_DISPLAY_WINDOW_SPS ])
+        });
+        // The description's other bytes and the source configuration stay as they were
+        expect(configuration.description).toEqual(createHVCCDescriptionWithSPS([ X265_MISSING_DEFAULT_DISPLAY_WINDOW_SPS ]));
+
+        const unchanged = createDecoderConfig(createHVCCDescription());
+        expect(repairHEVCDecoderConfigDefaultDisplayWindow(unchanged)).toBe(unchanged);
+        const withoutDescription: VideoDecoderConfig = { codec: 'hvc1.2.4.L120.B0' };
+        expect(repairHEVCDecoderConfigDefaultDisplayWindow(withoutDescription)).toBe(withoutDescription);
+    });
+
+    it('rewrites an access unit\'s SPS only where the transform replaces one', () => {
+        const format = { kind: 'annex-b' } as const;
+        expect(rewriteHEVCAccessUnitSPS(encodeAccessUnit([ VPS, X265_MISSING_DEFAULT_DISPLAY_WINDOW_SPS, PPS, IDR ], format), format, repairHEVCSPSDefaultDisplayWindow))
+            .toEqual(encodeAccessUnit([ VPS, X265_REPAIRED_DEFAULT_DISPLAY_WINDOW_SPS, PPS, IDR ], format));
+        expect(rewriteHEVCAccessUnitSPS(encodeAccessUnit([ VPS, MAIN10_PQ_SPS, PPS, IDR ], format), format, repairHEVCSPSDefaultDisplayWindow))
+            .toBeNull();
+        expect(rewriteHEVCAccessUnitSPS(encodeAccessUnit([ IDR ], format), format, repairHEVCSPSDefaultDisplayWindow)).toBeNull();
     });
 
     it('accepts an HLG-compatible hvcC SPS on the HLG route unless an SEI value names another transfer', () => {

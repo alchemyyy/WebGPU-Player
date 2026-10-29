@@ -4,14 +4,16 @@ import {
     hasHEVCRASLPicture,
     hasHEVCSPS,
     rewriteHEVCAccessUnitColorDescriptionToBT709,
+    rewriteHEVCAccessUnitSPS,
     sanitizeHEVCAccessUnitForChromium,
     type HEVCNALFormat
 } from '../../../demux/dolby-vision/DolbyVisionHEVCSplitter';
 import { findHEVCPreferredTransferCharacteristics } from '../../../demux/hevc/HEVCSEI';
 import {
-    neutralizeNativeHDRHEVCDecoderConfigWithValidation
+    neutralizeNativeHDRHEVCDecoderConfigWithValidation,
+    repairHEVCDecoderConfigDefaultDisplayWindow
 } from './NativeHDRHEVCColorNeutralizer';
-import type { HEVCHDRTransfer } from '../../../demux/hevc/HEVCSPSParser';
+import { repairHEVCSPSDefaultDisplayWindow, type HEVCHDRTransfer } from '../../../demux/hevc/HEVCSPSParser';
 import OwnedNativeVideoDecoder, {
     DEFAULT_NATIVE_VIDEO_DECODER_DEPENDENCIES,
     type NativeVideoDecoderPort,
@@ -66,7 +68,8 @@ function createNativeFrameCallbacks(callbacks: OwnedNativeHEVCVideoDecoderCallba
 
 /**
  * Owns one native HEVC VideoDecoder.
- * It drops leading RASL pictures, sanitizes the first access unit for Chromium, and neutralizes HDR color metadata when asked; the generic owner does the rest.
+ * It drops leading RASL pictures, sanitizes the first access unit for Chromium, restores an SPS's missing default_display_window_flag,
+ * and neutralizes HDR color metadata when asked; the generic owner does the rest.
  */
 export default class OwnedNativeHEVCVideoDecoder extends OwnedNativeVideoDecoder {
     protected override readonly decoderName: string = 'HEVC decoder';
@@ -109,7 +112,7 @@ export default class OwnedNativeHEVCVideoDecoder extends OwnedNativeVideoDecoder
             }
         }
 
-        decodedPacketData = this.neutralizeHDRPacketData(packet, decodedPacketData);
+        decodedPacketData = this.rewriteSequenceParameterSets(decodedPacketData);
 
         if (decodedPacketData === packet.data) {
             super.decode(packet, transferableData);
@@ -129,7 +132,7 @@ export default class OwnedNativeHEVCVideoDecoder extends OwnedNativeVideoDecoder
 
     protected override configureDecoder(decoder: NativeVideoDecoderPort): void {
         if (this.options.neutralizeHDRColorMetadata !== true) {
-            super.configureDecoder(decoder);
+            decoder.configure(repairHEVCDecoderConfigDefaultDisplayWindow(this.config));
             this.nativeHDRColorDescriptionValidated = false;
             return;
         }
@@ -149,9 +152,15 @@ export default class OwnedNativeHEVCVideoDecoder extends OwnedNativeVideoDecoder
         return transfer;
     }
 
-    private neutralizeHDRPacketData(packet: EncodedPacket, packetData: Uint8Array): Uint8Array {
+    /**
+     * Restores a missing default_display_window_flag in each SPS of the packet, and on the neutralizing route also rewrites its color,
+     * which every SPS must prove; a packet before the first proven SPS fails on that route.
+     */
+    private rewriteSequenceParameterSets(packetData: Uint8Array): Uint8Array {
         if (this.options.neutralizeHDRColorMetadata !== true) {
-            return packetData;
+            return hasHEVCSPS(packetData, this.inputFormat) ?
+                rewriteHEVCAccessUnitSPS(packetData, this.inputFormat, repairHEVCSPSDefaultDisplayWindow) ?? packetData :
+                packetData;
         }
         // Any access unit may carry an SPS, not only a key packet: a sync-sample table that lists only IDR pictures leaves each CRA, with its SPS, a delta packet
         if (hasHEVCSPS(packetData, this.inputFormat)) {

@@ -1,5 +1,6 @@
 import { splitAnnexBNALUnits, splitLengthPrefixedNALUnits } from '../NALUnitFraming';
 import {
+    repairHEVCSPSDefaultDisplayWindow,
     rewriteHEVCSPSColorDescriptionToBT709,
     type HEVCHDRTransfer
 } from '../hevc/HEVCSPSParser';
@@ -410,8 +411,33 @@ export function hasHEVCSPS(data: Uint8Array, format: HEVCNALFormat): boolean {
 }
 
 /**
- * Rewrites every in-band SPS to the neutral color descriptor used by external HDR.
+ * Passes every base-layer SPS of an access unit through a transform that returns its replacement, or null to keep it.
+ * Returns the rebuilt access unit, or null when the transform kept every SPS or the access unit has none.
+ */
+export function rewriteHEVCAccessUnitSPS(
+    data: Uint8Array,
+    format: HEVCNALFormat,
+    transformSPS: (nalUnit: Uint8Array) => Uint8Array | null
+): Uint8Array | null {
+    requireAccessUnit(data);
+    const nalUnits = parseHEVCNALUnits(data, format);
+    const rewrittenNALUnits: Uint8Array[] = [];
+    let rewritten = false;
+    for (const nalUnit of nalUnits) {
+        // Decoders read only base-layer parameter sets, so another layer's SPS passes through
+        const rewrittenNALUnit = nalUnit.type === HEVC_SPS_NAL_UNIT_TYPE && nalUnit.layerID === HEVC_BASE_LAYER_ID ?
+            transformSPS(nalUnit.data) :
+            null;
+        rewrittenNALUnits.push(rewrittenNALUnit ?? nalUnit.data);
+        rewritten ||= rewrittenNALUnit !== null;
+    }
+    return rewritten ? encodeNALUnits(rewrittenNALUnits, format) : null;
+}
+
+/**
+ * Rewrites every in-band base-layer SPS to the neutral color descriptor used by external HDR, after restoring a missing default_display_window_flag.
  * The access unit's alternative transfer characteristics SEI value, when known, overrides each VUI transfer in the route check.
+ * Returns null for an access unit without a base-layer SPS.
  */
 export function rewriteHEVCAccessUnitColorDescriptionToBT709(
     data: Uint8Array,
@@ -419,17 +445,9 @@ export function rewriteHEVCAccessUnitColorDescriptionToBT709(
     expectedHDRTransfer?: HEVCHDRTransfer,
     preferredTransferCharacteristics: number | null = null
 ): Uint8Array | null {
-    requireAccessUnit(data);
-    const nalUnits = parseHEVCNALUnits(data, format);
-    const rewrittenNALUnits: Uint8Array[] = [];
-    let rewritten = false;
-    for (const nalUnit of nalUnits) {
-        if (nalUnit.type !== HEVC_SPS_NAL_UNIT_TYPE) {
-            rewrittenNALUnits.push(nalUnit.data);
-            continue;
-        }
-        rewrittenNALUnits.push(rewriteHEVCSPSColorDescriptionToBT709(nalUnit.data, expectedHDRTransfer, preferredTransferCharacteristics));
-        rewritten = true;
-    }
-    return rewritten ? encodeNALUnits(rewrittenNALUnits, format) : null;
+    return rewriteHEVCAccessUnitSPS(data, format, (nalUnit: Uint8Array): Uint8Array => rewriteHEVCSPSColorDescriptionToBT709(
+        repairHEVCSPSDefaultDisplayWindow(nalUnit) ?? nalUnit,
+        expectedHDRTransfer,
+        preferredTransferCharacteristics
+    ));
 }

@@ -1,4 +1,5 @@
 import {
+    repairHEVCSPSDefaultDisplayWindow,
     rewriteHEVCSPSColorDescriptionToBT709,
     type HEVCHDRTransfer
 } from '../../../demux/hevc/HEVCSPSParser';
@@ -42,13 +43,14 @@ function appendUnsigned16(destination: number[], value: number): void {
     destination.push(Math.floor(value / 256), value % 256);
 }
 
-type RewrittenNALUnitArray = {
-    nextOffset: number
-    rewrittenSPSCount: number
-};
+/** Rewrites one SPS NAL unit, or returns null to keep it. */
+type HEVCSPSTransform = (nalUnit: Uint8Array) => Uint8Array | null;
 
 type RewrittenHEVCDecoderDescription = {
+    /** How many base-layer SPSs the record holds, each of which went through the transform */
+    baseLayerSPSCount: number
     description: Uint8Array
+    /** How many of them the transform replaced */
     rewrittenSPSCount: number
 };
 
@@ -57,13 +59,13 @@ export type NeutralizedNativeHDRHEVCDecoderConfig = {
     decoderDescriptionValidated: boolean
 };
 
+/** Copies one `hvcC` NAL unit array into the output, each base-layer SPS through the transform, and returns the offset after it. */
 function rewriteHEVCConfigurationNALUnitArray(
     description: Uint8Array,
     arrayOffset: number,
     outputBytes: number[],
-    expectedHDRTransfer: HEVCHDRTransfer,
-    preferredTransferCharacteristics: number | null
-): RewrittenNALUnitArray {
+    transformSPS: HEVCSPSTransform
+): number {
     if (arrayOffset + HEVC_CONFIGURATION_ARRAY_HEADER_BYTE_LENGTH > description.byteLength) {
         throw new TypeError('The HEVC decoder description ends inside a NAL array header');
     }
@@ -72,7 +74,6 @@ function rewriteHEVCConfigurationNALUnitArray(
     const nalUnitCount = readUnsigned16(arrayHeader, 1);
     appendBytes(outputBytes, arrayHeader);
     let offset = arrayOffset + HEVC_CONFIGURATION_ARRAY_HEADER_BYTE_LENGTH;
-    let rewrittenSPSCount = 0;
 
     for (let nalUnitIndex = 0; nalUnitIndex < nalUnitCount; nalUnitIndex += 1) {
         if (offset + HEVC_NAL_UNIT_LENGTH_BYTE_LENGTH > description.byteLength) {
@@ -90,24 +91,21 @@ function rewriteHEVCConfigurationNALUnitArray(
         }
         // Decoders read only base-layer parameter sets, so an alpha or other layer's SPS passes through
         const isBaseLayerSPS = actualNALUnitType === HEVC_SPS_NAL_UNIT_TYPE && getHEVCNALUnitLayerID(nalUnit) === HEVC_BASE_LAYER_ID;
-        const rewrittenNALUnit = isBaseLayerSPS ?
-            rewriteHEVCSPSColorDescriptionToBT709(nalUnit, expectedHDRTransfer, preferredTransferCharacteristics) :
-            nalUnit;
+        const rewrittenNALUnit = isBaseLayerSPS ? transformSPS(nalUnit) ?? nalUnit : nalUnit;
         if (rewrittenNALUnit.byteLength > MAXIMUM_HEVC_NAL_UNIT_BYTE_LENGTH) {
             throw new TypeError('The rewritten HEVC NAL unit exceeds its HVCC length field');
         }
         appendUnsigned16(outputBytes, rewrittenNALUnit.byteLength);
         appendBytes(outputBytes, rewrittenNALUnit);
-        rewrittenSPSCount += isBaseLayerSPS ? 1 : 0;
         offset += nalUnitByteLength;
     }
-    return { nextOffset: offset, rewrittenSPSCount };
+    return offset;
 }
 
-function rewriteHEVCDecoderDescription(
+/** Passes every base-layer SPS of an `hvcC` through a transform, and returns the rebuilt record with every other byte as it was. */
+function rewriteHEVCDecoderDescriptionSPS(
     descriptionSource: AllowSharedBufferSource,
-    expectedHDRTransfer: HEVCHDRTransfer,
-    preferredTransferCharacteristics: number | null
+    transformSPS: HEVCSPSTransform
 ): RewrittenHEVCDecoderDescription {
     const description = toUint8Array(descriptionSource);
     if (
@@ -122,17 +120,16 @@ function rewriteHEVCDecoderDescription(
     appendBytes(outputBytes, description.subarray(0, HEVC_CONFIGURATION_HEADER_BYTE_LENGTH));
     const arrayCount = description[22];
     let offset = HEVC_CONFIGURATION_HEADER_BYTE_LENGTH;
+    let baseLayerSPSCount = 0;
     let rewrittenSPSCount = 0;
+    const countedTransformSPS = (nalUnit: Uint8Array): Uint8Array | null => {
+        const rewrittenNALUnit = transformSPS(nalUnit);
+        baseLayerSPSCount += 1;
+        rewrittenSPSCount += rewrittenNALUnit === null ? 0 : 1;
+        return rewrittenNALUnit;
+    };
     for (let arrayIndex = 0; arrayIndex < arrayCount; arrayIndex += 1) {
-        const rewrittenArray = rewriteHEVCConfigurationNALUnitArray(
-            description,
-            offset,
-            outputBytes,
-            expectedHDRTransfer,
-            preferredTransferCharacteristics
-        );
-        offset = rewrittenArray.nextOffset;
-        rewrittenSPSCount += rewrittenArray.rewrittenSPSCount;
+        offset = rewriteHEVCConfigurationNALUnitArray(description, offset, outputBytes, countedTransformSPS);
     }
     if (offset !== description.byteLength) {
         throw new TypeError('The HEVC decoder description has trailing data');
@@ -141,15 +138,31 @@ function rewriteHEVCDecoderDescription(
         throw new TypeError('The rewritten HEVC decoder description exceeds its size bound');
     }
     return {
+        baseLayerSPSCount,
         description: new Uint8Array(outputBytes),
         rewrittenSPSCount
     };
 }
 
 /**
+ * Returns a decoder configuration whose `hvcC` SPSs lack default_display_window_flag with the flag restored (see `repairHEVCSPSDefaultDisplayWindow`),
+ * or the configuration itself when no SPS needs it.
+ */
+export function repairHEVCDecoderConfigDefaultDisplayWindow(configuration: VideoDecoderConfig): VideoDecoderConfig {
+    if (configuration.description === undefined) {
+        return configuration;
+    }
+    const repairedDescription = rewriteHEVCDecoderDescriptionSPS(configuration.description, repairHEVCSPSDefaultDisplayWindow);
+    return repairedDescription.rewrittenSPSCount === 0 ?
+        configuration :
+        { ...configuration, description: repairedDescription.description };
+}
+
+/**
  * Neutralizes decoder metadata while reporting whether HVCC proved and rewrote the source SPS.
  * An SPS-free HVCC remains usable when the first key packet carries the required in-band SPS.
  * A known alternative transfer characteristics SEI value overrides the VUI transfer in the SPS check.
+ * An SPS without default_display_window_flag is repaired first.
  */
 export function neutralizeNativeHDRHEVCDecoderConfigWithValidation(
     configuration: VideoDecoderConfig,
@@ -158,7 +171,11 @@ export function neutralizeNativeHDRHEVCDecoderConfigWithValidation(
 ): NeutralizedNativeHDRHEVCDecoderConfig {
     const rewrittenDescription = configuration.description === undefined ?
         null :
-        rewriteHEVCDecoderDescription(configuration.description, expectedHDRTransfer, preferredTransferCharacteristics);
+        rewriteHEVCDecoderDescriptionSPS(configuration.description, (nalUnit: Uint8Array): Uint8Array => rewriteHEVCSPSColorDescriptionToBT709(
+            repairHEVCSPSDefaultDisplayWindow(nalUnit) ?? nalUnit,
+            expectedHDRTransfer,
+            preferredTransferCharacteristics
+        ));
     return {
         configuration: {
             ...configuration,
@@ -170,6 +187,6 @@ export function neutralizeNativeHDRHEVCDecoderConfigWithValidation(
             },
             ...(rewrittenDescription === null ? {} : { description: rewrittenDescription.description })
         },
-        decoderDescriptionValidated: (rewrittenDescription?.rewrittenSPSCount ?? 0) > 0
+        decoderDescriptionValidated: (rewrittenDescription?.baseLayerSPSCount ?? 0) > 0
     };
 }

@@ -317,6 +317,12 @@ These were settled on stock Chrome on Windows, with a Chromium 153 source audit.
   Every access unit with a base-layer SPS is rewritten, not only key packets (10-29).
   An ISO BMFF sync-sample table may list only the IDR pictures, so each CRA, which repeats the VPS, SPS, and PPS, is a delta packet; Chrome then read the unrewritten PQ SPS of the first such CRA and decoded PQ frames, which the presenter's color check refused.
   A check of the framing and NAL unit headers alone, without parsing a payload, finds the SPS, so every packet affords it; each SPS found must still prove the route's transfer, so a mismatching SPS mid-stream fails the decode.
+- An HEVC SPS without `default_display_window_flag` is repaired before Chromium reads it (10-29).
+  Some old x265 builds wrote the VUI without the flag, so Chromium's SPS parser reads the timing info that follows as a display window, fails its crop check, and the decoder reports a decoding error on the first packet.
+  FFmpeg detects the pattern (`hevc/ps.c`): at the flag, at least 68 bits before the stop bit, and the next 21 bits a set `vui_timing_info_present_flag` then 20 zero bits, which a set flag would read as an implausible left offset; it then reads on as if the flag were 0.
+  `repairHEVCSPSDefaultDisplayWindow` applies the same test and inserts the flag as 0, so every later field moves one bit, then writes a new stop bit and alignment and escapes the RBSP again; any other SPS is left as it is.
+  The owned native HEVC decoder applies it on every route to each base-layer SPS of the `hvcC` and of every access unit that carries one, before the color rewrite on the native HDR route.
+  The repaired SPS decodes to frames identical to FFmpeg's decode of the original.
 - AV1 color is neutralized like HEVC's (10-27).
   Until then nothing rewrote an AV1 sequence header, so HDR AV1 decoded in software to raw I420P10, which cost CPU at 4K.
   The worker now rewrites every sequence header OBU's color description and range bit-exactly, every other field kept as it was, with the OBU size recoded only when the payload length changes, and also the codecs string's color fields, an `av1C` description, and the decoder's colorSpace.
