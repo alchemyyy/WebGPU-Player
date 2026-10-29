@@ -2,19 +2,19 @@ node_modules/
 coverage/
 __pycache__/
 
-# Build outputs, including the decoder builds in bin/wasm/ and the local playback media in bin/playback_smoke_media/
 /bin/*
-# The generated codec vector assets are committed, so every change to them shows in review
+
+# generated codec vector assets are committed
 !/bin/codec_vector_assets/
 
-# Build trees and the Rust target directories of the engine's WebAssembly and of the decoder projects
+# Build trees and Rust target directories of the engine's WebAssembly and decoder projects
 wasm/build/
 wasm/libdovi/target/
 /wgpud/build/
 /wgpud/*/*/target/
 
-# The built book; .github/workflows/docs.yml builds and publishes it
+# The compiled mkbook documentation; .github/workflows/docs.yml builds and publishes it
 /docs/book/
 
-# A Vite build of the sandbox, which only ever runs locally
+# Vite build of the sandbox, which only ever runs locally
 /sandbox/dist/
