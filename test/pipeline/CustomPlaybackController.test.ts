@@ -28,7 +28,7 @@ import CustomDecodeSession, {
     CustomDecodeSessionTelemetry,
     releaseIdleCustomDecodeWorker
 } from 'webgpu-player/pipeline/CustomDecodeSession';
-import { MAX_DECODED_FRAME_CREDITS, type DecodeWorkerAudioConfiguration } from 'webgpu-player/pipeline/DecodeWorkerProtocol';
+import { MAX_DECODED_FRAME_CREDITS, SOURCE_PROGRESS_REPORT_BYTE_COUNT, type DecodeWorkerAudioConfiguration } from 'webgpu-player/pipeline/DecodeWorkerProtocol';
 import { addMicroseconds, requireMicroseconds } from 'webgpu-player/TimeMath';
 import CustomPlaybackController, {
     CUSTOM_PLAYBACK_AUDIO_OUTPUT_SWITCH_LEAD_MICROSECONDS,
@@ -158,6 +158,7 @@ function createDecodeTelemetry(): CustomDecodeSessionTelemetry {
         nativeAudioEnded: false,
         peakFrameCount: 0,
         pendingFrameCount: 0,
+        preparationSourceByteCount: 0,
         queuedFrameCount: 0,
         receivedAudioFrameCount: 0,
         receivedAudioSampleCount: 0,
@@ -204,6 +205,7 @@ class FakeVideoDecodeSession implements CustomVideoDecodeSession {
     private nativeAudioEnded = false;
     private nativeAudioTimeMicroseconds: Microseconds | null = null;
     private pendingFrameCount = 0;
+    private preparationSourceByteCount = 0;
     private readonly queuedFrames: DecodedPresentationFrame[] = [];
     private submittedVideoPacketCount = 0;
     private videoEnded = false;
@@ -286,6 +288,7 @@ class FakeVideoDecodeSession implements CustomVideoDecodeSession {
             lastFrameMediaTimeMicroseconds: this.lastFrameMediaTimeMicroseconds,
             nativeAudioEnded: this.nativeAudioEnded,
             pendingFrameCount: this.pendingFrameCount,
+            preparationSourceByteCount: this.preparationSourceByteCount,
             queuedFrameCount: this.queuedFrames.length,
             submittedVideoPacketCount: this.submittedVideoPacketCount,
             videoEnded: this.videoEnded
@@ -295,6 +298,11 @@ class FakeVideoDecodeSession implements CustomVideoDecodeSession {
     /** Simulates the worker submitting more video packets during startup */
     public reportVideoPacketProgress(): void {
         this.submittedVideoPacketCount += 1;
+    }
+
+    /** Simulates the worker reporting more source bytes read while it prepares, as a slow metadata read does */
+    public reportSourceProgress(byteCount: number): void {
+        this.preparationSourceByteCount = byteCount;
     }
 
     public getNativeAudioTimeMicroseconds(): Microseconds | null {
@@ -2699,6 +2707,41 @@ describe('CustomPlaybackController', () => {
                 status: 'fallback'
             });
             expect(harness.controller.getTelemetry().lastErrorMessage).toContain('still incomplete after 0.3 s');
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('extends startup while preparation reads source bytes without decoding, up to the ceiling', async () => {
+        vi.useFakeTimers();
+        try {
+            const harness = createControllerHarness(false, {
+                startupCeilingMicroseconds: millisecondsToMicroseconds(500),
+                startupTimeoutMicroseconds: millisecondsToMicroseconds(100)
+            });
+            let startSettled = false;
+            const startPromise = harness.controller.play(createPlayOptions()).then(result => {
+                startSettled = true;
+                return result;
+            });
+            await flushAsyncWork();
+            // A metadata read moves on, with no packet decoded yet
+            for (let sampleIndex = 1; sampleIndex <= 3; sampleIndex += 1) {
+                harness.videoDecodeSession.reportSourceProgress(sampleIndex * SOURCE_PROGRESS_REPORT_BYTE_COUNT);
+                await vi.advanceTimersByTimeAsync(100);
+            }
+            expect(startSettled).toBe(false);
+            for (let sampleIndex = 4; sampleIndex <= 5; sampleIndex += 1) {
+                harness.videoDecodeSession.reportSourceProgress(sampleIndex * SOURCE_PROGRESS_REPORT_BYTE_COUNT);
+                await vi.advanceTimersByTimeAsync(100);
+            }
+
+            await expect(startPromise).resolves.toMatchObject({
+                fallbackReason: 'startup-timeout',
+                status: 'fallback'
+            });
+            expect(harness.controller.getTelemetry().lastErrorMessage).toContain('still incomplete after 0.5 s');
+            expect(harness.controller.getTelemetry().lastErrorMessage).toContain(`source bytes ${5 * SOURCE_PROGRESS_REPORT_BYTE_COUNT}`);
         } finally {
             vi.useRealTimers();
         }

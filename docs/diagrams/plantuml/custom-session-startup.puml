@@ -28,7 +28,8 @@ host -> controller : play
 activate controller
 controller -> controller : new generation, reset clock,\nemit 'waiting', start the startup bound
 note right of controller
-  Fails after 20 s without decode progress,
+  Fails after 20 s without progress, the source
+  bytes read before readiness or decode,
   or at 60 s regardless; the fallback message
   names the counters it reached.
 end note

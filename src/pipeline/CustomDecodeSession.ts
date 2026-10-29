@@ -225,6 +225,8 @@ export type CustomDecodeSessionTelemetry = {
     nativeAudioEnded: boolean
     peakFrameCount: number
     pendingFrameCount: number
+    /** The source bytes the latest run reported reading before its readiness, in steps of `SOURCE_PROGRESS_REPORT_BYTE_COUNT` */
+    preparationSourceByteCount: number
     queuedFrameCount: number
     receivedAudioFrameCount: number
     receivedAudioSampleCount: number
@@ -372,6 +374,7 @@ function createTelemetry(): CustomDecodeSessionTelemetry {
         nativeAudioEnded: false,
         peakFrameCount: 0,
         pendingFrameCount: 0,
+        preparationSourceByteCount: 0,
         queuedFrameCount: 0,
         receivedAudioFrameCount: 0,
         receivedAudioSampleCount: 0,
@@ -1606,6 +1609,9 @@ export default class CustomDecodeSession {
             case 'progress':
                 this.telemetry.submittedVideoPacketCount = messageValue.packetCount;
                 this.telemetry.videoProgressPhase = messageValue.phase;
+                break;
+            case 'source-progress':
+                this.telemetry.preparationSourceByteCount = messageValue.byteCount;
                 break;
             case 'ready':
                 this.handleReadyResponse(generationRecord, messageValue);

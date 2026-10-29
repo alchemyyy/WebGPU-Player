@@ -73,6 +73,7 @@ export function createDecodeSessionTelemetry(overrides: Partial<CustomDecodeSess
         nativeAudioEnded: false,
         peakFrameCount: 0,
         pendingFrameCount: 0,
+        preparationSourceByteCount: 0,
         queuedFrameCount: 0,
         receivedAudioFrameCount: 0,
         receivedAudioSampleCount: 0,

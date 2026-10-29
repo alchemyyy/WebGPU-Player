@@ -8,7 +8,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AUDIO_OUTPUT_STAGE_WASM_ASSET } from 'webgpu-player/EngineAssets';
 import { CUSTOM_WAVE_CHANNEL_MASK_STEREO } from 'webgpu-player/audio/processing/CustomWaveChannelLayout';
 import { parseAudioDecoderManifest } from 'webgpu-player/decode/audio/AudioDecoderManifest';
-import { MAX_GPU_DECODE_PACKET_CREDITS, type DecodeWorkerResponse, type DecodeWorkerStartRequest } from 'webgpu-player/pipeline/DecodeWorkerProtocol';
+import {
+    isDecodeWorkerResponse,
+    MAX_GPU_DECODE_PACKET_CREDITS,
+    SOURCE_PROGRESS_REPORT_BYTE_COUNT,
+    type DecodeWorkerResponse,
+    type DecodeWorkerStartRequest
+} from 'webgpu-player/pipeline/DecodeWorkerProtocol';
 import { MICROSECONDS_PER_SECOND, secondsToMicroseconds, type Microseconds } from 'webgpu-player/MediaTime';
 
 import { CODEC_VECTOR_ASSETS_DIRECTORY } from '../helpers/enginePaths';
@@ -224,6 +230,22 @@ describe('the playback worker\'s focused routes on MPEG-TS and M2TS', () => {
         expect(responses.filter(response => response.type === 'error')).toEqual([
             expect.objectContaining({ failureKind: 'source-unsupported', message: NO_VIDEO_TRACK_MESSAGE })
         ]);
+    });
+
+    it('reports the source bytes its preparation reads, in steps, and none once ready', async () => {
+        const responses = await runToStop(createFramePoolRequest(VC1_FILE_NAME, 'vc1'));
+
+        const readyIndex = responses.findIndex(response => response.type === 'ready');
+        const sourceProgress = responses.flatMap((response, responseIndex) => (response.type === 'source-progress' ? [ { byteCount: response.byteCount, responseIndex } ] : []));
+        // Preparing the 621 KiB vector reads past the first step
+        expect(sourceProgress.length).toBeGreaterThan(0);
+        expect(sourceProgress.every(progress => progress.responseIndex < readyIndex)).toBe(true);
+        expect(responses.filter(response => response.type === 'source-progress' && !isDecodeWorkerResponse(response))).toEqual([]);
+        const byteCounts = sourceProgress.map(progress => progress.byteCount);
+        expect(byteCounts[0]).toBeGreaterThanOrEqual(SOURCE_PROGRESS_REPORT_BYTE_COUNT);
+        byteCounts.slice(1).forEach((byteCount: number, index: number): void => {
+            expect(byteCount - byteCounts[index]).toBeGreaterThanOrEqual(SOURCE_PROGRESS_REPORT_BYTE_COUNT);
+        });
     });
 });
 
