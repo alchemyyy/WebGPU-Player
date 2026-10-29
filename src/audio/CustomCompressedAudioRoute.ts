@@ -8,15 +8,13 @@ export type DTSProfileToken =
     | 'DTSHDMA'
     | 'DTSHDMADTSX';
 
-export type DTSDirectPlayProfileToken = Exclude<DTSProfileToken, 'DTSES'>;
-
 export type EAC3InputRoute = Readonly<{
     channelCount: 1 | 2 | 6 | 8
     metadataLayouts: readonly string[] | null
 }>;
 
 export type DTSInputRoute = Readonly<{
-    channelCount: 1 | 2 | 3 | 6 | 7 | 8
+    channelCount: 1 | 2 | 3 | 5 | 6 | 7 | 8
     /** Jellyfin ChannelLayout values the route requires, or null for any */
     metadataLayouts: readonly string[] | null
     profileTokens: readonly DTSProfileToken[]
@@ -59,16 +57,31 @@ export const DTS_PROFILE_VALUE_BY_TOKEN: Readonly<Record<DTSProfileToken, string
     DTSHDMADTSX: 'DTS-HD MA + DTS:X'
 });
 
-/** DTS profiles retained for production direct play. */
-export const DTS_DIRECT_PLAY_PROFILE_TOKENS: readonly DTSDirectPlayProfileToken[] = Object.freeze([
+/** Every DTS profile Jellyfin names, in the order the profile conditions list them; each carries a core or a lossless stream libdcadec decodes. */
+export const DTS_PROFILE_TOKENS: readonly DTSProfileToken[] = Object.freeze([
     'DTS',
     'DTS9624',
+    'DTSES',
     'DTSHDHRA',
     'DTSHDMA',
     'DTSHDMADTSX'
 ]);
 
+// The dcadec samples and FFmpeg's DTS core encodes in src/capability/vectors/test/dts/, which the dts decoder project's tests decode through the package
 export const DTS_CAPABILITY_VECTOR_ROUTES = Object.freeze([
+    // FFmpeg's stereo and 5.0(side) core encodes, one tone per channel, decode to 0x3 and 0x607 with every tone in its place
+    Object.freeze({
+        channelCount: 2,
+        metadataLayouts: null,
+        profileTokens: Object.freeze([ 'DTS' ] as const),
+        sampleRate: 48_000
+    }),
+    Object.freeze({
+        channelCount: 5,
+        metadataLayouts: null,
+        profileTokens: Object.freeze([ 'DTS' ] as const),
+        sampleRate: 48_000
+    }),
     Object.freeze({
         channelCount: 6,
         metadataLayouts: null,
@@ -81,6 +94,7 @@ export const DTS_CAPABILITY_VECTOR_ROUTES = Object.freeze([
         profileTokens: Object.freeze([ 'DTS9624' ] as const),
         sampleRate: 96_000
     }),
+    // The XCh sample decodes to the WAVE 6.1 mask, 0x70F, its back center apart from the side pair
     Object.freeze({
         channelCount: 7,
         metadataLayouts: null,
@@ -113,42 +127,58 @@ export const DTS_CAPABILITY_VECTOR_ROUTES = Object.freeze([
     })
 ] as const) satisfies readonly DTSInputRoute[];
 
+/*
+ * Routes no encoder this project can run produces a vector for: DTS-HD MA, HRA, and DTS-ES encodes need DTS's own tools.
+ * libdcadec reports every block's WAVE speaker mask and outputs its planes in WAVE order, which the engine checks before it mixes, so each route below
+ * is a bed whose mask the core or XCh vectors show the package reports, or that FFmpeg's port of libdcadec reports for such a stream, and the output
+ * stage places: a mask without a layout fails the attempt as decode-failed, which renegotiates.
+ */
 const DTS_COMPOSED_INPUT_ROUTES = Object.freeze([
-    // libdcadec reports mono's speaker mask for every profile, so the shared mixer places it
+    // Mono's speaker mask, for every profile
     Object.freeze({
         channelCount: 1,
         metadataLayouts: null,
-        profileTokens: Object.freeze([
-            'DTS',
-            'DTS9624',
-            'DTSHDHRA',
-            'DTSHDMA',
-            'DTSHDMADTSX'
-        ] as const),
+        profileTokens: DTS_PROFILE_TOKENS,
         sampleRate: 48_000
     }),
+    // A stereo core or lossless stream, as the stereo core vector reports it
     Object.freeze({
         channelCount: 2,
         metadataLayouts: null,
-        profileTokens: Object.freeze([ 'DTSHDMA' ] as const),
+        profileTokens: Object.freeze([ 'DTS9624', 'DTSHDHRA', 'DTSHDMA', 'DTSHDMADTSX' ] as const),
         sampleRate: 48_000
     }),
-    // Three-channel lossless beds decode to the 2.1 or 3.0 speaker mask
+    // Three-channel beds decode to the 2.1, 3.0, or 3.0(back) speaker mask
     Object.freeze({
         channelCount: 3,
         metadataLayouts: Object.freeze([ '2.1', '3.0' ] as const),
-        profileTokens: Object.freeze([ 'DTSHDMA', 'DTSHDMADTSX' ] as const),
+        profileTokens: Object.freeze([ 'DTS', 'DTS9624', 'DTSHDHRA', 'DTSHDMA', 'DTSHDMADTSX' ] as const),
         sampleRate: 48_000
     }),
+    // Five channels decode to 5.0(side), as the 5.0 core vector reports it, or to 4.1
+    Object.freeze({
+        channelCount: 5,
+        metadataLayouts: Object.freeze([ '4.1', '5.0' ] as const),
+        profileTokens: Object.freeze([ 'DTS9624', 'DTSHDHRA', 'DTSHDMA', 'DTSHDMADTSX' ] as const),
+        sampleRate: 48_000
+    }),
+    // DTS-ES Matrix matrixes its back center into a 5.1 core, which decodes as 5.1
     Object.freeze({
         channelCount: 6,
         metadataLayouts: null,
-        profileTokens: Object.freeze([ 'DTSHDHRA' ] as const),
+        profileTokens: Object.freeze([ 'DTSES', 'DTSHDHRA' ] as const),
+        sampleRate: 48_000
+    }),
+    // A lossless 6.1 bed decodes to the same 6.1 mask as DTS-ES's XCh
+    Object.freeze({
+        channelCount: 7,
+        metadataLayouts: Object.freeze([ '6.1' ] as const),
+        profileTokens: Object.freeze([ 'DTSHDHRA', 'DTSHDMA', 'DTSHDMADTSX' ] as const),
         sampleRate: 48_000
     })
 ] as const) satisfies readonly DTSInputRoute[];
 
-/** Production routes backed by exact profile, channel-layout, and output evidence. */
+/** Production routes, each backed by a vector's profile, speaker mask, and plane order, or composed from the speaker masks the package reports. */
 export const DTS_SUPPORTED_INPUT_ROUTES = Object.freeze([
     ...DTS_CAPABILITY_VECTOR_ROUTES,
     ...DTS_COMPOSED_INPUT_ROUTES
@@ -215,11 +245,6 @@ export const TRUEHD_SUPPORTED_INPUT_ROUTES = Object.freeze([
     ...TRUEHD_CAPABILITY_VECTOR_ROUTES,
     ...TRUEHD_COMPOSED_INPUT_ROUTES
 ] as const) satisfies readonly TrueHDInputRoute[];
-
-/** Returns whether a DTS profile is stable enough for production direct play. */
-export function isDTSDirectPlayProfileToken(profileToken: string): profileToken is DTSDirectPlayProfileToken {
-    return DTS_DIRECT_PLAY_PROFILE_TOKENS.includes(profileToken as DTSDirectPlayProfileToken);
-}
 
 /** Matches Jellyfin ChannelLayout metadata against a route's required layouts. */
 export function hasCustomAudioMetadataLayout(channelLayout: unknown, metadataLayouts: readonly string[] | null): boolean {

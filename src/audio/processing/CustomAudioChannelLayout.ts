@@ -42,8 +42,8 @@ export type CustomAudioChannel =
 
 export type CustomAudioChannelLayout = {
     channels: readonly CustomAudioChannel[]
-    id: '2.1' | '3.0' | '3.0-back' | '5.0-back' | '5.0-side' | '5.1-back' | '5.1-side' | '5.1.2' | '5.1.2-side' | '5.1.4' | '6.1' | '7.1' | '7.1.2' | '7.1.4' | 'mono'
-        | 'stereo'
+    id: '2.1' | '3.0' | '3.0-back' | '4.1' | '5.0-back' | '5.0-side' | '5.1-back' | '5.1-side' | '5.1.2' | '5.1.2-side' | '5.1.4' | '6.1' | '7.1' | '7.1.2'
+        | '7.1.4' | 'mono' | 'stereo'
 };
 
 /**
@@ -88,6 +88,18 @@ export const CUSTOM_THREE_POINT_ZERO_BACK_CHANNEL_LAYOUT: CustomAudioChannelLayo
         'back-center'
     ] as const),
     id: '3.0-back'
+});
+
+// FFmpeg's 4.1, FL FR FC LFE and a back center, which DTS-HD Master Audio 3/1 with LFE decodes to
+export const CUSTOM_FOUR_POINT_ONE_CHANNEL_LAYOUT: CustomAudioChannelLayout = Object.freeze({
+    channels: Object.freeze([
+        'front-left',
+        'front-right',
+        'front-center',
+        'low-frequency-effects',
+        'back-center'
+    ] as const),
+    id: '4.1'
 });
 
 // FFmpeg's 5.0(side), the 3/2 bed of AC-3 and DTS without their LFE
@@ -503,7 +515,7 @@ function mapCustomAudioToSurround(
 
 /**
  * Mixes a decoded layout to stereo: mono is duplicated, stereo passes through, and every larger bed uses its downmix.
- * A 5.0 bed maps to 5.1, and a height layout first folds its heights into its 5.1 or 7.1 floor, which the floor's downmix then mixes.
+ * A 4.1 or 5.0 bed maps to 5.1, and a height layout first folds its heights into its 5.1 or 7.1 floor, which the floor's downmix then mixes.
  */
 export function mixCustomAudioToStereo(
     channelData: readonly Float32Array[],
@@ -557,6 +569,7 @@ export function mixCustomAudioToStereo(
                 downmixSettings,
                 downmixSettingsRamp
             );
+        case '4.1':
         case '5.0-back':
         case '5.0-side':
         case '5.1.2':
