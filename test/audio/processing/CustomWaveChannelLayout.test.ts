@@ -6,6 +6,8 @@ import {
     CUSTOM_WAVE_CHANNEL_MASK_FIVE_POINT_ONE_POINT_TWO,
     CUSTOM_WAVE_CHANNEL_MASK_FIVE_POINT_ONE_SIDE,
     CUSTOM_WAVE_CHANNEL_MASK_FIVE_POINT_ONE_SIDE_POINT_TWO,
+    CUSTOM_WAVE_CHANNEL_MASK_FIVE_POINT_ZERO_BACK,
+    CUSTOM_WAVE_CHANNEL_MASK_FIVE_POINT_ZERO_SIDE,
     CUSTOM_WAVE_CHANNEL_MASK_MONO,
     CUSTOM_WAVE_CHANNEL_MASK_SEVEN_POINT_ONE,
     CUSTOM_WAVE_CHANNEL_MASK_SEVEN_POINT_ONE_POINT_FOUR,
@@ -30,6 +32,8 @@ describe('getQualifiedCustomWaveChannelLayout', () => {
         [ CUSTOM_WAVE_CHANNEL_MASK_THREE_POINT_ZERO, 3, '3.0' ],
         [ CUSTOM_WAVE_CHANNEL_MASK_TWO_POINT_ONE, 3, '2.1' ],
         [ CUSTOM_WAVE_CHANNEL_MASK_THREE_POINT_ZERO_BACK, 3, '3.0-back' ],
+        [ CUSTOM_WAVE_CHANNEL_MASK_FIVE_POINT_ZERO_SIDE, 5, '5.0-side' ],
+        [ CUSTOM_WAVE_CHANNEL_MASK_FIVE_POINT_ZERO_BACK, 5, '5.0-back' ],
         [ CUSTOM_WAVE_CHANNEL_MASK_FIVE_POINT_ONE_BACK, 6, '5.1-back' ],
         [ CUSTOM_WAVE_CHANNEL_MASK_FIVE_POINT_ONE_SIDE, 6, '5.1-side' ],
         [ CUSTOM_WAVE_CHANNEL_MASK_SIX_POINT_ONE, 7, '6.1' ],
@@ -60,6 +64,13 @@ describe('getQualifiedCustomWaveChannelLayout', () => {
         expect(getQualifiedCustomWaveChannelLayout(
             CUSTOM_WAVE_CHANNEL_MASK_THREE_POINT_ZERO_BACK
         )?.layout.channels).toEqual([ 'front-left', 'front-right', 'back-center' ]);
+    });
+
+    it('orders the 5.0 beds by ascending speaker bit', () => {
+        expect(getQualifiedCustomWaveChannelLayout(CUSTOM_WAVE_CHANNEL_MASK_FIVE_POINT_ZERO_SIDE)?.layout.channels)
+            .toEqual([ 'front-left', 'front-right', 'front-center', 'side-left', 'side-right' ]);
+        expect(getQualifiedCustomWaveChannelLayout(CUSTOM_WAVE_CHANNEL_MASK_FIVE_POINT_ZERO_BACK)?.layout.channels)
+            .toEqual([ 'front-left', 'front-right', 'front-center', 'back-left', 'back-right' ]);
     });
 
     it('qualifies FFmpeg\'s height layouts by their masks, in ascending speaker bit order', () => {

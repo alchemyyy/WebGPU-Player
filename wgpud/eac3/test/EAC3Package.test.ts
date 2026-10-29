@@ -21,24 +21,27 @@ import {
     CUSTOM_WAVE_CHANNEL_MASK_FIVE_POINT_ONE_POINT_FOUR,
     CUSTOM_WAVE_CHANNEL_MASK_FIVE_POINT_ONE_POINT_TWO,
     CUSTOM_WAVE_CHANNEL_MASK_FIVE_POINT_ONE_SIDE,
+    CUSTOM_WAVE_CHANNEL_MASK_FIVE_POINT_ZERO_SIDE,
     CUSTOM_WAVE_CHANNEL_MASK_SEVEN_POINT_ONE,
     CUSTOM_WAVE_CHANNEL_MASK_SEVEN_POINT_ONE_POINT_FOUR,
     CUSTOM_WAVE_CHANNEL_MASK_SEVEN_POINT_ONE_POINT_TWO,
     CUSTOM_WAVE_CHANNEL_MASK_STEREO
 } from 'webgpu-player/audio/processing/CustomWaveChannelLayout';
 import { createNativeMediaAudioProbeVector } from 'webgpu-player/capability/vectors/NativeMediaAudioCapabilityVectors';
+import { matchesNativeAudioChannelTones, type NativeAudioChannelTone } from 'webgpu-player/capability/NativeAudioChannelTones';
 import type { Microseconds } from 'webgpu-player/MediaTime';
 import { requireMicroseconds } from 'webgpu-player/TimeMath';
 
 import {
     catchFailure,
     getAudioDecoderErrorCode,
+    joinBlockPlanes,
     readContainerAudioPackets,
     requireDecodedBlocks,
     type EncodedAudioPacket
 } from '../../../test/helpers/audioDecoderPackageResults';
 import { loadDecoderProjectAudioSource } from '../../../test/helpers/decoderPackages';
-import { DECODERS_DIRECTORY } from '../../../test/helpers/enginePaths';
+import { DECODERS_DIRECTORY, TEST_VECTORS_DIRECTORY } from '../../../test/helpers/enginePaths';
 
 const PROJECT = 'eac3';
 // The codecs the package decodes, by the names its manifest gives them, and one it does not
@@ -95,6 +98,17 @@ const TOP_CHANNEL_BITS = [ 0x1000, 0x4000, 0x8000, 0x20000 ];
 const SEVEN_POINT_ONE_POINT_FOUR_CHANNEL_COUNT = 12;
 // The energy of the difference a JOC matrix held over one lost frame leaves in the two frames after it, relative to the signal's
 const MAXIMUM_HELD_MATRIX_ERROR = 0.01;
+// FFmpeg's AC-3 encode of five syncframes of 5.0(side) and then five of 5.1(side), one sine per channel, in one Matroska track (its PROVENANCE.txt)
+const FIVE_POINT_ZERO_THEN_FIVE_POINT_ONE_FILE = join(TEST_VECTORS_DIRECTORY, 'ac3', 'ac3-5.0-then-5.1.mka');
+const FIVE_POINT_ZERO_SYNCFRAME_COUNT = 5;
+// The vector's tones in WAVE order; its encoder keeps each at about its 0.25 amplitude, and an LFE at least a tenth of that
+const TONE_MINIMUM_AMPLITUDE = 0.125;
+const LFE_TONE: NativeAudioChannelTone = { frequency: 60, minimumAmplitude: 0.025 };
+const FIVE_POINT_ZERO_TONES: readonly NativeAudioChannelTone[] = [ 400, 600, 800, 1_000, 1_200 ].map(frequency => ({
+    frequency,
+    minimumAmplitude: TONE_MINIMUM_AMPLITUDE
+}));
+const FIVE_POINT_ONE_TONES: readonly NativeAudioChannelTone[] = [ ...FIVE_POINT_ZERO_TONES.slice(0, 3), LFE_TONE, ...FIVE_POINT_ZERO_TONES.slice(3) ];
 
 /** FFmpeg's decode of a vector: its layout, and the frame count and SHA-256 of its interleaved 32-bit float PCM. */
 type KnownAnswer = Readonly<{ channelCount: number, channelMask: number, file: string, frameCount: number, pcmSHA256: string }>;
@@ -292,6 +306,24 @@ describe('the E-AC-3 package on AudioDecoderPackageInstance', () => {
             block.channelMask === CUSTOM_WAVE_CHANNEL_MASK_FIVE_POINT_ONE_SIDE
             && block.channelData.length === FIVE_POINT_ONE_CHANNEL_COUNT
         ))).toBe(true);
+        instance.close();
+    });
+
+    it('decodes AC-3 3/2 as 5.0(side), and the 3/2 with LFE after it as 5.1(side), with every channel in its WAVE place', async () => {
+        const packets = await readContainerAudioPackets(new Uint8Array(readFileSync(FIVE_POINT_ZERO_THEN_FIVE_POINT_ONE_FILE)));
+        const instance = await AudioDecoderPackageInstance.create(source, AC3_CODEC);
+
+        const blocks = packets.flatMap(packet => requireDecodedBlocks(instance.decode(packet.data, packet.timestampMicroseconds)));
+        const fivePointZeroBlocks = blocks.slice(0, FIVE_POINT_ZERO_SYNCFRAME_COUNT);
+        const fivePointOneBlocks = blocks.slice(FIVE_POINT_ZERO_SYNCFRAME_COUNT);
+
+        expect(blocks.map(block => block.channelMask)).toEqual([
+            ...fivePointZeroBlocks.map(() => CUSTOM_WAVE_CHANNEL_MASK_FIVE_POINT_ZERO_SIDE),
+            ...fivePointOneBlocks.map(() => CUSTOM_WAVE_CHANNEL_MASK_FIVE_POINT_ONE_SIDE)
+        ]);
+        expect(fivePointOneBlocks).toHaveLength(FIVE_POINT_ZERO_SYNCFRAME_COUNT);
+        expect(matchesNativeAudioChannelTones(joinBlockPlanes(fivePointZeroBlocks), SAMPLE_RATE, FIVE_POINT_ZERO_TONES)).toBe(true);
+        expect(matchesNativeAudioChannelTones(joinBlockPlanes(fivePointOneBlocks), SAMPLE_RATE, FIVE_POINT_ONE_TONES)).toBe(true);
         instance.close();
     });
 

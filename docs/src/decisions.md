@@ -932,7 +932,7 @@ These were settled on Firefox 157 on Windows.
   Peak-normalized Lo/Ro and RFC 7845 renormalize those weights to sum to one, because the six-channel normalization left a full-scale 3.0 bed 3 dB and 0.88 dB low; RFC 7845 3.0 then equals opusfile's matrix.
   Every fold-down runs the limiter: a stereo downmix, an output speaker that sums channels, and a block a package rendered from objects, which it sums without a limiter of its own (revised 10-28; before, a source with more channels than the output, which missed 5.1.2 on 7.1).
 - The output follows the source layout (10-07).
-  Three channels and 5.1 use a 5.1 output when the device has six channels; 6.1 and 7.1 use a 7.1 output with eight, or fold into 5.1 with six; anything else mixes to stereo.
+  Three channels, 5.0, and 5.1 use a 5.1 output when the device has six channels; 6.1 and 7.1 use a 7.1 output with eight, or fold into 5.1 with six; anything else mixes to stereo.
   Before 10-07, a three-channel source, and 7.1 on a six-channel device, mixed to stereo.
   A live switch applies the rule to the layout the decoder reported (`audio-source-format`), not to the container's declaration, which can under-declare E-AC-3 7.1.
   Until a track decodes PCM, the host's request, which follows Jellyfin's count, stands.
@@ -946,6 +946,12 @@ These were settled on Firefox 157 on Windows.
   AC-3 mono plays.
   A profile condition cannot express ChannelLayout, so any other three-channel layout, a 2.1 FLAC or WAV for example, is negotiated, fails eligibility when playback starts, and plays through the HTML player or renegotiates to a transcode.
   E-AC-3 and TrueHD admit mono only.
+- 5.0 beds play (10-29).
+  Five channels had no layout, so a true 5.0 AC-3 or DTS track transcoded, and a Matroska AC-3 track whose header declared its first frame's five channels, a 3/2 bed that gains its LFE a second in, failed at preparation as `source-unsupported`.
+  Five channels without a speaker mask now lay out as FFmpeg's 5.0(side), FL FR FC SL SR (`0x607`), as six lay out as its 5.1(side), and a mask also qualifies 5.0(back) (`0x37`).
+  A 5.0 bed maps by name into a 5.1 output with a silent LFE, and mixes to stereo as that 5.1 through the selected algorithm, as a height layout mixes through its floor.
+  FFmpeg's AC-3 encode of five syncframes of 3/2 and then five of 3/2 with LFE, one tone per channel, decodes through the `eac3` package to `0x607` and then `0x60F` blocks with every tone in its WAVE place (`src/capability/vectors/test/ac3/`), and the output stage rebinds from five channels to six on one timeline.
+  AC-3 therefore admits five channels; a 3/1 or 2/2 bed with an LFE also has five, reports a mask with no layout, and fails its attempt as `decode-failed`.
 - E-AC-3 7.1 needs the layout, not only the channel count: the decoder must report the decoded channel layout (`9ca70e11ad`).
   Eligibility also required a declared `7.1` layout until E-AC-3 became a package codec (10-13); a package reports every block's mask, which now decides alone.
 - The DTS envelope, until 10-13.

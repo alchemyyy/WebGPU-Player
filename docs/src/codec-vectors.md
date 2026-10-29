@@ -517,6 +517,7 @@ They and both AV1 Dolby Vision generators take an option for each tool they run:
 | --- | --- |
 | `src/capability/vectors/qualification/vc1/` | The VC-1 Advanced stream that the `vc1` decoder project's vector holds |
 | `src/capability/vectors/test/dts/` | Public-domain dcadec samples, packet tables, and reference WAVs (`PROVENANCE.txt`) |
+| `src/capability/vectors/test/ac3/` | FFmpeg's AC-3 encode of a 3/2 bed that gains its LFE, one tone per channel, for the `eac3` package's 5.0 and 5.1 layouts (`PROVENANCE.txt`) |
 | `src/capability/vectors/test/truehd/` | A Matroska remux of one generated TrueHD stream (`PROVENANCE.txt`) |
 | `src/capability/vectors/test/dolby-vision-rpu/` | RPU payloads, copied unmodified from dovi_tool `assets/tests` (MIT), for the RPU parser, color transform, and Dolby Vision integration tests and the AV1 Dolby Vision generators |
 | `src/capability/vectors/test/hdr10plus-tool/` | x265's `--dhdr10-opt` HDR10+ profile A sample and the metadata hdr10plus_tool extracts from it, copied unmodified from hdr10plus_tool `assets/hevc_tests` (MIT, `PROVENANCE.txt` pins the commit and SHA-256s), for the HDR10+ parser and carry tests |

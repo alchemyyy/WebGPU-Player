@@ -247,7 +247,7 @@ The backing size is the CSS size times the device pixel ratio, capped by `maxTex
   If the source is no longer eligible, the session renegotiates; otherwise it restarts as a seek at the current time.
   Downmix gain changes apply live with a 20 ms ramp.
 - Audio output layout switch (`controller.reconfigureAudioOutput`): a new device layout, force stereo, or a new downmix algorithm restarts only decoded audio while video keeps playing.
-  The requested layout applies whole to a source a package renders as objects (`audioRendersObjects`); for any other source its floor is a ceiling applied to the decoded source layout, which the worker reports with `audio-source-format`: three channels and 5.1 take 5.1, 6.1 and 7.1 take 7.1 or fold into 5.1, and anything else mixes to stereo.
+  The requested layout applies whole to a source a package renders as objects (`audioRendersObjects`); for any other source its floor is a ceiling applied to the decoded source layout, which the worker reports with `audio-source-format`: three channels, 5.0, and 5.1 take 5.1, 6.1 and 7.1 take 7.1 or fold into 5.1, and anything else mixes to stereo.
   A request that keeps the layout only records its downmix for later restarts, and a newer request replaces a pending switch.
   A binaural headphone change that keeps the layout switches live: `session.updateAudioBinaural` reaches the attempt's package as `renderBinaural` before its next packet.
   1. The controller stops the output and picks a target 250 ms ahead of the clock (the current time when paused or waiting on an audio underflow).

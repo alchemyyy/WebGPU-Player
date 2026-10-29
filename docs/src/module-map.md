@@ -278,7 +278,7 @@ The package file that both halves share (see [Decoder packages](decoder-packages
 - `CustomAudioSampleRate.ts`: the sample rate contract, any positive integer.
 - `CustomCompressedAudioRoute.ts`: the E-AC-3, DTS, and TrueHD route tables that the input channel counts derive from, the DTS direct-play profiles, and the TrueHD rate rule.
 - `CustomAudioOutputPolicy.ts`: input channels per codec, the 3.0 layout requirement for decoders without a speaker mask, and the 48 kHz 2, 6, and 8-channel output contract with its 2 s ring.
-- `NativeMultichannelAudioOutput.ts`: the speaker layout setting (`selectCustomAudioSpeakerLayout`) and the output layout rule (`selectCustomAudioOutputLayout`: objects take the whole layout; otherwise three channels and 5.1 to 5.1, 6.1 and 7.1 to 7.1 or 5.1, else stereo).
+- `NativeMultichannelAudioOutput.ts`: the speaker layout setting (`selectCustomAudioSpeakerLayout`) and the output layout rule (`selectCustomAudioOutputLayout`: objects take the whole layout; otherwise three channels, 5.0, and 5.1 to 5.1, 6.1 and 7.1 to 7.1 or 5.1, else stereo).
 - `AudioNormalization.ts`: TrackGain and AlbumGain decibels to linear gain.
 - `AudioSampleWindow.ts`: PCM windowing at a seek.
 - `SafeIntegerValidation.ts`: the positive safe integer check the audio modules share.
@@ -290,7 +290,7 @@ The package file that both halves share (see [Decoder packages](decoder-packages
 - `AudioOutputStageModule.ts` [worker]: the `audio-output-stage` WebAssembly module, loaded once per audio decode worker on its first attempt, with a once-warned fallback to the reference when it does not load, and its resampler and limiter kernels, freed on finalize, on close, or after their owner is collected.
 - `PCMChannelPool.ts` [worker]: the spare channel buffers the worklet returns, each sized for the largest chunk, which the output stage writes later chunks into.
 - `DecodedAudioOutputStage.ts` [worker]: binds one audio attempt's output stage to the decoded rate and layout, checks them against the decoded PCM routes, and reports each bound format; `close` frees a stopped attempt's kernels.
-- `CustomAudioDownmix.ts`, `CustomAudioDownmixAlgorithm.ts`, `CustomAudioChannelLayout.ts`, `CustomWaveChannelLayout.ts`: downmix matrices per algorithm (three-channel beds have their own), algorithm IDs, layout tables with the output layouts (stereo, 5.1, 7.1, 5.1.2, 5.1.4, 7.1.2, 7.1.4) and by-name mapping and height folds into them, and WAVE mask mapping.
+- `CustomAudioDownmix.ts`, `CustomAudioDownmixAlgorithm.ts`, `CustomAudioChannelLayout.ts`, `CustomWaveChannelLayout.ts`: downmix matrices per algorithm (three-channel beds have their own), algorithm IDs, layout tables with the output layouts (stereo, 5.1, 7.1, 5.1.2, 5.1.4, 7.1.2, 7.1.4) and by-name mapping and height folds into them, a 5.0 bed's mix through 5.1, and WAVE mask mapping.
 
 ### audio/output/
 

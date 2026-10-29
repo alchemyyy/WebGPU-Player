@@ -1,5 +1,6 @@
 import {
     CUSTOM_FIVE_POINT_ONE_INPUT_CHANNEL_COUNT,
+    CUSTOM_FIVE_POINT_ZERO_INPUT_CHANNEL_COUNT,
     CUSTOM_SEVEN_POINT_ONE_INPUT_CHANNEL_COUNT,
     CUSTOM_SIX_POINT_ONE_INPUT_CHANNEL_COUNT,
     CUSTOM_STEREO_OUTPUT_CHANNEL_COUNT,
@@ -57,7 +58,7 @@ export function selectCustomAudioSpeakerLayout(
 /**
  * Selects the output layout of a source within the chosen speaker layout.
  * A source a package renders as objects plays to the whole speaker layout.
- * Every other source plays within the speaker layout's floor: three-channel and 5.1 sources take 5.1, and 6.1 and 7.1 sources take 7.1 or fold into 5.1;
+ * Every other source plays within the speaker layout's floor: three-channel, 5.0, and 5.1 sources take 5.1, and 6.1 and 7.1 sources take 7.1 or fold into 5.1;
  * other sources, and floors too small for theirs, mix to stereo.
  */
 export function selectCustomAudioOutputLayout(
@@ -71,6 +72,7 @@ export function selectCustomAudioOutputLayout(
     const floor = getCustomAudioOutputFloorLayout(speakerLayout);
     switch (sourceChannelCount) {
         case CUSTOM_THREE_CHANNEL_INPUT_CHANNEL_COUNT:
+        case CUSTOM_FIVE_POINT_ZERO_INPUT_CHANNEL_COUNT:
         case CUSTOM_FIVE_POINT_ONE_INPUT_CHANNEL_COUNT:
             return floor === 'stereo' ? 'stereo' : '5.1';
         case CUSTOM_SIX_POINT_ONE_INPUT_CHANNEL_COUNT:

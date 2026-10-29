@@ -32,6 +32,21 @@ export function requireDecodedBlocks(result: AudioDecoderPackageResult): readonl
     return result.blocks;
 }
 
+/** Joins consecutive blocks of one layout into one plane per channel. */
+export function joinBlockPlanes(blocks: readonly AudioDecoderPackageBlock[]): Float32Array[] {
+    const channelCount = blocks[0]?.channelData.length ?? 0;
+    const frameCount = blocks.reduce((sum, block) => sum + block.frameCount, 0);
+    return Array.from({ length: channelCount }, (_unused, channelIndex) => {
+        const plane = new Float32Array(frameCount);
+        let offset = 0;
+        for (const block of blocks) {
+            plane.set(block.channelData[channelIndex], offset);
+            offset += block.frameCount;
+        }
+        return plane;
+    });
+}
+
 /** Returns the code a manifest gives an error name. */
 export function getAudioDecoderErrorCode(manifest: AudioDecoderManifest, name: string): number {
     const code = [ ...manifest.errors ].find(([ , errorName ]) => errorName === name)?.[0];

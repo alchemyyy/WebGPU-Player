@@ -2,9 +2,11 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
     CUSTOM_FIVE_POINT_ONE_CHANNEL_LAYOUT,
+    CUSTOM_FIVE_POINT_ZERO_CHANNEL_LAYOUT,
     CUSTOM_STEREO_CHANNEL_LAYOUT,
     CUSTOM_THREE_POINT_ZERO_BACK_CHANNEL_LAYOUT,
     CUSTOM_THREE_POINT_ZERO_CHANNEL_LAYOUT,
+    prepareCustomAudioOutputChannelData,
     type CustomAudioOutputLayout
 } from 'webgpu-player/audio/processing/CustomAudioChannelLayout';
 import DecodedAudioOutputStage, {
@@ -246,5 +248,56 @@ describe('DecodedAudioOutputStage', () => {
 
         expect(binding.layout).toBe(CUSTOM_THREE_POINT_ZERO_BACK_CHANNEL_LAYOUT);
         expect(stage.getTelemetry()?.peakLimiterEnabled).toBe(false);
+    });
+
+    it('binds an AC-3 5.0(side) stretch and rebinds when the track gains its LFE, on one timeline without a fold-down', () => {
+        const { sourceFormats, stage } = createRecordingStage('ac3', '5.1');
+        // FL, FR, FC, LFE, SL, SR levels; the 5.0 stretch has no LFE
+        const levels = [ 0.1, 0.2, 0.3, 0.4, 0.5, 0.6 ];
+        const fivePointZeroLevels = [ ...levels.slice(0, 3), ...levels.slice(4) ];
+        const fivePointZeroBinding = stage.bind({ channelCount: 5, layout: CUSTOM_FIVE_POINT_ZERO_CHANNEL_LAYOUT, sampleRate: 48_000 }, null);
+        const outputs = fivePointZeroBinding.pipeline.push({
+            channelData: prepareCustomAudioOutputChannelData(
+                fivePointZeroLevels.map(level => new Float32Array(4_800).fill(level)),
+                fivePointZeroBinding.layout,
+                '5.1'
+            ),
+            mediaTimeMicroseconds: requireMicroseconds(1_000_000)
+        });
+
+        const fivePointOneBinding = stage.bind({ channelCount: 6, layout: CUSTOM_FIVE_POINT_ONE_CHANNEL_LAYOUT, sampleRate: 48_000 }, null);
+        outputs.push(...fivePointOneBinding.outputs);
+        outputs.push(...fivePointOneBinding.pipeline.push({
+            channelData: prepareCustomAudioOutputChannelData(
+                levels.map(level => new Float32Array(4_800).fill(level)),
+                fivePointOneBinding.layout,
+                '5.1'
+            ),
+            mediaTimeMicroseconds: requireMicroseconds(1_100_000)
+        }));
+        outputs.push(...stage.finalize());
+
+        expect(fivePointZeroBinding.layout).toBe(CUSTOM_FIVE_POINT_ZERO_CHANNEL_LAYOUT);
+        expect(fivePointOneBinding.pipeline).toBe(fivePointZeroBinding.pipeline);
+        expect(sourceFormats).toEqual([
+            { channelCount: 5, sampleRate: 48_000 },
+            { channelCount: 6, sampleRate: 48_000 }
+        ]);
+        expect(stage.getTelemetry()?.peakLimiterEnabled).toBe(false);
+        expect(getOutputFrameCount(outputs)).toBe(9_600);
+        expectBridgeContinuity(outputs);
+        // Each speaker keeps its own level, and the LFE stays silent until the track carries one
+        const firstOutput = outputs[0];
+        const lastOutput = outputs[outputs.length - 1];
+        expect(firstOutput.channelData.map(channel => channel[0])).toEqual([ 0.1, 0.2, 0.3, 0, 0.5, 0.6 ].map(Math.fround));
+        expect(lastOutput.channelData.map(channel => channel[lastOutput.frameCount - 1])).toEqual(levels.map(Math.fround));
+    });
+
+    it('limits a 5.0 stretch that folds down to a stereo output', () => {
+        const { stage } = createRecordingStage('ac3', 'stereo');
+
+        stage.bind({ channelCount: 5, layout: null, sampleRate: 48_000 }, null);
+
+        expect(stage.getTelemetry()?.peakLimiterEnabled).toBe(true);
     });
 });

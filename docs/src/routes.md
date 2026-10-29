@@ -257,7 +257,7 @@ MPEG-1, H.263, MS-MPEG4, VP8, VP9, and AV1 have no interlaced coding.
   | --- | --- |
   | PCM | 1, 2, 3, 6 (3 needs a `3.0` layout) |
   | aac, flac, opus, vorbis | 1, 2, 3, 6, 8 (3 needs a `3.0` layout; 6 needs the codec's 5.1 verdict and 8 its 7.1 verdict) |
-  | ac3 | 1, 2, 6 (2/1 and 3/0 both arrive as `3.0`, and no evidence covers either) |
+  | ac3 | 1, 2, 5, 6 (2/1 and 3/0 both arrive as `3.0`, and no evidence covers either; 5 is 3/2, `5.0(side)`) |
   | eac3 | 1, 2, 6, 8 |
   | mp3 | 1, 2 |
   | dts | 1, 2, 3, 6, 8 |
@@ -280,10 +280,10 @@ MPEG-1, H.263, MS-MPEG4, VP8, VP9, and AV1 have no interlaced coding.
   Past 192 kHz the resampler's kernel widens in proportion, so its band edge stays as sharp as at 192 kHz.
   A browser decoder judges its own rates per item, and a rate it refuses falls back.
 - Output layout (`audio/NativeMultichannelAudioOutput.ts`): `selectCustomAudioSpeakerLayout` resolves the host's speaker layout setting on `destination.maxChannelCount`: `auto` takes 7.1.4 from 12 channels, 7.1.2 from 10, 7.1 from 8, 5.1 from 6, else stereo; an explicit stereo, 5.1, 7.1, 5.1.2, 5.1.4, 7.1.2, or 7.1.4 needs a destination with its channels, else resolves as `auto`.
-  `selectCustomAudioOutputLayout` then gives a source a package renders as objects the whole speaker layout, and every other source the floor rule within the layout's floor: three channels and 5.1 take 5.1, 6.1 and 7.1 take 7.1 or fold into 5.1, everything else downmixes to stereo with the selected algorithm.
+  `selectCustomAudioOutputLayout` then gives a source a package renders as objects the whole speaker layout, and every other source the floor rule within the layout's floor: three channels, 5.0, and 5.1 take 5.1, 6.1 and 7.1 take 7.1 or fold into 5.1, everything else downmixes to stereo with the selected algorithm.
   A host may force stereo.
   A live layout switch applies the same rule to the decoded layout.
-  The output plays 2, 6, 8, 10, or 12 channels in WAVE order (5.1 in Web Audio's order); a decoded layout maps by channel name, a height the output lacks folds into the floor pair beneath it, and a height layout mixes to stereo through its folded floor.
+  The output plays 2, 6, 8, 10, or 12 channels in WAVE order (5.1 in Web Audio's order); a decoded layout maps by channel name, a 5.0 bed fills 5.1 without its LFE and mixes to stereo as that 5.1, a height the output lacks folds into the floor pair beneath it, and a height layout mixes to stereo through its folded floor.
 
 ## Gotchas
 

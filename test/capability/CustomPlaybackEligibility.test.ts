@@ -1821,6 +1821,24 @@ describe('CustomPlaybackEligibility', () => {
         }
     );
 
+    it.each([
+        { channelCount: 4, expected: { eligible: false, reason: 'audio-layout-unsupported' } },
+        { channelCount: 5, expected: { audioOutputMode: 'decoded-pcm', audioSourceChannelCount: 5, eligible: true } },
+        { channelCount: 6, expected: { audioOutputMode: 'decoded-pcm', audioSourceChannelCount: 6, eligible: true } }
+    ])('decodes $channelCount-channel AC-3 on its package as the 3/2 bed decodes, with and without its LFE', ({ channelCount, expected }) => {
+        const options = createOptions();
+        const mediaSource = options.mediaSource as {
+            MediaStreams: Array<Record<string, unknown>>
+        };
+        mediaSource.MediaStreams[1] = { ...mediaSource.MediaStreams[1], Channels: channelCount, Codec: 'ac3', SampleRate: 48_000 };
+
+        expect(getCustomPlaybackEligibility(
+            options,
+            createCapabilities(),
+            { allowRawHDR: false, audioDecoders: AUDIO_PACKAGES, runtimeAvailability: AVAILABLE_RUNTIME }
+        )).toMatchObject(expected);
+    });
+
     it.each([ 8, 16, 20, 24, 32 ])(
         'accepts qualified stereo FLAC independently of its %i-bit source depth',
         bitDepth => {
