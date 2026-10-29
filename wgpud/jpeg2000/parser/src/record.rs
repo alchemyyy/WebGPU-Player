@@ -368,6 +368,7 @@ pub fn assemble_record(size: &ImageSize, tile_count: usize, layout: &OutputLayou
     record.set(HEADER_CHROMA_FORMAT, layout.chroma_format);
     record.set(HEADER_OUTPUT_BIT_DEPTH, layout.bit_depth);
     record.set(HEADER_FORMAT_ERROR, layout.format_error);
+    record.set(HEADER_OUTPUT_TRANSFORM, layout.output_transform);
     record.set(HEADER_TILE_COLUMNS, size.tile_columns);
     record.set(HEADER_TILE_ROWS, size.tile_rows);
     record.set(HEADER_TILE_WIDTH, size.tile_width as u32);

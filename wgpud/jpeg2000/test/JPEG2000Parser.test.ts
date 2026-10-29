@@ -38,6 +38,12 @@ const COLOUR_SPACE_ERROR = 'colourSpace';
 // The colourSpace value of the RGB formats FFmpeg picks for a 4:4:4 codestream without colour
 const RGB_FAMILY = 1;
 const ERROR_CODE_SHIFT = 24;
+// A codestream's Rsiz, its capabilities, after SOC, the SIZ marker, and Lsiz; the Digital Cinema 2K profile makes FFmpeg read XYZ
+const RSIZ_OFFSET = 6;
+const DIGITAL_CINEMA_2K_PROFILE = 3;
+// The 4:4:4 12-bit format an XYZ picture's output stage writes
+const CHROMA_FORMAT_444 = 3;
+const TWELVE_BITS = 12;
 
 // A JP2 signature box, which promises a codestream box after it
 const JP2_SIGNATURE = [ 0x00, 0x00, 0x00, 0x0C, 0x6A, 0x50, 0x20, 0x20, 0x0D, 0x0A, 0x87, 0x0A ];
@@ -373,6 +379,22 @@ describe('GPUDecoderParserInstance on the JPEG 2000 package\'s parser', () => {
 
         expect(readHeaderField(unspecified, 'FORMAT_ERROR')).toBe(((requireErrorCode(COLOUR_SPACE_ERROR) << ERROR_CODE_SHIFT) | RGB_FAMILY) >>> 0);
         expect(readHeaderField(kept, 'FORMAT_ERROR')).toBe(0);
+    });
+
+    it('reads a Digital Cinema codestream as FFmpeg does: XYZ, which the record marks for the output stage\'s conversion at 4:4:4 and 12 bits', async () => {
+        const sample = new Uint8Array(requireVector('I444P12').packets[0].data);
+        const cinema = extractCodestream(sample);
+        new DataView(cinema.buffer, cinema.byteOffset).setUint16(RSIZ_OFFSET, DIGITAL_CINEMA_2K_PROFILE);
+        const instance = await GPUDecoderParserInstance.create(jpeg2000Parser);
+        const xyz = requireRecord(instance.decode(cinema));
+        instance.destroy();
+        const yuvInstance = await GPUDecoderParserInstance.create(jpeg2000Parser);
+        const yuv = requireRecord(yuvInstance.decode(sample));
+        yuvInstance.destroy();
+
+        expect([ 'FORMAT_ERROR', 'OUTPUT_TRANSFORM', 'CHROMA_FORMAT', 'OUTPUT_BIT_DEPTH' ].map(name => readHeaderField(xyz, name)))
+            .toEqual([ 0, requireRecordField('OUTPUT_TRANSFORM_XYZ'), CHROMA_FORMAT_444, TWELVE_BITS ]);
+        expect(readHeaderField(yuv, 'OUTPUT_TRANSFORM')).toBe(requireRecordField('OUTPUT_TRANSFORM_NONE'));
     });
 
     it('starts over after a reset, forgetting the format a bare codestream would keep', async () => {

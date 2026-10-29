@@ -50,13 +50,14 @@
 // Its packets are the GPU records its CPU parser (parser/) makes of each codestream: the parser reads the headers and runs tier-2,
 // so every code block arrives with its coded bytes, pass count, and dequantization; these passes then run tier-1 with one invocation per code block,
 // the inverse wavelet level by level, the inverse component transform, and the DC level shift into the output planes.
+// A Digital Cinema XYZ picture, which FFmpeg decodes to xyz12, leaves through FFmpeg's XYZ to RGB conversion as limited-range BT.709 Y'CbCr.
 // Wavelet levels whose region fits SMALL_LEVEL_SIZE samples on both axes run in one workgroup per tile-component; each larger level
 // dispatches its horizontal and vertical passes over every tile-component that has it, as many times as the largest stream allows.
 
 // The GPU record the parser writes for each picture: its magic and version, then word offsets of its tables.
 // parser/build.rs reads these RECORD_ declarations and the ERROR_ codes below, so the parser and the passes share one layout
 const RECORD_MAGIC: u32 = 1380659786u;
-const RECORD_VERSION: u32 = 1u;
+const RECORD_VERSION: u32 = 2u;
 const RECORD_MAXIMUM_BYTE_LENGTH: u32 = 33554432u;
 // The largest picture the header accepts, past which the parser fails a codestream before any tier-2 work
 const RECORD_MAXIMUM_PICTURE_SIDE: u32 = 8192u;
@@ -89,8 +90,12 @@ const RECORD_HEADER_SMALL_JOB_TABLE: u32 = 24u;
 const RECORD_HEADER_SMALL_JOB_COUNT: u32 = 25u;
 const RECORD_HEADER_BIG_ITERATION_TABLE: u32 = 26u;
 const RECORD_HEADER_BIG_ITERATION_COUNT: u32 = 27u;
-const RECORD_HEADER_PLANES: u32 = 28u;
-const RECORD_HEADER_WORDS: u32 = 55u;
+const RECORD_HEADER_OUTPUT_TRANSFORM: u32 = 28u;
+const RECORD_HEADER_PLANES: u32 = 29u;
+const RECORD_HEADER_WORDS: u32 = 56u;
+// The conversion the output stage applies: none, or an XYZ picture's, whose planes hold X', Y', and Z' and which it writes as BT.709 Y'CbCr
+const RECORD_OUTPUT_TRANSFORM_NONE: u32 = 0u;
+const RECORD_OUTPUT_TRANSFORM_XYZ: u32 = 1u;
 // An output plane: the component it shows, its size and origin as FFmpeg allocates and fills it, its subsampling, and its sample conversion
 const RECORD_PLANE_COMPONENT: u32 = 0u;
 const RECORD_PLANE_WIDTH: u32 = 1u;
@@ -319,6 +324,28 @@ const ICT_RED_FROM_CR: u32 = 26345u;
 const ICT_GREEN_FROM_CB: u32 = 22553u;
 const ICT_GREEN_FROM_CR: u32 = 46802u;
 const ICT_BLUE_FROM_CB: u32 = 4294952354u;
+// FFmpeg's conversion of XYZ to RGB (libswscale's xyz12Torgb48_c and ff_sws_fill_xyztables): each 12-bit X', Y', or Z' code through the
+// DCI gamma of 2.6 to 16-bit linear light, rounded, the 4.12 fixed-point XYZ to BT.709 RGB matrix, clipped to 16 bits, and the gamma of 1/2.2
+// back to a 12-bit R', G', or B' code, rounded
+const XYZ_CODE_MAXIMUM: f32 = 4095.0;
+const XYZ_LINEAR_MAXIMUM: f32 = 65535.0;
+const XYZ_LINEAR_MAXIMUM_CODE: i32 = 65535;
+const XYZ_DECODING_GAMMA: f32 = 2.6;
+const RGB_ENCODING_GAMMA: f32 = 1.0 / 2.2;
+const XYZ_MATRIX_SHIFT: u32 = 12u;
+const XYZ_TO_RED: vec3i = vec3i(13270, -6295, -2041);
+const XYZ_TO_GREEN: vec3i = vec3i(-3969, 7682, 170);
+const XYZ_TO_BLUE: vec3i = vec3i(228, -835, 4329);
+// The format an XYZ picture's planes take: 4:4:4 at 12 bits, as limited-range BT.709 Y'CbCr, luma from 256 over 3504 codes and chroma about
+// 2048 over 3584, as the engine expands a 12-bit limited-range signal
+const XYZ_CHROMA_FORMAT: u32 = 3u;
+const XYZ_BIT_DEPTH: u32 = 12u;
+const BT709_RED_WEIGHT: f32 = 0.2126;
+const BT709_BLUE_WEIGHT: f32 = 0.0722;
+const LIMITED_LUMA_BLACK: f32 = 256.0;
+const LIMITED_LUMA_RANGE: f32 = 3504.0;
+const LIMITED_CHROMA_CENTER: f32 = 2048.0;
+const LIMITED_CHROMA_RANGE: f32 = 3584.0;
 
 // FFmpeg's context tables: significance contexts by neighbour flags, four bits per band; sign contexts with the XOR bit at bit 4,
 // by the significance of N, E, W, S and their signs; and the MQ states by index * 2 + MPS: Qe, then the next MPS and LPS states
@@ -539,6 +566,12 @@ fn checkRecord() -> u32 {
     if (chromaFormat != OUTPUT_CHROMA_FORMAT || bitDepth != OUTPUT_BIT_DEPTH) {
         return errorWord(ERROR_OUTPUT_FORMAT, (chromaFormat << 8u) | bitDepth);
     }
+    // An XYZ picture converts the three planes at each position together, so it needs every plane, at 4:4:4 and 12 bits
+    let outputTransform = readRecord(RECORD_HEADER_OUTPUT_TRANSFORM);
+    let xyz = outputTransform == RECORD_OUTPUT_TRANSFORM_XYZ;
+    if (outputTransform > RECORD_OUTPUT_TRANSFORM_XYZ || (xyz && (chromaFormat != XYZ_CHROMA_FORMAT || bitDepth != XYZ_BIT_DEPTH))) {
+        return recordError(INVALID_TABLE);
+    }
     let width = readRecord(RECORD_HEADER_WIDTH);
     let height = readRecord(RECORD_HEADER_HEIGHT);
     if (width == 0u || height == 0u || width > stream.width || height > stream.height) {
@@ -551,7 +584,7 @@ fn checkRecord() -> u32 {
         }
         let divisorX = getPlaneField(plane, RECORD_PLANE_DIVISOR_X);
         let divisorY = getPlaneField(plane, RECORD_PLANE_DIVISOR_Y);
-        if (component != RECORD_MISSING && (divisorX == 0u || divisorY == 0u)) {
+        if ((component != RECORD_MISSING && (divisorX == 0u || divisorY == 0u)) || (xyz && component == RECORD_MISSING)) {
             return recordError(INVALID_TABLE);
         }
         if (getPlaneField(plane, RECORD_PLANE_WIDTH) > stream.planes[plane].width || getPlaneField(plane, RECORD_PLANE_HEIGHT) > stream.planes[plane].height) {
@@ -1615,7 +1648,57 @@ fn getOutputSample(plane: u32, x: u32, y: u32) -> u32 {
     return u32(shifted) << getPlaneField(plane, RECORD_PLANE_SHIFT);
 }
 
-// Writes one word of a plane row: four 8-bit or two 16-bit samples
+// FFmpeg's xyzgamma table entry of an X', Y', or Z' code: its 16-bit linear light, 0 for code 0, where pow is undefined
+fn decodeXYZGamma(code: u32) -> i32 {
+    if (code == 0u) {
+        return 0;
+    }
+    return i32(round(pow(f32(code) / XYZ_CODE_MAXIMUM, XYZ_DECODING_GAMMA) * XYZ_LINEAR_MAXIMUM));
+}
+
+// FFmpeg's rgbgamma table entry of 16-bit linear light, clipped first as its converter clips it: the R', G', or B' code, 0 for 0
+fn encodeRGBGamma(linear: i32) -> f32 {
+    let clipped = clamp(linear, 0, XYZ_LINEAR_MAXIMUM_CODE);
+    if (clipped == 0) {
+        return 0.0;
+    }
+    return round(pow(f32(clipped) / XYZ_LINEAR_MAXIMUM, RGB_ENCODING_GAMMA) * XYZ_CODE_MAXIMUM);
+}
+
+// One output sample of an XYZ picture: the R'G'B' FFmpeg's converter makes of the X', Y', and Z' planes at the position, as limited-range
+// BT.709 Y'CbCr at 12 bits, luma in plane 0, Cb in plane 1, and Cr in plane 2
+fn getXYZOutputSample(plane: u32, x: u32, y: u32) -> u32 {
+    let linear = vec3i(decodeXYZGamma(getOutputSample(0u, x, y)), decodeXYZGamma(getOutputSample(1u, x, y)), decodeXYZGamma(getOutputSample(2u, x, y)));
+    let rgb = vec3f(
+        encodeRGBGamma(dot(XYZ_TO_RED, linear) >> XYZ_MATRIX_SHIFT),
+        encodeRGBGamma(dot(XYZ_TO_GREEN, linear) >> XYZ_MATRIX_SHIFT),
+        encodeRGBGamma(dot(XYZ_TO_BLUE, linear) >> XYZ_MATRIX_SHIFT)
+    ) / XYZ_CODE_MAXIMUM;
+    let luma = BT709_RED_WEIGHT * rgb.r + (1.0 - BT709_RED_WEIGHT - BT709_BLUE_WEIGHT) * rgb.g + BT709_BLUE_WEIGHT * rgb.b;
+    var value: f32;
+    switch (plane) {
+        case 0u: {
+            value = LIMITED_LUMA_BLACK + LIMITED_LUMA_RANGE * luma;
+        }
+        case 1u: {
+            value = LIMITED_CHROMA_CENTER + LIMITED_CHROMA_RANGE * (rgb.b - luma) / (2.0 * (1.0 - BT709_BLUE_WEIGHT));
+        }
+        default: {
+            value = LIMITED_CHROMA_CENTER + LIMITED_CHROMA_RANGE * (rgb.r - luma) / (2.0 * (1.0 - BT709_RED_WEIGHT));
+        }
+    }
+    return u32(clamp(round(value), 0.0, XYZ_CODE_MAXIMUM));
+}
+
+// One sample of an output plane: FFmpeg's sample, or for an XYZ picture its conversion
+fn getConvertedSample(plane: u32, x: u32, y: u32) -> u32 {
+    if (readRecord(RECORD_HEADER_OUTPUT_TRANSFORM) == RECORD_OUTPUT_TRANSFORM_XYZ) {
+        return getXYZOutputSample(plane, x, y);
+    }
+    return getOutputSample(plane, x, y);
+}
+
+// Writes one word of a plane row: four 8-bit or two 16-bit samples; an XYZ picture is 12-bit, so only the 16-bit samples convert
 @compute @workgroup_size(64)
 fn writeOutput(@builtin(global_invocation_id) invocation: vec3u) {
     let plane = invocation.z;
@@ -1641,7 +1724,7 @@ fn writeOutput(@builtin(global_invocation_id) invocation: vec3u) {
     var samples = vec2u(0u);
     for (var lane = 0u; lane < 2u; lane += 1u) {
         if (firstSample + lane < width) {
-            samples[lane] = getOutputSample(plane, firstSample + lane, row);
+            samples[lane] = getConvertedSample(plane, firstSample + lane, row);
         }
     }
     writeOutputSamples16(plane, firstSample, row, samples);

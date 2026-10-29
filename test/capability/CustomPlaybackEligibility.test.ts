@@ -1371,6 +1371,74 @@ describe('CustomPlaybackEligibility', () => {
     );
 
     it.each([
+        [ 'untagged, as Jellyfin reports it', {}, 'mkv', true ],
+        [ 'tagged BT.709 limited range', { ColorPrimaries: 'bt709', ColorSpace: 'bt709', ColorTransfer: 'bt709' }, 'mkv', true ],
+        [ 'in MJ2', {}, 'mj2', true ],
+        [ 'tagged BT.2020 primaries, which the decoder\'s BT.709 Y\'CbCr would misstate', { ColorPrimaries: 'bt2020' }, 'mkv', false ],
+        [ 'tagged full range', { ColorRange: 'pc' }, 'mkv', false ],
+        [ 'a BitDepth other than its 12-bit samples', { BitDepth: 10 }, 'mkv', false ]
+    ] as const)('decodes Digital Cinema JPEG 2000 in X\'Y\'Z\' %s into 12-bit 4:4:4 on its package', (_label, metadataOverride, container, expectedEligible) => {
+        const options = createOptions();
+        const mediaSource = options.mediaSource as {
+            Container: string
+            MediaStreams: Array<Record<string, unknown>>
+        };
+        mediaSource.Container = container;
+        mediaSource.MediaStreams[0] = {
+            AverageFrameRate: 24,
+            BitDepth: 12,
+            Codec: 'jpeg2000',
+            Height: 858,
+            Index: 0,
+            IsInterlaced: false,
+            PixelFormat: 'xyz12le',
+            Profile: 'JPEG 2000 digital cinema 2K',
+            Type: 'Video',
+            VideoRange: 'SDR',
+            VideoRangeType: 'SDR',
+            Width: 2_048,
+            ...metadataOverride
+        };
+
+        const eligibility = getCustomPlaybackEligibility(
+            options,
+            createCapabilities(),
+            {
+                allowRawHDR: false,
+                gpuVideoDecoders: createVideoDecoderOffers(JPEG2000_PROJECT_VIDEO_PACKAGE),
+                runtimeAvailability: AVAILABLE_RUNTIME
+            }
+        );
+        if (expectedEligible) {
+            expect(eligibility).toMatchObject({ ...createPackageVideoRoute(JPEG2000_PROJECT_VIDEO_PACKAGE, 'jpeg2000'), rawVideoFrameFormat: 'I444P12' });
+        } else {
+            expect(eligibility.eligible).toBe(false);
+        }
+    });
+
+    it('takes X\'Y\'Z\' only from JPEG 2000, and only on a package that writes 12-bit 4:4:4', () => {
+        const options = createOptions();
+        const mediaSource = options.mediaSource as {
+            Container: string
+            MediaStreams: Array<Record<string, unknown>>
+        };
+        mediaSource.Container = 'mkv';
+        const stream = { BitDepth: 12, Height: 858, Index: 0, IsInterlaced: false, PixelFormat: 'xyz12le', Type: 'Video', VideoRangeType: 'SDR', Width: 2_048 };
+        const eligible = (codec: string, decoderPackage: VideoDecoderPackage): boolean => {
+            mediaSource.MediaStreams[0] = { ...stream, Codec: codec };
+            return getCustomPlaybackEligibility(options, createCapabilities(), {
+                allowRawHDR: false,
+                gpuVideoDecoders: createVideoDecoderOffers(decoderPackage),
+                runtimeAvailability: AVAILABLE_RUNTIME
+            }).eligible;
+        };
+
+        expect(eligible('jpeg2000', JPEG2000_PROJECT_VIDEO_PACKAGE)).toBe(true);
+        expect(eligible('jpeg2000', JPEG2000_DEEP_VIDEO_PACKAGE)).toBe(false);
+        expect(eligible('hevc', HEVC_VIDEO_PACKAGE)).toBe(false);
+    });
+
+    it.each([
         [ 'missing', undefined ],
         [ 'arbitrarily high', 1_500_000_000 ]
     ])('decodes HEVC Main that no native route takes on the HEVC decoder package with %s source bitrate', (_label, bitrate) => {

@@ -103,7 +103,8 @@ import {
     getGPUDecoderPixelFormatHolding,
     isGPUDecoderMonochromePixelFormat,
     isGPUDecoderOutputFormat,
-    type GPUDecoderOutputFormat
+    type GPUDecoderOutputFormat,
+    type GPUDecoderPixelFormatHolding
 } from '../decode/video/gpu/GPUDecodeFormats';
 import { findGPUDecoderStreamFitFailure } from '../decode/video/gpu/GPUDecoderStreamFit';
 import { createGPUDecodeStreamFacts } from '../decode/video/gpu/GPUFramePool';
@@ -1850,7 +1851,20 @@ function selectDolbyVisionVideoOutput(
     return selectGPUDolbyVisionVideoOutput(options, eligibilityOptions, videoCodec, videoStream, gpuVideoDecoderSummaries) ?? reconstructionSelection;
 }
 
-/** The planar format a GPU decoder writes for a stream: a range extension's own, else the one that holds its pixel format, else 4:2:0 at the stream's depth. */
+// FFmpeg's pixel format of Digital Cinema JPEG 2000, X'Y'Z' at 12 bits, which a JPEG 2000 package converts as FFmpeg's converter does and writes
+// as limited-range BT.709 Y'CbCr in the 12-bit 4:4:4 format
+const JPEG2000_XYZ_PIXEL_FORMAT = 'xyz12le';
+const JPEG2000_XYZ_HOLDING: GPUDecoderPixelFormatHolding = Object.freeze({ format: 'I444P12', sampleBitDepth: 12 });
+
+/** Returns whether a stream is Digital Cinema JPEG 2000, whose pixel format is X'Y'Z'. */
+function isJPEG2000XYZStream(videoCodec: CustomVideoCodec, stream: MediaStream): boolean {
+    return videoCodec === 'jpeg2000' && typeof stream.PixelFormat === 'string' && stream.PixelFormat.trim().toLowerCase() === JPEG2000_XYZ_PIXEL_FORMAT;
+}
+
+/**
+ * The planar format a GPU decoder writes for a stream: a range extension's own, else the one that holds its pixel format, or for JPEG 2000 X'Y'Z'
+ * the one its conversion writes, else 4:2:0 at the stream's depth.
+ */
 function getGPUDecodeOutputFormat(
     videoCodec: CustomVideoCodec,
     stream: MediaStream,
@@ -1875,7 +1889,7 @@ function getGPUDecodeOutputFormat(
         }
     }
     // The pixel format names the chroma subsampling, such as 4:2:2 MPEG-2, and a format no frame pool holds, such as RGB, has no route
-    const holding = getGPUDecoderPixelFormatHolding(pixelFormat);
+    const holding = isJPEG2000XYZStream(videoCodec, stream) ? JPEG2000_XYZ_HOLDING : getGPUDecoderPixelFormatHolding(pixelFormat);
     if (holding === null) {
         return null;
     }
@@ -1890,6 +1904,7 @@ function getGPUDecodeOutputFormat(
  * Selects a GPU decoder the host offers for the stream: the codec, the output format, the decoder's stream conditions over the pool's coded size,
  * and the device's limit on its frame pool, its state and scratch buffers, and its packet ring, so an offer the session would refuse is skipped.
  * A 4:0:0 stream, by its pixel format, goes only to a decoder whose header declares `monochrome`.
+ * A JPEG 2000 X'Y'Z' stream presents its decoder's limited-range BT.709 Y'CbCr as written only under BT.709 SDR metadata, which an untagged one takes.
  * Its HDR needs the host's tone mapping; no presentation authorization gates it, and whether a package was verified is the host's choice.
  * Without a fitting offer, a summary that takes the stream selects the route without a decoder, which only negotiation passes.
  */
@@ -1907,6 +1922,12 @@ function selectGPUVideoOutput(
         || (hdr && eligibilityOptions.allowFramePoolHDR !== true)
         || !isPositiveSafeInteger(videoStream.Width)
         || !isPositiveSafeInteger(videoStream.Height)
+    ) {
+        return null;
+    }
+    if (
+        isJPEG2000XYZStream(videoCodec, videoStream)
+        && (hdr || colorMetadata.matrix !== 'bt709' || colorMetadata.primaries !== 'bt709' || colorMetadata.range !== 'limited')
     ) {
         return null;
     }
