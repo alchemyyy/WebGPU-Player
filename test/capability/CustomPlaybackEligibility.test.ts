@@ -1702,6 +1702,92 @@ describe('CustomPlaybackEligibility', () => {
         });
     });
 
+    describe('external streams', () => {
+        const EMBEDDED_VIDEO_STREAM = {
+            BitDepth: 8,
+            Codec: 'h264',
+            Height: 1_080,
+            Index: 1,
+            IsExternal: false,
+            IsInterlaced: false,
+            Profile: 'High',
+            Type: 'Video',
+            VideoRangeType: 'SDR',
+            Width: 1_920
+        };
+        // Jellyfin numbers an external file's streams before the container's
+        const EXTERNAL_AUDIO_STREAM = { Channels: 2, Codec: 'aac', Index: 0, IsExternal: true, SampleRate: 48_000, Type: 'Audio' };
+
+        function createExternalAudioOptions(defaultAudioStreamIndex: number | null): unknown {
+            return createOptions({
+                mediaSource: {
+                    Container: 'mkv',
+                    DefaultAudioStreamIndex: defaultAudioStreamIndex,
+                    MediaStreams: [
+                        EXTERNAL_AUDIO_STREAM,
+                        EMBEDDED_VIDEO_STREAM,
+                        { Channels: 2, Codec: 'opus', Index: 2, IsExternal: false, SampleRate: 48_000, Type: 'Audio' },
+                        { Channels: 2, Codec: 'aac', Index: 3, SampleRate: 48_000, Type: 'Audio' }
+                    ],
+                    RunTimeTicks: 60_000_000
+                }
+            });
+        }
+
+        it.each([
+            { audioTrackIndex: 0, defaultAudioStreamIndex: 2 },
+            { audioTrackIndex: 1, defaultAudioStreamIndex: 3 }
+        ])('counts embedded audio stream $defaultAudioStreamIndex as container ordinal $audioTrackIndex past an external one', ({ audioTrackIndex, defaultAudioStreamIndex }) => {
+            expect(getCustomPlaybackEligibility(
+                createExternalAudioOptions(defaultAudioStreamIndex),
+                createCapabilities(),
+                { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
+            )).toMatchObject({ audioTrackIndex, eligible: true, videoTrackIndex: 0 });
+        });
+
+        it('refuses a selected external audio stream, which the container does not hold, rather than play an embedded one', () => {
+            expect(getCustomPlaybackEligibility(
+                createExternalAudioOptions(0),
+                createCapabilities(),
+                { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
+            )).toEqual({ eligible: false, reason: 'audio-track-external' });
+        });
+
+        it('takes the first audio stream by index without a selection, which an external one can be', () => {
+            expect(getCustomPlaybackEligibility(
+                createExternalAudioOptions(null),
+                createCapabilities(),
+                { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
+            )).toEqual({ eligible: false, reason: 'audio-track-external' });
+        });
+
+        it('selects the codec of the embedded audio stream, not the external one before it', () => {
+            expect(getPlaybackAudioCodec(createExternalAudioOptions(2))).toBe('opus');
+            expect(getPlaybackAudioCodec(createExternalAudioOptions(0))).toBeNull();
+        });
+
+        it('presents the first embedded video stream, past an external one of a codec no route plays', () => {
+            const options = createOptions({
+                mediaSource: {
+                    Container: 'mkv',
+                    DefaultAudioStreamIndex: 2,
+                    MediaStreams: [
+                        { ...EMBEDDED_VIDEO_STREAM, Codec: 'prores', Index: 0, IsExternal: true, Profile: 'HQ' },
+                        EMBEDDED_VIDEO_STREAM,
+                        { Channels: 2, Codec: 'opus', Index: 2, SampleRate: 48_000, Type: 'Audio' }
+                    ],
+                    RunTimeTicks: 60_000_000
+                }
+            });
+
+            expect(getCustomPlaybackEligibility(
+                options,
+                createCapabilities(),
+                { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME }
+            )).toMatchObject({ audioTrackIndex: 0, eligible: true, videoTrackIndex: 0 });
+        });
+    });
+
     it.each([
         { audioCodec: 'ac3', codec: 'ac3' },
         { audioCodec: 'AC-3', codec: 'ac3' },

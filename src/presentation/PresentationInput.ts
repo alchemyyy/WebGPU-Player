@@ -30,6 +30,8 @@ type MediaStreamMetadata = {
     /** The field order in ffprobe's names, which a host that knows it adds: progressive, tt, bb, tb, or bt */
     FieldOrder?: unknown
     Hdr10PlusPresentFlag?: unknown
+    /** Jellyfin lists the streams of an external file, which the container does not hold, beside the container's own */
+    IsExternal?: unknown
     IsInterlaced?: unknown
     RealFrameRate?: unknown
     RpuPresentFlag?: unknown
@@ -618,6 +620,17 @@ function parseDolbyVisionDescriptor(videoStream: MediaStreamMetadata): DolbyVisi
     };
 }
 
+/**
+ * Reports whether a MediaStream is one of the container's video tracks, whose ordinal the worker selects it by.
+ * Jellyfin also lists the streams of external files, which the container does not hold, so they take no ordinal.
+ */
+export function isContainerVideoStream(stream: unknown): boolean {
+    return stream !== null
+        && typeof stream === 'object'
+        && normalizeMetadataValue((stream as MediaStreamMetadata).Type) === 'VIDEO'
+        && (stream as MediaStreamMetadata).IsExternal !== true;
+}
+
 function getPlaybackVideoStreams(options: unknown): MediaStreamMetadata[] | null {
     if (!options || typeof options !== 'object') {
         return null;
@@ -626,17 +639,7 @@ function getPlaybackVideoStreams(options: unknown): MediaStreamMetadata[] | null
     if (!Array.isArray(mediaStreams)) {
         return null;
     }
-    const videoStreams: MediaStreamMetadata[] = [];
-    for (const stream of mediaStreams) {
-        if (
-            stream
-            && typeof stream === 'object'
-            && normalizeMetadataValue((stream as MediaStreamMetadata).Type) === 'VIDEO'
-        ) {
-            videoStreams.push(stream as MediaStreamMetadata);
-        }
-    }
-    return videoStreams;
+    return mediaStreams.filter(isContainerVideoStream) as MediaStreamMetadata[];
 }
 
 function selectDolbyVisionPresentation(videoStreams: readonly MediaStreamMetadata[]): DolbyVisionPresentationSelection | null {
