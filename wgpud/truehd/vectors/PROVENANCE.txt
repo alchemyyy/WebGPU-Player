@@ -1,0 +1,16 @@
+TrueHD Dolby Atmos test vector provenance
+
+fba_atmos_obj.mlp and fba_atmos_cbi.mlp are copied unmodified from truehd/tests/assets/ of https://github.com/truehdd/truehdd at commit 77ddc52e6ab41c59d8964cfe8e44140afa82342c.
+LICENSE is the license file of that commit: the Apache License, Version 2.0, Copyright 2025 Rainbaby.
+
+SHA-256:
+
+  ba9b095c1e1f9efbd962fcc926c56225660c6b225223b19c8b64d13c10c52041  fba_atmos_obj.mlp
+  4bb63a8e0e0b2ae86d4dd58a55ace5ec78fd9ff0ceb514c601e0f413ac25b53c  fba_atmos_cbi.mlp
+  0b137648922ebbb5e5d1188ec08b5e2e7873e7eab282d039d8db740cba5bd805  LICENSE
+
+Both are raw TrueHD streams of 48 kHz access units with four substreams: 2-, 6-, and 8-channel presentations and the 16-channel one.
+fba_atmos_obj.mlp holds 140 access units; its 16-channel presentation is an object presentation of one LFE bed channel and 15 dynamic objects, all silent,
+whose object audio metadata arrives in the Evolution frames of access units 0, 38, 76, and 115.
+fba_atmos_cbi.mlp holds 136 access units; its 16-channel presentation is a channel bed without object metadata,
+L R C LFE Ls Rs Lb Rb Tfl Tfr Tsl Tsr Tbl Tbr Lw Rw, and its 8-channel presentation is 7.1.

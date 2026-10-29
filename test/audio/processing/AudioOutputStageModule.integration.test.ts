@@ -48,7 +48,8 @@ const HIGHEST_QUALIFIED_SAMPLE_RATE = 192_000;
 const STEREO_CHANNEL_COUNT = 2;
 const THREE_CHANNEL_COUNT = 3;
 const SEVEN_POINT_ONE_CHANNEL_COUNT = 8;
-const CHANNEL_COUNTS: readonly number[] = [ 1, 2, 3, 4, 5, 6, 7, 8 ];
+// Every decoded layout's count, and the 10 and 12 of the height output layouts
+const CHANNEL_COUNTS: readonly number[] = [ 1, 2, 3, 4, 5, 6, 7, 8, 10, 12 ];
 // Rates every channel count runs at: upsampling, passthrough, and downsampling
 const ALL_CHANNEL_SAMPLE_RATES: readonly number[] = [ CD_SAMPLE_RATE, TARGET_SAMPLE_RATE, HIGH_RESOLUTION_SAMPLE_RATE ];
 
@@ -112,7 +113,7 @@ const NEGATIVE_QUIET_NAN_BITS = 0xFFC0_1234;
 
 // Limiter rates: production, a 44.1 kHz family rate, short attacks at 8 kHz, and long ones at 192 kHz
 const LIMITER_SAMPLE_RATES: readonly number[] = [ 8_000, 44_100, 48_000, 96_000, 192_000 ];
-const LIMITER_CHANNEL_COUNTS: readonly number[] = [ 1, 2, 6, 8 ];
+const LIMITER_CHANNEL_COUNTS: readonly number[] = [ 1, 2, 6, 8, 10, 12 ];
 const LIMITER_SIGNAL_FRAME_COUNT = 80_000;
 const LARGEST_RANDOM_LIMITER_INPUT_FRAME_COUNT = 4_000;
 const LARGEST_INPUTS_PER_PUSH = 3;
@@ -443,7 +444,7 @@ describe('WebAssembly audio output stage resampler, byte for byte against the Ja
         }
     });
 
-    it.each(ALL_CHANNEL_SAMPLE_RATES)('matches every channel count from 1 to 8 from %i Hz', sourceSampleRate => {
+    it.each(ALL_CHANNEL_SAMPLE_RATES)('matches every channel count from 1 to 8, 10, and 12 from %i Hz', sourceSampleRate => {
         const random = createRandomSource(RESAMPLER_SEED ^ sourceSampleRate);
         for (const channelCount of CHANNEL_COUNTS) {
             expectIdenticalRandomResampling(random, sourceSampleRate, channelCount);
@@ -774,7 +775,7 @@ describe('WebAssembly audio output stage pipeline, byte for byte against the Jav
         const stageOptions = {
             maximumOutputFrameCount: MAXIMUM_OUTPUT_FRAME_COUNT,
             minimumOutputFrameCount: MINIMUM_OUTPUT_FRAME_COUNT,
-            outputChannelCount: STEREO_CHANNEL_COUNT,
+            outputLayout: 'stereo',
             routeCodec: SEVEN_POINT_ONE_ROUTE_CODEC,
             timestampToleranceMicroseconds: DEFAULT_TIMESTAMP_QUANTIZATION_MICROSECONDS
         } as const;
@@ -813,7 +814,7 @@ describe('WebAssembly audio output stage pipeline, byte for byte against the Jav
         const stageOptions = {
             maximumOutputFrameCount: MAXIMUM_OUTPUT_FRAME_COUNT,
             minimumOutputFrameCount: MINIMUM_OUTPUT_FRAME_COUNT,
-            outputChannelCount: STEREO_CHANNEL_COUNT,
+            outputLayout: 'stereo',
             routeCodec: SEVEN_POINT_ONE_ROUTE_CODEC,
             timestampToleranceMicroseconds: DEFAULT_TIMESTAMP_QUANTIZATION_MICROSECONDS
         } as const;
@@ -873,7 +874,7 @@ describe('WebAssembly audio output stage pipeline, byte for byte against the Jav
         const stage = new DecodedAudioOutputStage({
             maximumOutputFrameCount: MAXIMUM_OUTPUT_FRAME_COUNT,
             minimumOutputFrameCount: MINIMUM_OUTPUT_FRAME_COUNT,
-            outputChannelCount: STEREO_CHANNEL_COUNT,
+            outputLayout: 'stereo',
             outputStageModule,
             routeCodec: SEVEN_POINT_ONE_ROUTE_CODEC,
             timestampToleranceMicroseconds: DEFAULT_TIMESTAMP_QUANTIZATION_MICROSECONDS

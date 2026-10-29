@@ -102,8 +102,9 @@ It is a minimal project that builds one package and runs nowhere on its own.
 | `mpeg4` | MPEG-4 Part 2, H.263, and MS-MPEG4 versions 1 to 3 at 8-bit 4:2:0, on the GPU | The Rust parser in `parser/` | One Xvid stream with GMC, quarter-sample motion, and B-VOPs in `vectors/`, beside the media of every codec and container its routes take | None, MIT |
 | `vc1` | VC-1 Advanced and WMV3 (Simple, Main, and Complex), on the GPU | The Rust parser in `parser/` | The VC-1 Advanced stream in `src/capability/vectors/qualification/vc1/` | None, MIT |
 | `uncompressed` | Uncompressed planar packets, on the GPU | None | None | None, MIT; the template of a WGSL-only decoder |
-| `eac3` | AC-3 and E-AC-3 | FFmpeg's AC-3 and E-AC-3 decoders | None | FFmpeg, LGPL-2.1-or-later |
-| `truehd` | MLP and TrueHD | FFmpeg's MLP and TrueHD decoders | None | FFmpeg, LGPL-2.1-or-later |
+| `eac3` | AC-3 and E-AC-3, and the Dolby Atmos objects of E-AC-3 with joint object coding | FFmpeg's AC-3 and E-AC-3 decoders, our JOC decoder, and the shared object renderer in `wgpud/atmos/` | None; its tests decode the media in `vectors/`, two to FFmpeg's known answers | FFmpeg, LGPL-2.1-or-later; our JOC decoder, MIT |
+| `truehd` | MLP and TrueHD, and the objects of TrueHD Dolby Atmos | FFmpeg's MLP and TrueHD decoders, our decoder of the 16-channel presentation, and the object renderer in `wgpud/atmos/` | None; its tests decode the Atmos streams in `vectors/` | FFmpeg, LGPL-2.1-or-later, which `truehd_presentation.c`, a port of FFmpeg's MLP decoder, is too |
+| `wma` | WMA 1, WMA 2, WMA Pro, WMA Lossless, and WMA Voice | FFmpeg's `wmav1`, `wmav2`, `wmapro`, `wmalossless`, and `wmavoice` decoders | None; its tests decode the media in `vectors/` to FFmpeg's known answers | FFmpeg, LGPL-2.1-or-later |
 | `dts` | DTS core, DTS-HD High Resolution, and DTS-HD Master Audio | libdcadec | None | [dcadec](https://github.com/foo86/dcadec), LGPL-2.1-or-later |
 
 `decoder.json` names the project's decoder source, the WGSL file or audio manifest the package carries, under `decoder`.
@@ -150,7 +151,7 @@ A failed build or load check fails the run after the other packages are written.
 ### Self-test vectors
 
 `scripts/codec_vector_assets/generate_decoder_package_vectors.py` reads the vectors each `decoder.json` lists and writes `wgpud/<project>/<project>.vectors`, the set the package carries in its vectors section (see [Self-test vectors](decoder-packages.md#self-test-vectors)).
-A project whose streams no script elsewhere writes keeps them in its own `vectors/`, from a generator of its own: `generate_mpeg2_decoder_vectors.py`, `generate_jpeg2000_decoder_vectors.py`, `generate_av1_decoder_vectors.py`, and `generate_mpeg4_decoder_vectors.py`.
+A project whose streams no script elsewhere writes keeps them in its own `vectors/`, from a generator of its own: `generate_mpeg2_decoder_vectors.py`, `generate_jpeg2000_decoder_vectors.py`, `generate_av1_decoder_vectors.py`, and `generate_mpeg4_decoder_vectors.py`, and for the `wma` project, whose audio package carries no vectors section, `generate_wma_decoder_vectors.py`, which writes its media and FFmpeg's known answers for its tests.
 The files are committed, byte for byte (`.gitattributes` marks them `-text`), and `--check` fails unless they match what the generators write.
 `scripts/generate_all_codec_vector_assets.py` runs them with the other generators, a project's own media first.
 
@@ -305,14 +306,148 @@ npm run decoders -- av1      # About 3 minutes
 npx vitest --watch=false wgpud/av1
 ```
 
+### The WMA bridge
+
+`wgpud/wma/ffmpeg_wma_bridge.c` puts FFmpeg's five WMA decoders behind the audio decoder interface.
+Every one of them needs the track's WAVEFORMATEX, so a decoder opens only when `audio_decoder_configure` reads it, and refuses packets as `unconfigured` until then.
+It reads the header as FFmpeg's `ff_get_wav_header` does: the sample rate, channels, bit rate, block alignment, bits per sample, a WAVE_FORMAT_EXTENSIBLE header's channel mask when it describes that many channels, and the bytes after the header as extradata.
+A header shorter than 18 bytes or than its `cbSize`, an extensible one without its 22 bytes, or one without channels or a sample rate fails as `waveFormat`; a format tag, or an extensible SubFormat's, of another codec as `formatTag`; and a header the decoder refuses as `open`.
+Each configure after the first opens a fresh decoder.
+The decoders hold frames back until the end of the stream, WMA 1 and 2 their last overlap and WMA Lossless the frames it buffered, so the module exports the interface's optional `audio_decoder_drain`, which its `Makefile` names as the second argument of `link_ffmpeg_audio_module`.
+A drain before a configure fails as `unconfigured`, a second drain outputs nothing, and `audio_decoder_clear` starts a new stream after one.
+Blocks are planar float: WMA Lossless's 16-bit and 24-bit integers are scaled by the exact power of two of full scale, and WMA Voice's packed mono float is copied.
+A layout without a channel mask reports the mask of FFmpeg's default layout of its channel count.
+FFmpeg's C decode, `-cpuflags 0`, is the reference, and the module decodes every vector to the same bytes, as [WMA decoder vectors](codec-vectors.md#wma-decoder-vectors) describes.
+
+After a change, from the engine root:
+
+```sh
+npm run decoders -- wma
+npx vitest --watch=false wgpud/wma
+```
+
+### The TrueHD bridge
+
+`wgpud/truehd/ffmpeg_truehd_bridge.c` puts FFmpeg's MLP and TrueHD decoders behind the audio decoder interface, and adds Dolby Atmos object rendering for TrueHD.
+FFmpeg decodes every packet, and its decode is the output unless the render target needs objects, as the `renderChannelMask` and `renderBinaural` options of [the audio decoder interface](decoder-packages.md#the-audio-decoder-interface) set it: a stream FFmpeg reports as `Dolby TrueHD + Dolby Atmos`, with binaural rendering on, or with a target mask that has a speaker FFmpeg's output layout lacks.
+FFmpeg stops at the 8-channel presentation: it decodes at most three substreams, holds 8 channels, and refuses the `0x31EC` restart sync word of the fourth substream, which carries the 16-channel presentation.
+So MLP, TrueHD without Atmos, and an Atmos stream at a target its 7.1 or 5.1 presentation covers, such as 5.1, 7.1, or stereo without binaural, output FFmpeg's decode unchanged, and report `objectCount` 0.
+
+When the target needs objects, three sources of ours take over, packet by packet:
+
+- `truehd_presentation.c` decodes one presentation of a TrueHD stream, here the 16-channel one, to 24-bit samples in the presentation's channel order.
+  It is a port of FFmpeg's `mlpdec.c`, `mlpdsp.c`, `mlp.c`, and `mlp_parse.c` (major sync, restart headers, decoding parameters, prediction filters, Huffman residuals, primitive matrices and their noise, output shifts, and channel assignment), generalized from 8 channels and 3 decoded substreams to 16 channels and 4.
+  It adds what FFmpeg lacks: the `0x31EC` substream's matrix syntax (a coefficient mask and shift per matrix, bypassed LSBs of up to 3 bits, and coefficient deltas that interpolate across each access unit), the substreams each presentation is built from (the 16-channel one is substream 3 together with the lower substreams that `extended_substream_info` names), the extra channel meaning of the major sync, and the extra data after the substreams, whose Evolution frame carries object audio metadata as payload 11 in the EMDF payload syntax.
+  Those layouts are documented only by the truehd crate of [truehdd](https://github.com/truehdd/truehdd) (Apache-2.0), which we read to learn them; the code is our own, and the file's header cites both.
+  It also checks each restart header's lossless check against the samples it decoded.
+- `truehd_objects.c` hands the presentation to the renderer: its channels are the metadata's objects in payload order, beds first, and a presentation without metadata is the channel bed its major sync's 16-channel channel assignment names (L R, C, LFE, Ls Rs, Lb Rb, Tfl Tfr, Tsl Tsr, Tbl Tbr, Lw Rw, LFE2).
+  Each access unit's payloads are parsed by `atmos_parse_oamd` and queued at their Evolution sample offset before the access unit renders.
+- The renderer in `wgpud/atmos/` renders the bed and the dynamic objects into the target, or binaural stereo.
+
+A packet renders only when every access unit in it decoded and rendered; otherwise it outputs FFmpeg's decode, so rendering starts at the first packet after a major sync and the first object metadata, and a switch back to a covered target returns to FFmpeg's decode at once.
+A packet whose access units could hold more than 16,384 frames, the engine's bound on a block, plays FFmpeg's decode too.
+Any packet the object decoder does not read, because FFmpeg dropped it or the target needed no objects, resets that decoder, so it resumes at the next major sync rather than with stale filter and matrix state.
+A rendered packet is one block at the packet's timestamp, with the target's mask and `objectCount`, the scene's dynamic objects; FFmpeg's frames of that packet are discarded.
+Binaural rendering delays its output by 128 frames, so the module exports `audio_decoder_drain`, which renders that tail after the last packet; a stock decode drains nothing.
+`audio_decoder_clear` resets both decoders and the renderer.
+
+`truehd_presentation.c` decodes every presentation of the eight TrueHD streams among the truehd crate's test assets and of the engine's three TrueHD vectors bit for bit as truehdd (commit `77ddc52`) does, the three 16-channel presentations included, and presentations 0 to 2 bit for bit as FFmpeg does wherever FFmpeg's `downmix` option can select them, with every lossless check passing.
+To repeat that, build truehdd natively, decode with `truehdd decode --presentation <n>`, and compare its 24-bit samples with a native build of `truehd_presentation.c`; neither the oracle nor the harness enters the repository.
+The `wgpud/truehd/vectors/` streams, copied from the truehd crate's test assets, carry that crate's Apache-2.0 license and `PROVENANCE.txt`.
+
+After a change, from the engine root:
+
+```sh
+npm run decoders -- truehd
+npx vitest --watch=false wgpud/truehd
+```
+
+### The E-AC-3 bridge
+
+`wgpud/eac3/ffmpeg_eac3_bridge.c` puts FFmpeg's AC-3 and E-AC-3 decoders behind the audio decoder interface, and adds Dolby Atmos object rendering for E-AC-3 with joint object coding (JOC, ETSI TS 103 420).
+FFmpeg decodes every packet, and its decode is the output unless the render target needs objects: binaural rendering on, or a target mask with a speaker the decoded core lacks, such as 7.1 or any height layout from a 5.1 core.
+A stream without JOC, AC-3, and a JOC stream at a target its core covers, such as 5.1 or stereo without binaural, output FFmpeg's decode unchanged and report `objectCount` 0.
+
+When the target needs objects, our sources take over, frame by frame, on FFmpeg's decoded channels:
+
+- `eac3_emdf.c` finds the EMDF container (ETSI TS 102 366 Annex H) in the access unit's last syncframe, as TS 103 420 clause 8.2 places it, and copies out its OAMD (payload 11) and JOC (payload 14) payloads.
+  The container is in the frame-end auxiliary data, which `auxdatal` locates, or in an audio block's skip field, as Dolby's encoder writes it.
+  Reaching a skip field exactly takes the audio block syntax up to it, so the search takes an EMDF syncword whose preceding ten bits read as a set `skiple` and a `skipl` that holds the container, and whose container parses completely within it.
+  FFmpeg's `avpriv_ac3_parse_header` splits a packet into access units as FFmpeg's decoder takes them.
+- `eac3_joc.c` parses the JOC payload (clause 6.2) and decodes it: the Huffman trees of Annex A.1, differential decoding, dequantization, the parameter band mapping of table 54, interpolation between data points, and the upmix of the 5 or 7 downmix channels to up to 16 objects in the filter bank domain.
+- `eac3_qmf.c` is the 64-band complex filter bank of clause 7, computed through a 128-point FFT; analysis and synthesis delay the objects by 577 samples.
+  `eac3_joc_tables.c` holds the Huffman trees and the 640-coefficient window from the specification's companion archive `ts_103420v010201p0.zip`.
+- The renderer in `wgpud/atmos/` renders the objects with the OAMD: each LFE bed object takes the core's LFE, and the other scene objects, beds then dynamic objects, take the JOC objects in order.
+
+Object blocks keep their packets' timestamps exactly: the module holds each block until the frames after it fill the filter bank delay and the binaural latency, so the first packet after a start, a clear, or a switch from FFmpeg's decode outputs no block, and `audio_decoder_drain` outputs the last one.
+A switch back to a covered target outputs the held block and FFmpeg's block of the same packet, the later frames of a packet keep their access units' timestamps, and a change of speaker layout or binaural rendering finishes the held blocks in the old target and restarts the pipeline.
+Objects start only at a frame whose OAMD scene the renderer takes; a scene it refuses, such as one with intermediate spatial format objects, plays FFmpeg's decode.
+A damaged JOC payload keeps the last matrices, and a damaged OAMD payload the objects' properties.
+`objectCount` is the scene's dynamic objects that have a JOC object.
+
+The JOC decoder rebuilds the same objects as the JOC decoder of [OpenJOC](https://github.com/chyinan/OpenJOC) (Apache-2.0, commit `e3e330a`), run natively on the same FFmpeg downmix and payloads: within 6e-8 of full scale (129 dB or more per object) on Dolby's `sample_eac3joc.ec3` from androidx/media, and within 4e-10 on OpenJOC's synthetic fixtures; both extract the same payload bytes from all 64 access units of the Dolby stream.
+Neither the oracle nor the temporary harness enters the repository.
+The `wgpud/eac3/vectors/` media, and how to repeat their generation, are in [E-AC-3 Atmos vectors](codec-vectors.md#e-ac-3-atmos-vectors).
+
+After a change, from the engine root:
+
+```sh
+npm run decoders -- eac3
+npx vitest --watch=false wgpud/eac3
+```
+
+### The object audio sources
+
+`wgpud/atmos/` holds our own object audio code, which the `eac3` and `truehd` modules compile with their bridges; it has no `decoder.json`, so it is no project and builds no package.
+`atmos.h` is the interface those bridges code against: `atmos_parse_oamd` decodes one object audio metadata (OAMD) payload, and an `AtmosRenderer` renders a scene's object planes with that metadata into a target layout.
+A package's `Makefile` passes `$(ATMOS_MODULE_SOURCES)` from `wgpud/rules.mk`, the four sources and their include flag, as the third argument of `link_ffmpeg_audio_module`, whose first argument lists the project's own sources.
+The code depends on no other Atmos library; ETSI TS 103 420 V1.2.1 and Recommendations ITU-R BS.2051 and BS.2127 are its references.
+
+- `atmos_oamd.c` decodes an `object_audio_metadata_payload` as TS 103 420 clause 5 defines it: the program assignment, whose bed objects come first and are named by FFmpeg's channel bits (the LFE of a dynamic-object program is a bed object), then ISF objects, then dynamic objects; and the object element's updates, each with its start (`sample_offset` plus 32 times `block_offset_factor`) and ramp duration, and per object its activity, gain, priority, room-anchored position (differential coding, extended precision, and a position outside the room projected onto its walls), zones, elevation, size, screen factors, and channel lock.
+  Other elements, such as trim, are skipped by their declared size.
+  A payload holds at most 32 objects and 8 updates; every read is bounded, and a truncated payload, an element that overruns its size, a version other than 0, counts that do not add up, or a reserved ISF index returns an error code.
+  Where the clause's pseudo-code and its tables disagree on which bit of a flag array is which, which happens only for `obj_render_info[]`, the tables win: element `[k]` of an array is the k-th bit the payload carries, as real streams confirm for `content_description[]` and the bed assignments.
+- `atmos_renderer.c` renders to every layout the engine qualifies: stereo, 5.1 (back or side), 7.1, 5.1.2, 5.1.4, 7.1.2, and 7.1.4, in WAVE channel order.
+  Speakers stand on the room's walls as TS 103 420 Table B.10 places them, a 5.1 layout's surround pair in the back corners.
+  The panner is separable and room-centric: an object pans between the floor and the heights, then between the rows of speakers in front of and behind it, then between the speakers left and right of it in each row, each step with the sine and cosine law, so its gains' squares sum to 1 and an object at a speaker plays from that speaker alone.
+  An object with a size averages that power over a 3 by 3 by 3 grid across its extent; zone constraints and elevation take the excluded speakers (TS 103 420 Annex A.2) out of the panner, falling back to all of them when none remain; channel lock plays an object from its nearest speaker within 0.4 in ADM units.
+  A bed channel plays on its own speaker, or folds as the engine folds layouts: a side or back channel onto the other of its side's pair, a top front or top back channel onto the floor channel under it (folding on from there), a wide channel onto its side's front, and LFE2 onto the LFE; a top side channel, which the engine's layouts lack, splits over its side's top front and top back at sqrt(1/2) each, or plays from the top front of a layout with only that pair, or else from the side under it.
+  Every bed channel that lands whole on a speaker, its own included, takes 1/sqrt(n) of the n channels landing there, as the engine's layout routing does, so a 5.1 surround with Ls, Lb, and Tsl takes each at sqrt(1/3) and one alone keeps unit gain; a split channel takes sqrt(1/2) on each of its two.
+  Stereo takes that fold into 7.1 and mixes it with the engine's default Lo/Ro matrix: fronts at 1, center, sides, and backs at sqrt(1/2), the LFE dropped.
+  ISF objects are parsed but not rendered: a scene with them fails as unsupported.
+  Updates queue at their start sample, at most 32 at once; an update's properties ramp linearly from the ones the object has when it starts, gain vectors computed every 32 samples and the gains moving linearly in between, so they reach the update's values at its start plus its ramp duration whatever the render calls' lengths.
+  A target changes between render calls: objects keep their properties and ramps and move to the new layout's gains at once.
+  Nothing allocates after `atmos_renderer_create`.
+- `atmos_binaural.c` renders binaural stereo at 48 kHz: the scene renders to a virtual 7.1.4 layout, and each of its 11 speakers is convolved with its pair of head-related impulse responses by uniformly partitioned overlap-save convolution, 128-sample partitions in 256-point transforms, with two real signals sharing each complex transform, so a block of 128 samples costs six forward transforms, one inverse, and the products of two partitions.
+  The output is 128 samples late, which `atmos_renderer_latency` reports; the LFE joins both ears at 0.5 without HRIRs, delayed the same.
+- `atmos_hrir.c` holds the 11 virtual speakers' responses, 160 taps per ear at 48 kHz, which `node scripts/generate-atmos-hrir.mjs [diffuse.zip]` writes.
+  The source is the diffuse-field equalized set of Bill Gardner and Keith Martin, "HRTF Measurements of a KEMAR Dummy-Head Microphone", MIT Media Lab, 1994 (`diffuse.zip` from <https://sound.media.mit.edu/resources/KEMAR.html>, SHA-256 `a48e73137390626ef1e45d1de6a4d98530c6aa570e71b40f7c4442241ed5fa22`, which the script checks).
+  The directions follow BS.2051's 4+7+0 layout: the floor speakers at azimuths 0, 30, 90, and 135 at elevation 0, the heights at azimuths 45 and 135 at KEMAR's 40 degree elevation, the left speakers taking their mirror images with the ears swapped, as the set's symmetric responses intend.
+  The script resamples each 128-tap 44.1 kHz response with a Kaiser-windowed sinc, fades its last 16 taps, and scales the set to a mean energy of 0.5 per ear, a stereo pan's level for one channel.
+
+A test module of these sources and `test/atmos_test_exports.c`, which adds exports to build scenes and read parsed metadata, backs `test/Atmos.test.ts`.
+The tests parse hand-built payloads and real ones from TrueHD and E-AC-3 streams, pan objects onto every layout's speakers, check power, fold-down, zones, ramps, and retargeting, and compare the binaural output with a direct convolution by the table's taps.
+The parser decodes the object metadata of the truehd crate's Atmos test assets as truehdd does, positions within 3.2e-7 in ADM units.
+
+After a change, from the engine root:
+
+```sh
+make -C wgpud/atmos module                # Builds wgpud/build/atmos/module.wasm, the tests' module
+npx vitest --watch=false wgpud/atmos
+npm run decoders -- eac3 truehd            # The packages that compile these sources
+```
+
 ### Licenses
 
-- The engine's modules, the bridges, the HEVC, JPEG 2000, MPEG-2, and VC-1 parsers, the decoder sources, and the `libdovi` crate are MIT, like the rest of the engine.
+- The engine's modules, the bridges, the object audio sources in `wgpud/atmos/`, the HEVC, JPEG 2000, MPEG-2, and VC-1 parsers, the decoder sources, and the `libdovi` crate are MIT, like the rest of the engine.
   The vendored `dolby_vision` crate is MIT too and keeps its own `LICENSE`.
-- FFmpeg and libdcadec are LGPL-2.1-or-later, and only the `eac3`, `truehd`, and `dts` packages contain them.
+- FFmpeg and libdcadec are LGPL-2.1-or-later, and only the `eac3`, `truehd`, `wma`, and `dts` packages contain them.
   `wgpud/licenses/` holds their license texts.
+  `wgpud/truehd/truehd_presentation.c` and its header, a port of FFmpeg's MLP decoder, are LGPL-2.1-or-later too.
+  The `eac3` package's JOC sources (`eac3_emdf.c`, `eac3_joc.c`, `eac3_qmf.c`, `eac3_joc_tables.c`) are our own code, MIT; the tables are facts of ETSI TS 103 420.
 - libaom is BSD-2-Clause with the Alliance for Open Media Patent License 1.0, and only the `av1` package contains it.
   `wgpud/licenses/` holds its `LICENSE` and `PATENTS` as `libaom-LICENSE` and `libaom-PATENTS`.
+- The HRIR table in `wgpud/atmos/atmos_hrir.c`, which the `eac3` and `truehd` packages contain, comes from the MIT KEMAR measurements, "Copyright 1994 by the MIT Media Laboratory", "provided free with no restrictions on use, provided the authors are cited when the data is used in any research or commercial application"; the file's header cites them, as whoever distributes those packages must.
 - The engine ships no decoder package.
   Whoever distributes the LGPL packages must offer their corresponding source: `make -C wgpud source-archives` writes the exact FFmpeg and dcadec trees, and the engine's `wgpud/` sources, to `wgpud/build/source-archives/`.
 
@@ -327,6 +462,7 @@ npx vitest --watch=false wgpud/av1
 | `wgpud/Makefile` | The decoder projects' shared jobs: the pinned sources, the source archives, and clean |
 | `wgpud/rules.mk` | The rules every decoder project's `Makefile` includes |
 | `wgpud/<project>/` | One decoder project: its `decoder.json`, decoder source, vectors file, module sources, and tests in `test/` |
+| `wgpud/atmos/` | The object audio sources the `eac3` and `truehd` modules compile, and their tests' module |
 | `wgpud/include/` | The audio decoder interface for C modules |
 | `wgpud/licenses/` | Upstream license texts |
 | `wgpud/build/` | The decoder projects' build trees and source archives, ignored |

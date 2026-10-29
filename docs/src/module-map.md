@@ -75,7 +75,9 @@ The optional user passes a host may offer are pass projects in `wgpup/`, outside
 - `H264ProfileCapabilities.ts`: the per-profile H.264 decoded-output probe and Jellyfin's profile names.
 - `HEVCRangeExtensionCapabilities.ts`: the nine range-extension variant definitions and the stream metadata resolver.
 - `AV1RawFormatCapabilities.ts`: the eight AV1 raw format variant definitions outside Main 10 (High 4:4:4, Professional 4:2:2 and 12 bits, and 8-bit Main for Dolby Vision) and the stream metadata resolver.
+- `H264RawFormatCapabilities.ts`: the five H.264 raw format variant definitions beyond 8-bit 4:2:0 (10-bit 4:2:0, and 4:2:2 and 4:4:4 at 8 and 10 bits), the profiles beyond High that FFmpeg names and the chroma formats each codes, and the stream metadata resolver.
 - `NativeMediaAudioCapabilities.ts`: the MSE AC-3/E-AC-3 route probe and its selection.
+- `NativeAudioChannelTones.ts`: the channel order check of the 7.1 probes, which finds each decoded plane's strongest source tone with a windowed Goertzel measure.
 
 ### capability/vectors/
 
@@ -87,6 +89,7 @@ The TypeScript modules are embedded in the bundle; the binary files are served o
 - `NativeMediaAudioCapabilityVectors.ts`: fMP4 AC-3/E-AC-3 vectors.
 - `NativeAudioCapabilityVectors.ts`: stereo silence packets per WebCodecs codec.
 - `NativeSurroundAudioCapabilityVectors.ts`: 5.1 silence packets.
+- `NativeSevenPointOneAudioCapabilityVectors.ts`: 7.1 packets of one sine per source channel, and each channel's tone in WAVE 7.1 order.
 - `NativeVideoCapabilityVectors.ts`: 64x64 VP8, VP9, and AV1 keyframes.
 - `NativeUltraHDVideoCapabilityVectors.ts`: 4K 8-bit HEVC, VP9, and AV1 keyframes.
 - `RawHDRCapabilityVectors.ts`: 4K 10-bit VP9 and AV1 keyframes with plane fingerprints.
@@ -111,7 +114,7 @@ The TypeScript modules are embedded in the bundle; the binary files are served o
   A close shuts the attempt's worklet channel at once and is acknowledged once the attempt released the rest, and a failure reports the kind the page acts on.
 - `AudioDecodeWorkerClient.ts` [worker]: the decode worker's side: the audio decode worker's spawn, each attempt's open, input credits, outcome, and close, and the packet and sample batch builders.
   A worker that fails to start, throws, or answers out of contract fails every attempt as `audio-output-failed`.
-- `AudioDecodeWorkerProtocol.ts`: the messages between the two workers, their validators, the batch shapes and their transfers, and the batch and credit constants (4 batches, 40 ms or 64 inputs).
+- `AudioDecodeWorkerProtocol.ts`: the messages between the two workers, their validators, the batch shapes and their transfers, the batch and credit constants (4 batches, 40 ms or 64 inputs), and the 1 MiB bound of the codec private data a package attempt carries.
 - `DecodeWorkerProtocol.ts`: messages, validators, credit constants (4 frames, 2 raw buffers, 8 GPU decode packets, 8 audio samples), and the backend and output literals.
 - `ConcurrentDecodeStreams.ts`: concurrent decode streams that cancel each other on the first failure and all drain before the worker reports that the generation stopped.
 - `MediaClock.ts` [main]: the generation-tagged clock; `synchronize` re-anchors it.
@@ -129,6 +132,8 @@ All worker code unless marked.
 - `ContainerVideoScan.ts`: a video track's scan as its container declares it: Matroska's FlagInterlaced and FieldOrder, which the fork's Matroska demuxer reports as the track's field order, or an ISO base media sample entry's `fiel` box.
 - `CustomDecodeTrackSelection.ts`: track lookup by ordinal within one media type.
 - `CustomAudioTrackMetadata.ts`: the Matroska and ISO BMFF DTS and TrueHD tracks whose codec Mediabunny does not map (`DTS `, `mlpa`), DTS Express detection, declared-rate recovery for their sample entries, and the decoded audio timestamp tolerance.
+- `WaveFormatAudioConfiguration.ts`: the WAVEFORMATEX of a Matroska `A_MS/ACM` track or a codec-less AVI or ASF audio stream, written back from the fork's parsed stream format fields, and the WMA codec its format tag names as FFmpeg's RIFF tags do, its SubFormat's for WAVE_FORMAT_EXTENSIBLE.
+- `VFWStreamFormat.ts`: the FourCC and extradata of an AVI or ASF video stream's BITMAPINFOHEADER, from the fork's parsed stream format, for a stream Mediabunny names no codec for.
 - `AVIIndexCoverage.ts`: whether an AVI track's indexed packets end well before its stream header's declared length, as a truncated file's do, or an OpenDML file's whose OpenDML index cannot be read.
 - `UnsupportedTrackFeatures.ts`: the first feature, such as an edit list, that Mediabunny reports it cannot honor for a track.
 - `VideoChromaFormat.ts` [main and worker]: a video track's chroma from its decoder configuration, which the worker's ready response names and every frame carries to presentation: its subsampling from an avcC (its closing chroma format or its first SPS), an hvcC, an av1C, or an AV1, VP9, or VP8 codecs string, and its 4:2:0 location from the first SPS's VUI of an avcC or hvcC, or an av1C's or AV1 codecs string's chroma_sample_position; an H.264 or HEVC track without a record, or whose record holds no SPS, takes both from its first key packet's in-band SPS, and MPEG-1 is center-sited 4:2:0.
@@ -175,7 +180,7 @@ All worker code unless marked.
 
 ### demux/vc1/
 
-- `MatroskaVFWVideoConfiguration.ts`: reads a Matroska Video for Windows track's FourCC and extradata as FFmpeg does, and from them VC-1's extradata after a `WVC1` or `WMVA` header, and WMV3's STRUCT_C behind a new header of the track's coded size, since STRUCT_C holds no frame size.
+- `MatroskaVFWVideoConfiguration.ts`: reads a Matroska Video for Windows track's FourCC and extradata as FFmpeg does, and from them or an ASF stream's (`readVFWVC1DecoderDescription`, `readVFWWMV3DecoderDescription`) VC-1's extradata after a `WVC1` or `WMVA` header, and WMV3's STRUCT_C behind a new header of the track's coded size, since STRUCT_C holds no frame size.
 - `ISOBaseMediaVC1Configuration.ts`: a `vc-1` sample entry's `dvc1` sequence header and entry point, Advanced profile only, which the fork hands on as the track's description.
 - `VC1TrackConfiguration.ts`: the codec private data and packet track of a VC-1 or WMV3 track, per codec and container.
 - `VC1PresentationOrder.ts`: reads a VC-1 or WMV3 picture's order from its picture header, for `PresentationOrderTrack.ts` to restamp a Matroska VC-1 or WMV3 track by FFmpeg's rule: an I or P picture takes the next I or P picture's time, and a B picture keeps its own.
@@ -252,7 +257,7 @@ The audio half of [decoder packages](decoder-packages.md).
 
 - `AudioDecoderManifest.ts`: parses an audio package's `//!` header.
 - `AudioDecoderPackageInstance.ts` [worker]: one decoder on its own instance of a package's module, which drives version 1 of the audio decoder interface and copies each block out; the selection of a package and codec, and its validators across worker boundaries.
-- `PackageSoftwareAudioDecoder.ts` [worker]: owns one package decoder in the audio decode worker, checks each block's layout and rate, and stamps blocks without a timestamp after their packet's earlier ones.
+- `PackageSoftwareAudioDecoder.ts` [worker]: owns one package decoder in the audio decode worker, configures it with the track's codec private data before its first packet, checks each block's layout and rate, and stamps blocks without a timestamp after their packet's earlier ones.
 
 ### decode/packages/
 
@@ -272,7 +277,7 @@ The package file that both halves share (see [Decoder packages](decoder-packages
 - `CustomAudioSampleRate.ts`: the sample rate contract, any positive integer.
 - `CustomCompressedAudioRoute.ts`: the E-AC-3, DTS, and TrueHD route tables that the input channel counts derive from, the DTS direct-play profiles, and the TrueHD rate rule.
 - `CustomAudioOutputPolicy.ts`: input channels per codec, the 3.0 layout requirement for decoders without a speaker mask, and the 48 kHz 2, 6, and 8-channel output contract with its 2 s ring.
-- `NativeMultichannelAudioOutput.ts`: `selectCustomAudioOutputChannelCount`, the output layout rule (three channels and 5.1 to 5.1, 6.1 and 7.1 to 7.1 or 5.1, otherwise stereo).
+- `NativeMultichannelAudioOutput.ts`: the speaker layout setting (`selectCustomAudioSpeakerLayout`) and the output layout rule (`selectCustomAudioOutputLayout`: objects take the whole layout; otherwise three channels and 5.1 to 5.1, 6.1 and 7.1 to 7.1 or 5.1, else stereo).
 - `AudioNormalization.ts`: TrackGain and AlbumGain decibels to linear gain.
 - `AudioSampleWindow.ts`: PCM windowing at a seek.
 - `SafeIntegerValidation.ts`: the positive safe integer check the audio modules share.
@@ -284,7 +289,7 @@ The package file that both halves share (see [Decoder packages](decoder-packages
 - `AudioOutputStageModule.ts` [worker]: the `audio-output-stage` WebAssembly module, loaded once per audio decode worker on its first attempt, with a once-warned fallback to the reference when it does not load, and its resampler and limiter kernels, freed on finalize, on close, or after their owner is collected.
 - `PCMChannelPool.ts` [worker]: the spare channel buffers the worklet returns, each sized for the largest chunk, which the output stage writes later chunks into.
 - `DecodedAudioOutputStage.ts` [worker]: binds one audio attempt's output stage to the decoded rate and layout, checks them against the decoded PCM routes, and reports each bound format; `close` frees a stopped attempt's kernels.
-- `CustomAudioDownmix.ts`, `CustomAudioDownmixAlgorithm.ts`, `CustomAudioChannelLayout.ts`, `CustomWaveChannelLayout.ts`: downmix matrices per algorithm (three-channel beds have their own), algorithm IDs, layout tables with by-name mapping to 5.1 and 7.1 outputs, and WAVE mask mapping.
+- `CustomAudioDownmix.ts`, `CustomAudioDownmixAlgorithm.ts`, `CustomAudioChannelLayout.ts`, `CustomWaveChannelLayout.ts`: downmix matrices per algorithm (three-channel beds have their own), algorithm IDs, layout tables with the output layouts (stereo, 5.1, 7.1, 5.1.2, 5.1.4, 7.1.2, 7.1.4) and by-name mapping and height folds into them, and WAVE mask mapping.
 
 ### audio/output/
 
@@ -360,6 +365,7 @@ The authorization vectors are in `capability/vectors/`.
   - `truehd/TrueHDExactCapabilityVectors.ts`: TrueHD and MLP access units and their expected outputs, which the `truehd` project's tests import as `#codec_vector_assets/*`, and the synthetic streams the module embeds.
   - `hevc-range-extension/`: the nine range extension streams, which the native probes fetch from `bin/libraries/` and the `hevc` project's vectors hold.
   - `av1-raw-format/`: the eight AV1 raw format streams, which the native probes fetch from `bin/libraries/` as `webgpu-player/av1-raw/`.
+  - `h264-raw-format/`: the five H.264 raw format streams, which the native probes fetch from `bin/libraries/` as `webgpu-player/h264-raw/`.
   - `dolby-vision-av1/`: the Profile 10 test vectors and their `expectations.json`.
   - `hdr10plus-av1/`: the HDR10+ AV1 test vectors and their `expectations.json`.
   - `hdr10plus-vp9/`: the HDR10+ VP9 test vectors, in WebM and Matroska, and their `expectations.json`.

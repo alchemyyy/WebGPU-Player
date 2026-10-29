@@ -144,7 +144,7 @@ async function decodeToWorklet(vector: PCMVector, outputChannelCount: 2 | 6): Pr
     const workerScope = await startWorker(fileName);
     workerScope.dispatchRequest(createWorkerStartRequest(fileName, {
         audioTrackIndex: 0,
-        decodedAudioOutputChannelCount: outputChannelCount,
+        decodedAudioOutputLayout: outputChannelCount === FIVE_POINT_ONE_CHANNEL_COUNT ? '5.1' : 'stereo',
         generation: GENERATION
     }));
     const readyResponse = await workerScope.waitForResponse(response => response.type === 'ready' && response.generation === GENERATION);
@@ -230,7 +230,7 @@ describe('the playback worker on AVI audio', () => {
         const workerScope = await startWorker(fileName, withChannelMask(readAVIVector(fileName), UNQUALIFIED_THREE_CHANNEL_MASK));
         workerScope.dispatchRequest(createWorkerStartRequest(fileName, {
             audioTrackIndex: 0,
-            decodedAudioOutputChannelCount: FIVE_POINT_ONE_CHANNEL_COUNT,
+            decodedAudioOutputLayout: '5.1',
             generation: GENERATION
         }));
         await workerScope.waitForStopped(GENERATION);

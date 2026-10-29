@@ -89,6 +89,17 @@ export class FakeDecodedVideoFrame {
     }
 }
 
+/** The VideoFrame global of Mediabunny's sample path, which wraps decoded frames in its samples and copies one with new timing. */
+export class FakeVideoFrame {
+    public static [Symbol.hasInstance](value: unknown): boolean {
+        return value instanceof FakeDecodedVideoFrame;
+    }
+
+    public constructor(source: FakeDecodedVideoFrame, init?: VideoFrameInit) {
+        return new FakeDecodedVideoFrame(source.codedWidth, source.codedHeight, init?.timestamp ?? source.timestamp, init?.duration ?? source.duration);
+    }
+}
+
 /** A WebCodecs VideoDecoder that outputs one frame of its configured size per chunk, asynchronously as WebCodecs does. */
 export class FakeVideoDecoder extends EventTarget {
     public static readonly instances: FakeVideoDecoder[] = [];

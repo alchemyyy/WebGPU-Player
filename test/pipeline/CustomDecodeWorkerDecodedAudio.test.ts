@@ -84,7 +84,7 @@ afterEach(() => {
 function createDecodedAudioStartRequest(generation = GENERATION): DecodeWorkerStartRequest {
     return createWorkerStartRequest(DECODED_AUDIO_MEDIA_FILE_NAME, {
         audioTrackIndex: 0,
-        decodedAudioOutputChannelCount: DECODED_AUDIO_MEDIA_CHANNEL_COUNT,
+        decodedAudioOutputLayout: 'stereo',
         generation
     });
 }
@@ -285,7 +285,7 @@ describe('the playback worker feeding the AudioWorklet directly', () => {
         workerScope.dispatchRequest({
             audioEpoch: RESYNC_AUDIO_EPOCH,
             audioOutput: resyncedChannel.attachment,
-            decodedAudioOutputChannelCount: RESYNC_OUTPUT_CHANNEL_COUNT,
+            decodedAudioOutputLayout: '5.1',
             generation: GENERATION,
             targetTimeMicroseconds: RESYNC_TARGET_MICROSECONDS,
             type: 'resync-audio'

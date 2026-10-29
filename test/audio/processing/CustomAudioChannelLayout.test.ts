@@ -3,20 +3,29 @@ import { describe, expect, it } from 'vitest';
 import { CUSTOM_AUDIO_DOWNMIX_ALGORITHMS } from 'webgpu-player/audio/processing/CustomAudioDownmixAlgorithm';
 import {
     CUSTOM_FIVE_POINT_ONE_BACK_CHANNEL_LAYOUT,
+    CUSTOM_AUDIO_OUTPUT_LAYOUTS,
     CUSTOM_FIVE_POINT_ONE_CHANNEL_LAYOUT,
+    CUSTOM_FIVE_POINT_ONE_POINT_FOUR_CHANNEL_LAYOUT,
+    CUSTOM_FIVE_POINT_ONE_POINT_TWO_CHANNEL_LAYOUT,
+    CUSTOM_FIVE_POINT_ONE_SIDE_POINT_TWO_CHANNEL_LAYOUT,
     CUSTOM_MONO_CHANNEL_LAYOUT,
     CUSTOM_SIX_POINT_ONE_CHANNEL_LAYOUT,
     CUSTOM_SEVEN_POINT_ONE_CHANNEL_LAYOUT,
+    CUSTOM_SEVEN_POINT_ONE_POINT_FOUR_CHANNEL_LAYOUT,
+    CUSTOM_SEVEN_POINT_ONE_POINT_TWO_CHANNEL_LAYOUT,
     CUSTOM_STEREO_CHANNEL_LAYOUT,
     CUSTOM_THREE_POINT_ZERO_BACK_CHANNEL_LAYOUT,
     CUSTOM_THREE_POINT_ZERO_CHANNEL_LAYOUT,
     CUSTOM_TWO_POINT_ONE_CHANNEL_LAYOUT,
     getCustomAudioChannelLayout,
+    getCustomAudioOutputChannelCount,
+    getCustomAudioOutputChannelLayout,
+    getCustomAudioOutputFloorLayout,
     mixCustomAudioToStereo,
     prepareCustomAudioOutputChannelData,
     requiresCustomAudioFoldDown,
     type CustomAudioChannelLayout,
-    type CustomAudioOutputChannelCount
+    type CustomAudioOutputLayout
 } from 'webgpu-player/audio/processing/CustomAudioChannelLayout';
 
 // Standard Lo/Ro gains shared by the 5.1 and 7.1 matrices
@@ -131,13 +140,13 @@ describe('CustomAudioChannelLayout', () => {
         const stereoOutput = prepareCustomAudioOutputChannelData(
             channels,
             CUSTOM_FIVE_POINT_ONE_CHANNEL_LAYOUT,
-            2,
+            'stereo',
             CUSTOM_AUDIO_DOWNMIX_ALGORITHMS.NightModeDialogue
         );
         const nativeOutput = prepareCustomAudioOutputChannelData(
             channels,
             CUSTOM_FIVE_POINT_ONE_CHANNEL_LAYOUT,
-            6,
+            '5.1',
             CUSTOM_AUDIO_DOWNMIX_ALGORITHMS.NightModeDialogue
         );
 
@@ -171,11 +180,17 @@ describe('CustomAudioChannelLayout', () => {
     });
 
     it.each([
-        { channelCount: 6 as const, layout: CUSTOM_FIVE_POINT_ONE_CHANNEL_LAYOUT },
-        { channelCount: 8 as const, layout: CUSTOM_SEVEN_POINT_ONE_CHANNEL_LAYOUT }
-    ])('preserves exact $channelCount-channel speaker data without another copy', ({
+        { channelCount: 6, layout: CUSTOM_FIVE_POINT_ONE_CHANNEL_LAYOUT, outputLayout: '5.1' },
+        { channelCount: 6, layout: CUSTOM_FIVE_POINT_ONE_BACK_CHANNEL_LAYOUT, outputLayout: '5.1' },
+        { channelCount: 8, layout: CUSTOM_SEVEN_POINT_ONE_CHANNEL_LAYOUT, outputLayout: '7.1' },
+        { channelCount: 8, layout: CUSTOM_FIVE_POINT_ONE_POINT_TWO_CHANNEL_LAYOUT, outputLayout: '5.1.2' },
+        { channelCount: 10, layout: CUSTOM_FIVE_POINT_ONE_POINT_FOUR_CHANNEL_LAYOUT, outputLayout: '5.1.4' },
+        { channelCount: 10, layout: CUSTOM_SEVEN_POINT_ONE_POINT_TWO_CHANNEL_LAYOUT, outputLayout: '7.1.2' },
+        { channelCount: 12, layout: CUSTOM_SEVEN_POINT_ONE_POINT_FOUR_CHANNEL_LAYOUT, outputLayout: '7.1.4' }
+    ] as const)('passes $layout.id speaker data to a $outputLayout destination without another copy', ({
         channelCount,
-        layout
+        layout,
+        outputLayout
     }) => {
         const channels: Float32Array[] = [];
         for (let channelIndex = 0; channelIndex < channelCount; channelIndex += 1) {
@@ -185,10 +200,11 @@ describe('CustomAudioChannelLayout', () => {
         const output = prepareCustomAudioOutputChannelData(
             channels,
             layout,
-            channelCount
+            outputLayout
         );
 
         expect(output).toBe(channels);
+        expect(requiresCustomAudioFoldDown(layout, outputLayout)).toBe(false);
     });
 
     it.each([
@@ -196,74 +212,75 @@ describe('CustomAudioChannelLayout', () => {
         {
             expectedFrames: [ 1, 2, 3, 4, 0, 0, 5, 6 ],
             layout: CUSTOM_FIVE_POINT_ONE_CHANNEL_LAYOUT,
-            outputChannelCount: 8
+            outputLayout: '7.1'
         },
         {
             expectedFrames: [ 1, 2, 3, 4, 5, 6, 0, 0 ],
             layout: CUSTOM_FIVE_POINT_ONE_BACK_CHANNEL_LAYOUT,
-            outputChannelCount: 8
+            outputLayout: '7.1'
         },
         // The 6.1 back center splits across the back pair at sqrt(1/2)
         {
             expectedFrames: [ 1, 2, 3, 4, 5 * FOLDED_GAIN, 5 * FOLDED_GAIN, 6, 7 ],
             layout: CUSTOM_SIX_POINT_ONE_CHANNEL_LAYOUT,
-            outputChannelCount: 8
+            outputLayout: '7.1'
         },
         {
             expectedFrames: [ 0, 0, 1, 0, 0, 0 ],
             layout: CUSTOM_MONO_CHANNEL_LAYOUT,
-            outputChannelCount: 6
+            outputLayout: '5.1'
         },
         {
             expectedFrames: [ 0, 0, 1, 0, 0, 0, 0, 0 ],
             layout: CUSTOM_MONO_CHANNEL_LAYOUT,
-            outputChannelCount: 8
+            outputLayout: '7.1'
         },
         {
             expectedFrames: [ 1, 2, 0, 0, 0, 0 ],
             layout: CUSTOM_STEREO_CHANNEL_LAYOUT,
-            outputChannelCount: 6
+            outputLayout: '5.1'
         },
         {
             expectedFrames: [ 1, 2, 0, 3, 0, 0 ],
             layout: CUSTOM_TWO_POINT_ONE_CHANNEL_LAYOUT,
-            outputChannelCount: 6
+            outputLayout: '5.1'
         },
         {
             expectedFrames: [ 1, 2, 3, 0, 0, 0 ],
             layout: CUSTOM_THREE_POINT_ZERO_CHANNEL_LAYOUT,
-            outputChannelCount: 6
+            outputLayout: '5.1'
         },
         {
             expectedFrames: [ 1, 2, 3, 0, 0, 0, 0, 0 ],
             layout: CUSTOM_THREE_POINT_ZERO_CHANNEL_LAYOUT,
-            outputChannelCount: 8
+            outputLayout: '7.1'
         },
         // The 3.0(back) back center splits across the 5.1 surround pair or the 7.1 back pair
         {
             expectedFrames: [ 1, 2, 0, 0, 3 * FOLDED_GAIN, 3 * FOLDED_GAIN ],
             layout: CUSTOM_THREE_POINT_ZERO_BACK_CHANNEL_LAYOUT,
-            outputChannelCount: 6
+            outputLayout: '5.1'
         },
         {
             expectedFrames: [ 1, 2, 0, 0, 3 * FOLDED_GAIN, 3 * FOLDED_GAIN, 0, 0 ],
             layout: CUSTOM_THREE_POINT_ZERO_BACK_CHANNEL_LAYOUT,
-            outputChannelCount: 8
+            outputLayout: '7.1'
         }
     ] as const)(
-        'maps the $layout.id layout to $outputChannelCount speakers by channel name',
-        ({ expectedFrames, layout, outputChannelCount }) => {
+        'maps the $layout.id layout to $outputLayout speakers by channel name',
+        ({ expectedFrames, layout, outputLayout }) => {
             const channels = createNumberedChannels(layout.channels.length);
 
             const output = prepareCustomAudioOutputChannelData(
                 channels,
                 layout,
-                outputChannelCount
+                outputLayout
             );
 
-            expect(output).toHaveLength(outputChannelCount);
+            expect(output).toHaveLength(getCustomAudioOutputChannelCount(outputLayout));
+            expect(output).toHaveLength(expectedFrames.length);
             const outputFrames = getFirstFrames(output);
-            for (let channelIndex = 0; channelIndex < outputChannelCount; channelIndex += 1) {
+            for (let channelIndex = 0; channelIndex < expectedFrames.length; channelIndex += 1) {
                 expect(outputFrames[channelIndex]).toBeCloseTo(expectedFrames[channelIndex], 6);
             }
         }
@@ -273,12 +290,12 @@ describe('CustomAudioChannelLayout', () => {
         const sevenPointOneOutput = prepareCustomAudioOutputChannelData(
             createNumberedChannels(8),
             CUSTOM_SEVEN_POINT_ONE_CHANNEL_LAYOUT,
-            6
+            '5.1'
         );
         const sixPointOneOutput = prepareCustomAudioOutputChannelData(
             createNumberedChannels(7),
             CUSTOM_SIX_POINT_ONE_CHANNEL_LAYOUT,
-            6
+            '5.1'
         );
 
         // Ls = sqrt(1/2)(SL + BL) and Rs = sqrt(1/2)(SR + BR) from FL FR FC LFE BL BR SL SR
@@ -341,29 +358,29 @@ describe('CustomAudioChannelLayout', () => {
     });
 
     it.each([
-        { foldsDown: false, layout: CUSTOM_MONO_CHANNEL_LAYOUT, outputChannelCount: 2 },
-        { foldsDown: false, layout: CUSTOM_STEREO_CHANNEL_LAYOUT, outputChannelCount: 2 },
-        { foldsDown: true, layout: CUSTOM_TWO_POINT_ONE_CHANNEL_LAYOUT, outputChannelCount: 2 },
-        { foldsDown: true, layout: CUSTOM_THREE_POINT_ZERO_CHANNEL_LAYOUT, outputChannelCount: 2 },
-        { foldsDown: false, layout: CUSTOM_THREE_POINT_ZERO_CHANNEL_LAYOUT, outputChannelCount: 6 },
-        { foldsDown: true, layout: CUSTOM_THREE_POINT_ZERO_BACK_CHANNEL_LAYOUT, outputChannelCount: 2 },
-        { foldsDown: false, layout: CUSTOM_THREE_POINT_ZERO_BACK_CHANNEL_LAYOUT, outputChannelCount: 6 },
-        { foldsDown: false, layout: CUSTOM_THREE_POINT_ZERO_BACK_CHANNEL_LAYOUT, outputChannelCount: 8 },
-        { foldsDown: true, layout: CUSTOM_FIVE_POINT_ONE_CHANNEL_LAYOUT, outputChannelCount: 2 },
-        { foldsDown: false, layout: CUSTOM_FIVE_POINT_ONE_CHANNEL_LAYOUT, outputChannelCount: 6 },
-        { foldsDown: false, layout: CUSTOM_FIVE_POINT_ONE_CHANNEL_LAYOUT, outputChannelCount: 8 },
-        { foldsDown: true, layout: CUSTOM_SIX_POINT_ONE_CHANNEL_LAYOUT, outputChannelCount: 6 },
-        { foldsDown: false, layout: CUSTOM_SIX_POINT_ONE_CHANNEL_LAYOUT, outputChannelCount: 8 },
-        { foldsDown: true, layout: CUSTOM_SEVEN_POINT_ONE_CHANNEL_LAYOUT, outputChannelCount: 6 },
-        { foldsDown: false, layout: CUSTOM_SEVEN_POINT_ONE_CHANNEL_LAYOUT, outputChannelCount: 8 }
+        { foldsDown: false, layout: CUSTOM_MONO_CHANNEL_LAYOUT, outputLayout: 'stereo' },
+        { foldsDown: false, layout: CUSTOM_STEREO_CHANNEL_LAYOUT, outputLayout: 'stereo' },
+        { foldsDown: true, layout: CUSTOM_TWO_POINT_ONE_CHANNEL_LAYOUT, outputLayout: 'stereo' },
+        { foldsDown: true, layout: CUSTOM_THREE_POINT_ZERO_CHANNEL_LAYOUT, outputLayout: 'stereo' },
+        { foldsDown: false, layout: CUSTOM_THREE_POINT_ZERO_CHANNEL_LAYOUT, outputLayout: '5.1' },
+        { foldsDown: true, layout: CUSTOM_THREE_POINT_ZERO_BACK_CHANNEL_LAYOUT, outputLayout: 'stereo' },
+        { foldsDown: false, layout: CUSTOM_THREE_POINT_ZERO_BACK_CHANNEL_LAYOUT, outputLayout: '5.1' },
+        { foldsDown: false, layout: CUSTOM_THREE_POINT_ZERO_BACK_CHANNEL_LAYOUT, outputLayout: '7.1' },
+        { foldsDown: true, layout: CUSTOM_FIVE_POINT_ONE_CHANNEL_LAYOUT, outputLayout: 'stereo' },
+        { foldsDown: false, layout: CUSTOM_FIVE_POINT_ONE_CHANNEL_LAYOUT, outputLayout: '5.1' },
+        { foldsDown: false, layout: CUSTOM_FIVE_POINT_ONE_CHANNEL_LAYOUT, outputLayout: '7.1' },
+        { foldsDown: true, layout: CUSTOM_SIX_POINT_ONE_CHANNEL_LAYOUT, outputLayout: '5.1' },
+        { foldsDown: false, layout: CUSTOM_SIX_POINT_ONE_CHANNEL_LAYOUT, outputLayout: '7.1' },
+        { foldsDown: true, layout: CUSTOM_SEVEN_POINT_ONE_CHANNEL_LAYOUT, outputLayout: '5.1' },
+        { foldsDown: false, layout: CUSTOM_SEVEN_POINT_ONE_CHANNEL_LAYOUT, outputLayout: '7.1' }
     ] satisfies ReadonlyArray<{
         foldsDown: boolean
         layout: CustomAudioChannelLayout
-        outputChannelCount: CustomAudioOutputChannelCount
+        outputLayout: CustomAudioOutputLayout
     }>)(
-        'reports whether $layout.id to $outputChannelCount speakers folds down',
-        ({ foldsDown, layout, outputChannelCount }) => {
-            expect(requiresCustomAudioFoldDown(layout, outputChannelCount)).toBe(foldsDown);
+        'reports whether $layout.id to $outputLayout speakers folds down',
+        ({ foldsDown, layout, outputLayout }) => {
+            expect(requiresCustomAudioFoldDown(layout, outputLayout)).toBe(foldsDown);
         }
     );
 
@@ -371,7 +388,177 @@ describe('CustomAudioChannelLayout', () => {
         expect(() => prepareCustomAudioOutputChannelData(
             createNumberedChannels(6),
             CUSTOM_SEVEN_POINT_ONE_CHANNEL_LAYOUT,
-            6
+            '5.1'
         )).toThrow('7.1 audio requires exactly 8 input channels');
+    });
+});
+
+const HEIGHT_LAYOUTS: readonly CustomAudioChannelLayout[] = [
+    CUSTOM_FIVE_POINT_ONE_POINT_TWO_CHANNEL_LAYOUT,
+    CUSTOM_FIVE_POINT_ONE_SIDE_POINT_TWO_CHANNEL_LAYOUT,
+    CUSTOM_FIVE_POINT_ONE_POINT_FOUR_CHANNEL_LAYOUT,
+    CUSTOM_SEVEN_POINT_ONE_POINT_TWO_CHANNEL_LAYOUT,
+    CUSTOM_SEVEN_POINT_ONE_POINT_FOUR_CHANNEL_LAYOUT
+];
+const SURROUND_OUTPUT_LAYOUTS: readonly CustomAudioOutputLayout[] = CUSTOM_AUDIO_OUTPUT_LAYOUTS.filter(layout => layout !== 'stereo');
+// The pairs of a height layout and every other surround output, each of which drops or moves some channel
+const HEIGHT_FOLD_CASES = HEIGHT_LAYOUTS.flatMap(layout => SURROUND_OUTPUT_LAYOUTS
+    .filter(outputLayout => getCustomAudioOutputChannelLayout(outputLayout).id !== layout.id)
+    .map(outputLayout => ({ layout, outputLayout })));
+
+function getPower(channels: readonly Float32Array[]): number {
+    return channels.reduce((power, channel) => power + channel[0] * channel[0], 0);
+}
+
+describe('CustomAudioChannelLayout heights', () => {
+    it.each([
+        { channelCount: 2, channels: [ 'front-left', 'front-right' ], floor: 'stereo', outputLayout: 'stereo' },
+        { channelCount: 6, channels: [ 'front-left', 'front-right', 'front-center', 'low-frequency-effects', 'side-left', 'side-right' ], floor: '5.1', outputLayout: '5.1' },
+        { channelCount: 8, channels: CUSTOM_SEVEN_POINT_ONE_CHANNEL_LAYOUT.channels, floor: '7.1', outputLayout: '7.1' },
+        {
+            channelCount: 8,
+            channels: [ 'front-left', 'front-right', 'front-center', 'low-frequency-effects', 'back-left', 'back-right', 'top-front-left', 'top-front-right' ],
+            floor: '5.1',
+            outputLayout: '5.1.2'
+        },
+        {
+            channelCount: 10,
+            channels: [
+                'front-left', 'front-right', 'front-center', 'low-frequency-effects', 'back-left', 'back-right',
+                'top-front-left', 'top-front-right', 'top-back-left', 'top-back-right'
+            ],
+            floor: '5.1',
+            outputLayout: '5.1.4'
+        },
+        {
+            channelCount: 10,
+            channels: [
+                'front-left', 'front-right', 'front-center', 'low-frequency-effects', 'back-left', 'back-right', 'side-left', 'side-right',
+                'top-front-left', 'top-front-right'
+            ],
+            floor: '7.1',
+            outputLayout: '7.1.2'
+        },
+        {
+            channelCount: 12,
+            channels: [
+                'front-left', 'front-right', 'front-center', 'low-frequency-effects', 'back-left', 'back-right', 'side-left', 'side-right',
+                'top-front-left', 'top-front-right', 'top-back-left', 'top-back-right'
+            ],
+            floor: '7.1',
+            outputLayout: '7.1.4'
+        }
+    ] as const)('lays the $outputLayout output out in WAVE order over $channelCount channels', ({ channelCount, channels, floor, outputLayout }) => {
+        expect(getCustomAudioOutputChannelLayout(outputLayout).channels).toEqual(channels);
+        expect(getCustomAudioOutputChannelCount(outputLayout)).toBe(channelCount);
+        expect(getCustomAudioOutputFloorLayout(outputLayout)).toBe(floor);
+    });
+
+    it.each([
+        // Heights fold into the front and back pairs beneath them, each speaker at sqrt(1/2) of the pair it sums
+        {
+            expectedFrames: [ FOLDED_GAIN * (1 + 9), FOLDED_GAIN * (2 + 10), 3, 4, FOLDED_GAIN * (5 + 11), FOLDED_GAIN * (6 + 12), 7, 8 ],
+            layout: CUSTOM_SEVEN_POINT_ONE_POINT_FOUR_CHANNEL_LAYOUT,
+            outputLayout: '7.1'
+        },
+        {
+            expectedFrames: [ 1, 2, 3, 4, FOLDED_GAIN * (5 + 11), FOLDED_GAIN * (6 + 12), 7, 8, 9, 10 ],
+            layout: CUSTOM_SEVEN_POINT_ONE_POINT_FOUR_CHANNEL_LAYOUT,
+            outputLayout: '7.1.2'
+        },
+        {
+            expectedFrames: [ FOLDED_GAIN * (1 + 7), FOLDED_GAIN * (2 + 8), 3, 4, 5, 6 ],
+            layout: CUSTOM_FIVE_POINT_ONE_POINT_TWO_CHANNEL_LAYOUT,
+            outputLayout: '5.1'
+        },
+        // A 5.1 surround sums the side, back, and top back channels at sqrt(1/3) each
+        {
+            expectedFrames: [
+                FOLDED_GAIN * (1 + 9),
+                FOLDED_GAIN * (2 + 10),
+                3,
+                4,
+                Math.sqrt(1 / 3) * (5 + 7 + 11),
+                Math.sqrt(1 / 3) * (6 + 8 + 12)
+            ],
+            layout: CUSTOM_SEVEN_POINT_ONE_POINT_FOUR_CHANNEL_LAYOUT,
+            outputLayout: '5.1'
+        },
+        // The top back pair of 5.1.4 folds into the 7.1.2 back pair, and the 7.1.2 sides stay silent
+        {
+            expectedFrames: [ 1, 2, 3, 4, FOLDED_GAIN * (5 + 9), FOLDED_GAIN * (6 + 10), 0, 0, 7, 8 ],
+            layout: CUSTOM_FIVE_POINT_ONE_POINT_FOUR_CHANNEL_LAYOUT,
+            outputLayout: '7.1.2'
+        },
+        // FFmpeg's E-AC-3 5.1(side) with heights folds its heights into the front pair of a 5.1 output, and lands on the 5.1.2 back pair and heights
+        {
+            expectedFrames: [ FOLDED_GAIN * (1 + 7), FOLDED_GAIN * (2 + 8), 3, 4, 5, 6 ],
+            layout: CUSTOM_FIVE_POINT_ONE_SIDE_POINT_TWO_CHANNEL_LAYOUT,
+            outputLayout: '5.1'
+        },
+        {
+            expectedFrames: [ 1, 2, 3, 4, 5, 6, 7, 8 ],
+            layout: CUSTOM_FIVE_POINT_ONE_SIDE_POINT_TWO_CHANNEL_LAYOUT,
+            outputLayout: '5.1.2'
+        },
+        // A smaller layout plays to a height output on its own speakers, and the heights stay silent
+        {
+            expectedFrames: [ 1, 2, 3, 4, 5, 6, 7, 8, 0, 0, 0, 0 ],
+            layout: CUSTOM_SEVEN_POINT_ONE_CHANNEL_LAYOUT,
+            outputLayout: '7.1.4'
+        },
+        {
+            expectedFrames: [ 1, 2, 3, 4, 5, 6, 0, 0, 0, 0 ],
+            layout: CUSTOM_FIVE_POINT_ONE_CHANNEL_LAYOUT,
+            outputLayout: '5.1.4'
+        },
+        {
+            expectedFrames: [ 1, 2, 3, 4, 5, 6, 0, 0, 7, 8, 0, 0 ],
+            layout: CUSTOM_FIVE_POINT_ONE_POINT_TWO_CHANNEL_LAYOUT,
+            outputLayout: '7.1.4'
+        }
+    ] as const)('maps $layout.id to $outputLayout by channel name', ({ expectedFrames, layout, outputLayout }) => {
+        const output = prepareCustomAudioOutputChannelData(createNumberedChannels(layout.channels.length), layout, outputLayout);
+
+        expect(output).toHaveLength(expectedFrames.length);
+        const outputFrames = getFirstFrames(output);
+        for (let channelIndex = 0; channelIndex < expectedFrames.length; channelIndex += 1) {
+            expect(outputFrames[channelIndex], `channel ${channelIndex}`).toBeCloseTo(expectedFrames[channelIndex], 5);
+        }
+    });
+
+    it.each(HEIGHT_FOLD_CASES)('keeps the power of a signal common to every $layout.id channel on a $outputLayout output', ({ layout, outputLayout }) => {
+        const channels = layout.channels.map(() => new Float32Array([ 0.25 ]));
+
+        const output = prepareCustomAudioOutputChannelData(channels, layout, outputLayout);
+
+        expect(output).toHaveLength(getCustomAudioOutputChannelCount(outputLayout));
+        expect(getPower(output)).toBeCloseTo(getPower(channels), 6);
+    });
+
+    it.each(HEIGHT_FOLD_CASES)('limits $layout.id on a $outputLayout output only when a speaker sums channels', ({ layout, outputLayout }) => {
+        const outputChannels = getCustomAudioOutputChannelLayout(outputLayout).channels;
+        // A height without its speaker folds onto a floor speaker, and side and back pairs share a 5.1 floor's surround pair; a lone side pair takes a back pair alone
+        const foldsHeight = layout.channels.some(channel => channel.startsWith('top-') && !outputChannels.includes(channel));
+        const foldsSurroundPairs = layout.channels.includes('side-left')
+            && layout.channels.includes('back-left')
+            && !(outputChannels.includes('side-left') && outputChannels.includes('back-left'));
+
+        expect(requiresCustomAudioFoldDown(layout, outputLayout)).toBe(foldsHeight || foldsSurroundPairs);
+    });
+
+    it.each(HEIGHT_LAYOUTS)('mixes $id to stereo as its folded floor through the selected matrix', layout => {
+        const channels = createNumberedChannels(layout.channels.length);
+        const floorOutput = layout.id.startsWith('7.1') ? '7.1' : '5.1';
+        const floorLayout = getCustomAudioOutputChannelLayout(floorOutput);
+
+        for (const algorithm of Object.values(CUSTOM_AUDIO_DOWNMIX_ALGORITHMS)) {
+            const stereo = prepareCustomAudioOutputChannelData(channels, layout, 'stereo', algorithm);
+            const folded = prepareCustomAudioOutputChannelData(channels, layout, floorOutput);
+            const expected = prepareCustomAudioOutputChannelData(folded, floorLayout, 'stereo', algorithm);
+
+            expect(stereo, algorithm).toEqual(expected);
+        }
+        expect(requiresCustomAudioFoldDown(layout, 'stereo')).toBe(true);
     });
 });

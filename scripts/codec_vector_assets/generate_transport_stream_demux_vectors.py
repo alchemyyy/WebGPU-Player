@@ -5,7 +5,8 @@ Each vector is muxed by FFmpeg's MPEG-TS muxer, and its M2TS twin by the same mu
 Together they cover the stream types Mediabunny's demuxer reads beyond H.264 and HEVC:
 - MPEG-1 video (stream type 0x01) beside MP3, an FFmpeg encode, in MPEG-TS alone;
 - MPEG-2 video (stream type 0x02) with B-frames beside AC-3, an FFmpeg encode;
-- VC-1 Advanced profile (stream type 0xEA with its VC-1 registration descriptor), remuxed from the committed qualification vector, since FFmpeg has no VC-1 encoder;
+- VC-1 Advanced profile (stream type 0xEA with its VC-1 registration descriptor), remuxed from the committed qualification vector, since FFmpeg has no VC-1 encoder,
+  and in MPEG-TS a copy whose PMT the generator strips of that descriptor, as FFmpeg's demuxer reads 0xEA as VC-1 without it;
 - DTS core (stream type 0x82) in M2TS alone, as a Blu-ray program carries it, remuxed from the committed DTS test vector, since FFmpeg's DTS encoder is experimental.
   In plain MPEG-TS FFmpeg writes 0x82 without the registration that names it DTS, so FFprobe, and so Jellyfin, read that stream as MP3.
 
@@ -57,6 +58,11 @@ SINGLE_THREAD_ARGUMENTS: Final = ("-threads", "1")
 TRANSPORT_STREAM_EXTENSION: Final = ".ts"
 M2TS_EXTENSION: Final = ".m2ts"
 M2TS_MODE_ARGUMENTS: Final = ("-mpegts_m2ts_mode", "1")
+TRANSPORT_STREAM_PACKET_BYTE_LENGTH: Final = 188
+PROGRAM_MAP_TABLE_ID: Final = 0x02
+REGISTRATION_DESCRIPTOR_TAG: Final = 0x05
+VC1_FORMAT_IDENTIFIER: Final = b"VC-1"
+MPEG_2_CRC_POLYNOMIAL: Final = 0x04C1_1DB7
 
 
 @dataclass(frozen=True)
@@ -91,6 +97,7 @@ ENCODED_VECTORS: Final = (
     ),
 )
 VC1_BASE_NAME: Final = "vc1-advanced"
+UNREGISTERED_VC1_FILE_NAME: Final = "vc1-advanced-unregistered.ts"
 
 
 def parse_arguments(command_arguments: Sequence[str] | None) -> argparse.Namespace:
@@ -183,6 +190,70 @@ def remux_VC1_vector(tools: MediaTools, elementary_stream_path: Path, extension:
     ])
 
 
+def get_MPEG2_CRC32(data: bytes | bytearray) -> int:
+    """Returns the MPEG-2 CRC-32, which is zero over a section that ends with its own CRC."""
+
+    CRC = 0xFFFF_FFFF
+    for byte_value in data:
+        CRC ^= byte_value << 24
+        for _bit_index in range(8):
+            CRC = ((CRC << 1) ^ MPEG_2_CRC_POLYNOMIAL) & 0xFFFF_FFFF if CRC & 0x8000_0000 else (CRC << 1) & 0xFFFF_FFFF
+    return CRC
+
+
+def remove_VC1_registration_descriptors(data: bytes) -> bytes:
+    """
+    Returns the MPEG-TS stream with the 'VC-1' registration descriptor removed from every PMT, its lengths and CRC recomputed.
+    FFmpeg's muxer writes each PMT whole in one packet, which the removal pads with stuffing bytes.
+    """
+
+    if len(data) % TRANSPORT_STREAM_PACKET_BYTE_LENGTH != 0:
+        raise VectorGenerationError("The MPEG-TS stream is not a whole number of packets")
+    output = bytearray(data)
+    removed_count = 0
+    for packet_offset in range(0, len(output), TRANSPORT_STREAM_PACKET_BYTE_LENGTH):
+        packet = output[packet_offset : packet_offset + TRANSPORT_STREAM_PACKET_BYTE_LENGTH]
+        if packet[0] != 0x47 or not packet[1] & 0x40 or not packet[3] & 0x10:
+            continue
+        payload_offset = 4 + (1 + packet[4] if packet[3] & 0x20 else 0)
+        section_offset = payload_offset + 1 + packet[payload_offset]
+        if section_offset + 3 > len(packet) or packet[section_offset] != PROGRAM_MAP_TABLE_ID:
+            continue
+        section_end_offset = section_offset + 3 + (((packet[section_offset + 1] & 0x0F) << 8) | packet[section_offset + 2])
+        if section_end_offset > len(packet) or get_MPEG2_CRC32(packet[section_offset:section_end_offset]) != 0:
+            raise VectorGenerationError("A PMT does not end with a valid CRC in its packet")
+        program_info_offset = section_offset + 12
+        program_info_length = ((packet[section_offset + 10] & 0x0F) << 8) | packet[section_offset + 11]
+        section = bytearray(packet[section_offset:program_info_offset + program_info_length])
+        entry_offset = program_info_offset + program_info_length
+        while entry_offset < section_end_offset - 4:
+            ES_info_offset = entry_offset + 5
+            ES_info_end_offset = ES_info_offset + (((packet[entry_offset + 3] & 0x0F) << 8) | packet[entry_offset + 4])
+            descriptors = bytearray()
+            descriptor_offset = ES_info_offset
+            while descriptor_offset < ES_info_end_offset:
+                descriptor_end_offset = descriptor_offset + 2 + packet[descriptor_offset + 1]
+                descriptor = packet[descriptor_offset:descriptor_end_offset]
+                if descriptor[0] == REGISTRATION_DESCRIPTOR_TAG and descriptor[2:6] == VC1_FORMAT_IDENTIFIER:
+                    removed_count += 1
+                else:
+                    descriptors += descriptor
+                descriptor_offset = descriptor_end_offset
+            section += packet[entry_offset : entry_offset + 3]
+            section += bytes(((packet[entry_offset + 3] & 0xF0) | (len(descriptors) >> 8), len(descriptors) & 0xFF))
+            section += descriptors
+            entry_offset = ES_info_end_offset
+        section_length = len(section) + 4 - 3
+        section[1] = (section[1] & 0xF0) | (section_length >> 8)
+        section[2] = section_length & 0xFF
+        section += get_MPEG2_CRC32(section).to_bytes(4, "big")
+        packet[section_offset:] = section + b"\xff" * (len(packet) - section_offset - len(section))
+        output[packet_offset : packet_offset + TRANSPORT_STREAM_PACKET_BYTE_LENGTH] = packet
+    if removed_count == 0:
+        raise VectorGenerationError("The MPEG-TS stream has no VC-1 registration descriptor")
+    return bytes(output)
+
+
 def remux_DTS_vector(tools: MediaTools, output_path: Path) -> None:
     """Remuxes the DTS test vector's frames into M2TS."""
 
@@ -250,6 +321,11 @@ def main(command_arguments: Sequence[str] | None = None) -> int:
                 remux_VC1_vector(tools, Path(temporary_directory) / f"{VC1_BASE_NAME}.vc1", extension, remuxed_path)
                 verify_vector(tools, file_name, remuxed_path, ("vc1",), VC1_FRAME_COUNT)
                 install_vector(remuxed_path, file_name, check=arguments.check)
+                if extension == TRANSPORT_STREAM_EXTENSION:
+                    unregistered_path = Path(temporary_directory) / UNREGISTERED_VC1_FILE_NAME
+                    unregistered_path.write_bytes(remove_VC1_registration_descriptors(remuxed_path.read_bytes()))
+                    verify_vector(tools, UNREGISTERED_VC1_FILE_NAME, unregistered_path, ("vc1",), VC1_FRAME_COUNT)
+                    install_vector(unregistered_path, UNREGISTERED_VC1_FILE_NAME, check=arguments.check)
             file_name = DTS_BASE_NAME + M2TS_EXTENSION
             remuxed_path = Path(temporary_directory) / file_name
             remux_DTS_vector(tools, remuxed_path)

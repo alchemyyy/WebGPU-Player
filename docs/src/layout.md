@@ -9,10 +9,10 @@
 | `test/` | The Vitest suites, mirroring `src/`, and shared helpers in `test/helpers/` |
 | `sandbox/` | The testing sandbox, a local web app that plays media from a picked folder through the engine: its Vite config, page, and sources in `src/`. See [Sandbox](sandbox.md) |
 | `wasm/` | The engine's own WebAssembly modules and their build: the `libdovi` crate, the audio output stage, license texts, and the Makefile. See [WebAssembly build](decoders.md) |
-| `wgpud/` | The decoder projects, each of which builds one [decoder package](decoder-packages.md), with its tests in `test/`, and their shared build rules. See [WebAssembly build](decoders.md#decoder-projects) |
+| `wgpud/` | The decoder projects, each of which builds one [decoder package](decoder-packages.md), with its tests in `test/`, their shared build rules, and `atmos/`, the Dolby Atmos sources the `eac3` and `truehd` projects compile in. See [WebAssembly build](decoders.md#decoder-projects) |
 | `wgpup/` | The pass projects, whose WGSL pass files a host offers as optional passes, and the license texts of their upstream sources. See [Bundled passes](bundled-passes.md) |
 | `vendor/` | The FFmpeg and dcadec submodules, fetched only by `make -C wgpud sources`, and the Mediabunny fork in `vendor/mediabunny/`, which every checkout needs (see [Set up a checkout](setup.md)) |
-| `scripts/` | `build.mjs` (the served assets), `library-assets.mjs` (which file is served from where), `decoder-packages.mjs` (the decoder projects' build), and the codec vector generators. See [Codec vectors](codec-vectors.md) |
+| `scripts/` | `build.mjs` (the served assets), `library-assets.mjs` (which file is served from where), `decoder-packages.mjs` (the decoder projects' build), `generate-atmos-hrir.mjs` (the head-related impulse responses the Atmos binaural renderer carries), and the codec vector generators. See [Codec vectors](codec-vectors.md) |
 | `tools/` | Development tooling that never ships, and `constants.json`. See [Tools](tools.md) |
 | `docs/` | This book: chapters in `src/`, PlantUML sources in `diagrams/` and their SVGs in `src/diagrams/`, stylesheets, scripts, and the favicon in `theme/`, and the built book in `book/` |
 | `images/` | The project logo, `webgpu-player-logo.svg`, the Inkscape source of the favicon |

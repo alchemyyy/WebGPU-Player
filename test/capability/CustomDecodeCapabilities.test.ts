@@ -24,6 +24,7 @@ import CustomDecodeCapabilityProbe, {
     type RawHDRVideoOutputProbeResult,
     type WebCodecsCapabilityEnvironment
 } from 'webgpu-player/capability/CustomDecodeCapabilities';
+import { createNativeSevenPointOneAudioCapabilityVector } from 'webgpu-player/capability/vectors/NativeSevenPointOneAudioCapabilityVectors';
 
 type CapabilityEnvironmentHarness = {
     audioProbe: Mock
@@ -39,6 +40,10 @@ type CapabilityEnvironmentHarness = {
 type NativeSurroundAudioSupport = Readonly<{
     configuration: ReadonlySet<string>
     output?: ReadonlySet<string>
+    sevenPointOne?: Readonly<{
+        configuration: ReadonlySet<string>
+        output?: ReadonlySet<string>
+    }>
 }>;
 
 const CAPABILITY_PROBE_TIMEOUT_MILLISECONDS = 2_000;
@@ -71,15 +76,35 @@ function createEnvironment(
     }
 ): CapabilityEnvironmentHarness {
     const nativeSurroundAudioOutputSupport = nativeSurroundAudioSupport.output ?? nativeSurroundAudioSupport.configuration;
+    const sevenPointOneConfigurationSupport = nativeSurroundAudioSupport.sevenPointOne?.configuration ?? new Set<string>();
+    const sevenPointOneOutputSupport = nativeSurroundAudioSupport.sevenPointOne?.output ?? sevenPointOneConfigurationSupport;
+    const selectAudioSupport = (
+        numberOfChannels: number,
+        stereoSupport: ReadonlySet<string>,
+        fivePointOneSupport: ReadonlySet<string>,
+        sevenPointOneSupport: ReadonlySet<string>
+    ): ReadonlySet<string> => {
+        switch (numberOfChannels) {
+            case 6:
+                return fivePointOneSupport;
+            case 8:
+                return sevenPointOneSupport;
+            default:
+                return stereoSupport;
+        }
+    };
     const videoProbe = vi.fn(async (config: VideoDecoderConfig): Promise<VideoDecoderSupport> => ({
         config,
         supported: videoSupport.has(config.codec)
     }));
     const audioProbe = vi.fn(async (config: AudioDecoderConfig): Promise<AudioDecoderSupport> => ({
         config,
-        supported: config.numberOfChannels === 6 ?
-            nativeSurroundAudioSupport.configuration.has(config.codec) :
-            audioSupport.has(config.codec)
+        supported: selectAudioSupport(
+            config.numberOfChannels,
+            audioSupport,
+            nativeSurroundAudioSupport.configuration,
+            sevenPointOneConfigurationSupport
+        ).has(config.codec)
     }));
     const rawHDRVideoOutputProbe = vi.fn(async (probeRequest: {
         codec: string
@@ -98,10 +123,11 @@ function createEnvironment(
     }): Promise<boolean> => nativeVideoOutputSupport.has(probeRequest.configuration.codec));
     const nativeAudioOutputProbe = vi.fn(async (probeRequest: {
         configuration: AudioDecoderConfig
-    }): Promise<boolean> => (
-        probeRequest.configuration.numberOfChannels === 6 ?
-            nativeSurroundAudioOutputSupport :
-            nativeAudioOutputSupport
+    }): Promise<boolean> => selectAudioSupport(
+        probeRequest.configuration.numberOfChannels,
+        nativeAudioOutputSupport,
+        nativeSurroundAudioOutputSupport,
+        sevenPointOneOutputSupport
     ).has(probeRequest.configuration.codec));
     return {
         audioProbe,
@@ -279,6 +305,10 @@ describe('CustomDecodeCapabilityProbe', () => {
             'mp4a.40.2',
             'opus',
             'flac',
+            'vorbis',
+            'mp4a.40.2',
+            'opus',
+            'flac',
             'vorbis'
         ]);
         expect(harness.videoProbe.mock.calls[0][0]).toMatchObject({
@@ -366,7 +396,7 @@ describe('CustomDecodeCapabilityProbe', () => {
             audioProbeCount: 5,
             mediabunnyAudioCodecCount: CUSTOM_MEDIABUNNY_PCM_AUDIO_CODECS.length,
             nativeHDRVideoProbeCount: 2,
-            nativeSurroundAudioProbeCount: 4,
+            nativeSurroundAudioProbeCount: 8,
             nativeUltraHDVideoProbeCount: 3,
             rawHDRVideoProbeCount: 3,
             reason: 'complete',
@@ -426,7 +456,7 @@ describe('CustomDecodeCapabilityProbe', () => {
         );
         expect(harness.audioProbe).toHaveBeenCalledTimes(
             CUSTOM_WEB_CODECS_AUDIO_CODECS.length
-                + CUSTOM_NATIVE_SURROUND_AUDIO_CODECS.length
+                + (2 * CUSTOM_NATIVE_SURROUND_AUDIO_CODECS.length)
         );
     });
 
@@ -588,6 +618,67 @@ describe('CustomDecodeCapabilityProbe', () => {
             ))).toEqual(chunkByteLengths);
         }
     );
+
+    it.each(CUSTOM_NATIVE_SURROUND_AUDIO_CODECS)(
+        'qualifies native 7.1 %s audio with a tone vector, apart from its 5.1 verdict',
+        async codec => {
+            const codecString = codec === 'aac' ? 'mp4a.40.2' : codec;
+            const codecSupport = new Set([ codecString ]);
+            const harness = createEnvironment(
+                new Set(),
+                codecSupport,
+                new Set(),
+                false,
+                new Set(),
+                codecSupport,
+                { configuration: codecSupport, sevenPointOne: { configuration: codecSupport, output: new Set() } }
+            );
+
+            const capabilities = await new CustomDecodeCapabilityProbe(harness.environment).probe();
+
+            expect(capabilities.nativeSurroundAudio?.[codec]).toMatchObject({ inputChannelCount: 6, status: 'supported' });
+            expect(capabilities.nativeSevenPointOneAudio?.[codec]).toMatchObject({
+                codecString,
+                inputChannelCount: 8,
+                reason: 'decode-output-missing',
+                sampleRate: 48_000,
+                status: 'unsupported'
+            });
+            const sevenPointOneRequests = harness.nativeAudioOutputProbe.mock.calls.filter(
+                call => call[0].configuration.numberOfChannels === 8
+            );
+            expect(sevenPointOneRequests).toHaveLength(1);
+            const request = sevenPointOneRequests[0][0];
+            expect(request).toMatchObject({
+                codec,
+                configuration: { codec: codecString, numberOfChannels: 8, sampleRate: 48_000 },
+                expectedNumberOfChannels: 8,
+                expectedSampleRate: 48_000
+            });
+            expect(request.channelTones).toHaveLength(8);
+            expect(request.configuration.description).toBeInstanceOf(Uint8Array);
+            expect(request.encodedChunks.length).toBeGreaterThan(0);
+        }
+    );
+
+    it('keeps a 7.1 verdict when the 5.1 one fails', async () => {
+        const codecSupport = new Set([ 'flac' ]);
+        const harness = createEnvironment(
+            new Set(),
+            codecSupport,
+            new Set(),
+            false,
+            new Set(),
+            codecSupport,
+            { configuration: new Set(), sevenPointOne: { configuration: codecSupport } }
+        );
+
+        const capabilities = await new CustomDecodeCapabilityProbe(harness.environment).probe();
+
+        expect(capabilities.nativeSurroundAudio?.flac).toMatchObject({ reason: 'config-unsupported', status: 'unsupported' });
+        expect(capabilities.nativeSevenPointOneAudio?.flac).toMatchObject({ reason: 'decode-output-verified', status: 'supported' });
+        expect(capabilities.probeStates?.['native-seven-point-one-audio']).toBe('probed');
+    });
 
     it('rejects audio config support without matching decoded output', async () => {
         const harness = createEnvironment(new Set(), new Set([ 'opus' ]), new Set(), false, new Set(), new Set());
@@ -1280,6 +1371,75 @@ describe('CustomDecodeCapabilityProbe', () => {
             expectedTimestamp: 0
         })).resolves.toBe(false);
         expect(closeAudioData).toHaveBeenCalledOnce();
+    });
+
+    it.each([
+        { name: 'WAVE 7.1 order', order: [ 0, 1, 2, 3, 4, 5, 6, 7 ], supported: true },
+        { name: 'Vorbis and Opus order', order: [ 0, 2, 1, 6, 7, 4, 5, 3 ], supported: false },
+        { name: '7.1(wide) order', order: [ 0, 1, 2, 3, 6, 7, 4, 5 ], supported: false },
+        { name: 'six channels', order: [ 0, 1, 2, 3, 4, 5 ], supported: false },
+        { name: 'silence', order: [ -1, -1, -1, -1, -1, -1, -1, -1 ], supported: false }
+    ])('qualifies native 7.1 tone output across AudioData outputs: $name', async ({ order, supported }) => {
+        const sampleRate = 48_000;
+        const framesPerOutput = 1_024;
+        const outputCount = 4;
+        const tones = createNativeSevenPointOneAudioCapabilityVector('aac').channelTones;
+        const closeAudioData = vi.fn();
+        class FakeAudioDecoder {
+            public state: CodecState = 'unconfigured';
+
+            public constructor(private readonly callbacks: AudioDecoderInit) {}
+
+            public close(): void {
+                this.state = 'closed';
+            }
+
+            public configure(): void {
+                this.state = 'configured';
+            }
+
+            public decode(): void {
+                return;
+            }
+
+            public flush(): Promise<void> {
+                for (let outputIndex = 0; outputIndex < outputCount; outputIndex += 1) {
+                    const firstFrame = outputIndex * framesPerOutput;
+                    this.callbacks.output({
+                        close: closeAudioData,
+                        copyTo: (destination: AllowSharedBufferSource, options: AudioDataCopyToOptions): void => {
+                            const samples = destination as Float32Array;
+                            const sourceChannel = order[options.planeIndex];
+                            for (let frame = 0; frame < samples.length; frame += 1) {
+                                samples[frame] = sourceChannel < 0 ?
+                                    0 :
+                                    0.25 * Math.sin((2 * Math.PI * tones[sourceChannel].frequency * (firstFrame + frame)) / sampleRate);
+                            }
+                        },
+                        duration: 21_333,
+                        numberOfChannels: order.length,
+                        numberOfFrames: framesPerOutput,
+                        sampleRate,
+                        timestamp: outputIndex * 21_333
+                    } as unknown as AudioData);
+                }
+                return Promise.resolve();
+            }
+        }
+        class FakeEncodedAudioChunk {}
+        vi.stubGlobal('AudioDecoder', FakeAudioDecoder);
+        vi.stubGlobal('EncodedAudioChunk', FakeEncodedAudioChunk);
+        const outputProbe = createNativeAudioOutputProbe();
+
+        await expect(outputProbe?.({
+            channelTones: tones,
+            codec: 'aac',
+            configuration: { codec: 'mp4a.40.2', numberOfChannels: 8, sampleRate },
+            encodedChunks: [ { data: new Uint8Array([ 1 ]), duration: 21_333, timestamp: 0 } ],
+            expectedNumberOfChannels: 8,
+            expectedSampleRate: sampleRate
+        })).resolves.toBe(supported);
+        expect(closeAudioData).toHaveBeenCalledTimes(outputCount);
     });
 
     it('closes a native audio decoder whose flush never settles', async () => {
@@ -2535,6 +2695,37 @@ describe('item-scoped capability probe selection', () => {
         }
     });
 
+    it.each([
+        { probes: [ 'h264-raw-format:high420-10' ], stream: { BitDepth: 10, Codec: 'h264', PixelFormat: 'yuv420p10le', Profile: 'High 10', Type: 'Video', VideoRange: 'SDR' } },
+        // A profile name hides the chroma format, so every variant the profile codes at the stream's depth decides its negotiation
+        { probes: [ 'h264-raw-format:high422-8' ], stream: { BitDepth: 8, Codec: 'h264', PixelFormat: 'yuv422p', Profile: 'High 4:2:2 Intra', Type: 'Video', VideoRange: 'SDR' } },
+        {
+            probes: [ 'h264-raw-format:high420-10', 'h264-raw-format:high422-10' ],
+            stream: { BitDepth: 10, Codec: 'h264', PixelFormat: 'yuv422p10le', Profile: 'High 4:2:2 Intra', Type: 'Video', VideoRange: 'SDR' }
+        },
+        {
+            probes: [ 'h264-raw-format:high422-8', 'h264-raw-format:high444-8' ],
+            stream: { BitDepth: 8, Codec: 'h264', PixelFormat: 'yuv444p', Profile: 'High 4:4:4 Predictive', Type: 'Video', VideoRange: 'SDR' }
+        },
+        {
+            probes: [ 'h264-raw-format:high420-10', 'h264-raw-format:high422-10', 'h264-raw-format:high444-10' ],
+            stream: { BitDepth: 10, Codec: 'h264', PixelFormat: 'yuv444p10le', Profile: 'High 4:4:4 Predictive', Type: 'Video', VideoRange: 'HDR' }
+        }
+    ])('selects the H.264 raw format probes $probes for its stream\'s profile and depth, beside the profile probe', ({ probes, stream }) => {
+        const videoProbes = [ ...getSelectedVideoProbes(createItem([ stream ])) ];
+
+        expect(videoProbes.filter((selected: string): boolean => selected.startsWith('h264-raw-format:'))).toEqual(probes);
+        expect(videoProbes).toContain('h264-profiles');
+    });
+
+    it('selects no H.264 raw format probe for 8-bit 4:2:0 H.264', () => {
+        for (const profile of [ 'High', 'High 10' ]) {
+            expect([ ...getSelectedVideoProbes(createItem([ { ...SDR_H264_STREAM, PixelFormat: 'yuv420p', Profile: profile } ])) ].some(
+                (selected: string): boolean => selected.startsWith('h264-raw-format:')
+            )).toBe(false);
+        }
+    });
+
     it('unions the video streams of every source of an item', () => {
         const videoProbes = getSelectedVideoProbes(createItem([ SDR_H264_STREAM ], [ SDR_HEVC_STREAM ]));
 
@@ -2593,7 +2784,7 @@ describe('item-scoped capability probe selection', () => {
         expect(repeatedCapabilities).toBe(hevcCapabilities);
         expect(harness.audioProbe).toHaveBeenCalledTimes(
             CUSTOM_WEB_CODECS_AUDIO_CODECS.length
-                + CUSTOM_NATIVE_SURROUND_AUDIO_CODECS.length
+                + (2 * CUSTOM_NATIVE_SURROUND_AUDIO_CODECS.length)
         );
         // The SDR and Ultra HD configurations of the HEVC item
         expect(harness.videoProbe).toHaveBeenCalledTimes(2);

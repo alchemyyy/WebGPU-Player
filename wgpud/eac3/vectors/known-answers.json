@@ -1,0 +1,23 @@
+{
+    "decoderOptions": [
+        "-cpuflags",
+        "0"
+    ],
+    "ffmpeg": "2026-03-01-git-862338fe31-full_build-www.gyan.dev",
+    "vectors": [
+        {
+            "channelCount": 6,
+            "channelMask": 1551,
+            "file": "joc-5.1.mkv",
+            "frameCount": 24576,
+            "pcmSHA256": "ff64c7ee3b397335b4b53cae0a302e2ee68b3abc6b9bf1e084ca4b55b2877f3a"
+        },
+        {
+            "channelCount": 8,
+            "channelMask": 22031,
+            "file": "joc-5.1.2-dependent.mkv",
+            "frameCount": 1536,
+            "pcmSHA256": "ce4ae8d2cd38059a07386d0d822d8b15c513a3857eb519146eb605cf4056a04b"
+        }
+    ]
+}

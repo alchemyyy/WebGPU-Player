@@ -512,13 +512,17 @@ function describeAudioSection(controller: CustomPlaybackTelemetry, route: Active
     return { id: 'audio', rows, title: 'Audio' };
 }
 
-/** The source's channels and rate, then what the output plays. */
+/** The source's channels and rate, then what the output plays: its layout, channels, and rate, and the objects a package renders. */
 function describeAudioLayout(decode: CustomDecodeSessionTelemetry): string {
     if (decode.audioCodec === null) {
         return NONE_TEXT;
     }
     const sourceLayout = describeChannelsAndRate(decode.audioSourceChannelCount, decode.audioSourceSampleRate);
-    const outputLayout = describeChannelsAndRate(decode.audioChannelCount, decode.audioSampleRate);
+    const outputLayout = joinPresentValues([
+        decode.decodedAudioOutputLayout,
+        describeChannelsAndRate(decode.audioChannelCount, decode.audioSampleRate),
+        decode.decodedAudioObjectCount === null ? null : `${decode.decodedAudioObjectCount} objects`
+    ]);
     return `${decode.audioCodec}: ${sourceLayout} -> ${outputLayout}`;
 }
 

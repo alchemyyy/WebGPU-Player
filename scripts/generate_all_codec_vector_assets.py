@@ -32,10 +32,13 @@ GENERATOR_STEPS: Final = (
     GeneratorStep("generate_seven_point_one_downmix_reference.py"),
     GeneratorStep("generate_HEVC_range_extension_vectors.py"),
     GeneratorStep("generate_AV1_raw_format_vectors.py"),
+    GeneratorStep("generate_H264_raw_format_vectors.py"),
     GeneratorStep("generate_mpeg2_decoder_vectors.py"),
     GeneratorStep("generate_jpeg2000_decoder_vectors.py"),
     GeneratorStep("generate_av1_decoder_vectors.py"),
     GeneratorStep("generate_mpeg4_decoder_vectors.py"),
+    GeneratorStep("generate_wma_decoder_vectors.py"),
+    GeneratorStep("generate_eac3_joc_vectors.py"),
     # The decoder projects' self-test vectors read the range-extension vectors and the projects' own media above, so they generate after them
     GeneratorStep("generate_decoder_package_vectors.py"),
     GeneratorStep("generate_dolby_vision_AV1_vectors.py"),

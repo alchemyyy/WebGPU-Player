@@ -13,18 +13,22 @@ It does not play live streams, HLS or DASH, or a server transcode.
 
 | Container | Video | Audio |
 | --- | --- | --- |
-| Matroska | H.264, HEVC, VP8, VP9, AV1, MPEG-1, MPEG-2, VC-1, WMV3, MPEG-4 Part 2, H.263, MS-MPEG4 | AAC, Opus, FLAC, MP3, Vorbis, AC-3, E-AC-3, DTS, TrueHD, MLP, PCM |
+| Matroska | H.264, HEVC, VP8, VP9, AV1, MPEG-1, MPEG-2, VC-1, WMV3, MPEG-4 Part 2, H.263, MS-MPEG4 | AAC, Opus, FLAC, MP3, Vorbis, AC-3, E-AC-3, DTS, TrueHD, MLP, WMA, PCM |
 | WebM | VP8, VP9, AV1 | Opus, Vorbis |
 | MP4, M4V, MOV, 3GP, 3G2 | H.264, HEVC, VP8, VP9, AV1, VC-1, MPEG-4 Part 2, H.263 | AAC, Opus, FLAC, MP3, Vorbis, AC-3, E-AC-3, DTS, TrueHD, PCM |
 | MOV, MJ2 | JPEG 2000 | AAC, Opus, FLAC, MP3, Vorbis, AC-3, E-AC-3, PCM |
 | MPEG-TS, M2TS, MTS | H.264, HEVC, MPEG-1, MPEG-2, VC-1 | AAC, MP3, AC-3, E-AC-3, DTS |
-| AVI | H.264, HEVC, VP8, VP9, AV1, MPEG-4 Part 2, H.263, MS-MPEG4 | AAC, MP3, AC-3, FLAC, Vorbis, PCM |
-| FLV, ASF (WMV), MPEG program streams (MPG, VOB), Ogg, RealMedia, MXF, and every other container | Not supported | Not supported |
+| AVI | H.264, HEVC, VP8, VP9, AV1, MPEG-4 Part 2, H.263, MS-MPEG4 | AAC, MP3, AC-3, FLAC, Vorbis, WMA, PCM |
+| ASF (ASF, WMV, WMA files) | VC-1, WMV3, MPEG-4 Part 2, H.263, MS-MPEG4 | AAC, MP3, AC-3, FLAC, Vorbis, WMA, PCM |
+| FLV, MPEG program streams (MPG, VOB), Ogg, RealMedia, MXF, and every other container | Not supported | Not supported |
 
 PCM in Matroska is 8-bit unsigned, 16, 24, or 32-bit integer in either byte order, or little-endian 32 or 64-bit float.
 PCM in MP4, M4V, and MOV is 16, 24, or 32-bit integer or 32 or 64-bit float, in either byte order; MOV also carries 8-bit, mu-law, and A-law PCM.
 PCM in AVI is 8-bit unsigned, little-endian 16, 24, or 32-bit integer or 32 or 64-bit float, mu-law, or A-law, under its own format tag or as the SubFormat of WAVE_FORMAT_EXTENSIBLE, which FFmpeg writes for a layout other than mono or stereo, a rate above 48 kHz, or integer samples wider than 16 bits.
 FLAC and Vorbis in AVI play when their `strf` extradata holds the STREAMINFO block or the three Xiph-laced Vorbis headers, as FFmpeg's muxer writes them.
+WMA plays from a Matroska `A_MS/ACM` track and from an AVI or ASF stream, whose WAVEFORMATEX names it by its format tag: 0x0160 WMA v1, 0x0161 WMA v2, 0x0162 WMA Pro, 0x0163 WMA Lossless, and 0x000A WMA Voice, as FFmpeg's RIFF tags do, under its own tag or as the SubFormat of WAVE_FORMAT_EXTENSIBLE.
+Any other tag in these containers is refused by its tag.
+An AVI audio stream whose format tag the fork names no codec for opens codec-less with its tag, in decimal, as its codec ID, as a video stream of an unknown FourCC does, and keeps its packets timed as FFmpeg's demuxer times them.
 The rows come from `capability/CustomContainerCodecSupport.ts`.
 
 AVI plays every packet its indexes list, read as FFmpeg reads them: a stream's OpenDML index when it has one (its `indx` super index and the `ix##` standard index that index locates in each RIFF list), else `idx1`, which covers only the first RIFF list.
@@ -35,6 +39,11 @@ AVI keeps no presentation times, only each chunk's slot in decode order, so the 
 The worker restamps MPEG-4 Part 2's B-VOPs into presentation order itself, as it does for Matroska Video for Windows tracks (see [Eligibility and routes](routes.md)).
 A video stream whose FourCC the fork names no codec for, such as `DIV3`, `MP42`, or `H263`, opens codec-less with its FourCC as its codec ID, so the MPEG-4 decoder package's route takes it by that FourCC and any other route refuses it by its FourCC.
 HEVC in AVI plays under the HEVC, H265, hvc1, and hev1 tags, and under the zero tag FFmpeg's AVI muxer writes unless told one, which the fork recognizes by the parameter sets of the first chunk; FFmpeg, and so Jellyfin, reads such a stream as uncompressed video.
+ASF is read by the fork's ASF demuxer, as FFmpeg's `asfdec_f.c` reads it: the Header Object's streams, and each media object reassembled from its payloads (compressed payloads and audio spread included), timestamped by its presentation time less the preroll.
+Those timestamps are in decode order, as FFmpeg reads them and as its muxer writes them, so the worker restamps VC-1, WMV3, and MPEG-4 Part 2 B-frames into presentation order, as for Matroska Video for Windows tracks; H.264 and HEVC in ASF, which the fork would hand on in decode order, are refused.
+A stream opens by its FourCC or format tag as an AVI stream does: `WVC1` and `WMVA` as VC-1, and WMV3, WMA, and the MPEG-4 Part 2 and MS-MPEG4 FourCCs codec-less, with the FourCC or the tag, in decimal, as its codec ID.
+A DRM-protected ASF file (a Content Encryption, Extended Content Encryption, or Advanced Content Encryption Object, or a stream flagged as encrypted) is refused, and so is a live broadcast, whose data packets vary in size; WMV1 and WMV2 have no route.
+A `.wma` file is audio only, so it falls back to the host as every audio-only file does.
 An AIFF file opens, but the pipeline plays only sources with video, so AIFF, like every audio-only file, falls back to the host.
 A track whose edit list Mediabunny cannot honor, as `getUnsupportedFeatures()` reports, is refused rather than played out of sync.
 
@@ -42,18 +51,18 @@ A track whose edit list Mediabunny cannot honor, as `getUnsupportedFeatures()` r
 
 | Codec | Plays | Decoder | Does not play |
 | --- | --- | --- | --- |
-| H.264 | Constrained Baseline, Baseline, Main, and High, at 8 bits 4:2:0 | WebCodecs | High 10, High 4:2:2, High 4:4:4, and every other profile |
+| H.264 | Constrained Baseline, Baseline, Main, and High, at 8 bits 4:2:0; High 10, High 4:2:2, High 4:4:4 Predictive, their Intra profiles, High 4:4:4, and CAVLC 4:4:4 at 10-bit 4:2:0, and at 4:2:2 and 4:4:4 at 8 and 10 bits, from raw planes: SDR, and at 10 bits HDR10 and HLG | WebCodecs; the profiles beyond High in software | 8-bit 4:2:0 coded under a profile beyond High, 9, 12, and 14 bits, monochrome, RGB (`gbrp`), and the Multiview, Stereo, and Extended profiles |
 | HEVC | Main and Main 10: SDR, HDR10, HDR10+, HLG, and Dolby Vision; the 9 range extensions, 4:2:0, 4:2:2, and 4:4:4 at 8, 10, and 12 bits | WebCodecs, or a GPU decoder package | 14 and 16 bits, monochrome, Screen Content Coding, High Throughput, Main Still Picture, and the named Intra profiles |
 | VP8 | Profile 0 | WebCodecs | |
 | VP9 | Profile 0 at 8 bits: SDR; Profile 2 at 10 bits: SDR, HDR10, HDR10+, and HLG | WebCodecs; Profile 2 in software | Profiles 1 and 3 (4:2:2 and 4:4:4) |
 | AV1 | Main at 8 bits: SDR; Main at 10 bits: SDR, HDR10, HDR10+, HLG, and Dolby Vision Profile 10; High 4:4:4 at 8 and 10 bits and Professional 4:2:2 at 8 and 10 bits from raw planes, Dolby Vision Profile 10 among them | WebCodecs; 10 bits and the High and Professional profiles in software | Professional at 12 bits, which Chrome's WebCodecs refuses, outside a decoder package |
 | MPEG-1 | In Matroska and MPEG-TS | A GPU decoder package | Program streams (MPG, VOB), which nothing demuxes |
 | MPEG-2 | Every profile, at 4:2:0, 4:2:2, and 4:4:4, in Matroska, MPEG-TS, and M2TS | A GPU decoder package | MP4 and program streams, whose MPEG-2 streams Mediabunny does not read |
-| VC-1 | Advanced profile (`WVC1` and `WMVA`), in Matroska, MP4, MOV, MPEG-TS, and M2TS | A GPU decoder package | A transport stream VC-1 stream without its registration descriptor, which Mediabunny skips |
-| WMV3 | The Simple, Main, and Complex profiles, in Matroska | A GPU decoder package | ASF (WMV) files, which nothing demuxes |
-| MPEG-4 Part 2 | Every profile FFmpeg's decoder decodes at 8 bits, B-VOPs, quarter-pel, and global motion compensation among them, in Matroska (its own tracks and Video for Windows), MP4, MOV, 3GP, and AVI | A GPU decoder package | Studio profiles and deeper streams, and MPEG-TS, which Mediabunny does not demux it from |
-| H.263 | What FFmpeg's `h263` decoder decodes, the H.263+ annexes among them, in Matroska Video for Windows tracks, MP4, MOV, 3GP, and AVI | A GPU decoder package | A stream FFmpeg names `h263p` or `h263i` |
-| MS-MPEG4 | Versions 1, 2, and 3 (DivX 3), in Matroska and AVI | A GPU decoder package | MP4 and MOV |
+| VC-1 | Advanced profile (`WVC1` and `WMVA`), in Matroska, MP4, MOV, MPEG-TS, M2TS, and ASF, in a transport stream with or without its `VC-1` registration descriptor | A GPU decoder package | The Simple and Main profiles, which FFmpeg names `wmv3` (the WMV3 row) |
+| WMV3 | The Simple, Main, and Complex profiles, in Matroska and ASF | A GPU decoder package | AVI, MP4, and MPEG-TS |
+| MPEG-4 Part 2 | Every profile FFmpeg's decoder decodes at 8 bits, B-VOPs, quarter-pel, and global motion compensation among them, in Matroska (its own tracks and Video for Windows), MP4, MOV, 3GP, AVI, and ASF | A GPU decoder package | Studio profiles and deeper streams, and MPEG-TS, which Mediabunny does not demux it from |
+| H.263 | What FFmpeg's `h263` decoder decodes, the H.263+ annexes among them, in Matroska Video for Windows tracks, MP4, MOV, 3GP, AVI, and ASF | A GPU decoder package | A stream FFmpeg names `h263p` or `h263i` |
+| MS-MPEG4 | Versions 1, 2, and 3 (DivX 3), in Matroska, AVI, and ASF | A GPU decoder package | MP4 and MOV |
 | JPEG 2000 | YUV at 4:2:0, 4:2:2, and 4:4:4, at 8, 9, 10, and 12 bits, in MOV and MJ2 | A GPU decoder package | RGB, grey, XYZ, and palette pictures, 11-bit and deeper samples, 4:4:0, 4:1:1, and 4:1:0 chroma, and HTJ2K |
 
 Every other video codec is not supported, among them WMV1, WMV2, Theora, VVC, ProRes, DNxHD, and Motion JPEG.
@@ -82,22 +91,23 @@ A package's frames take the format that holds the stream's pixel format, so 4:2:
 
 | Codec | Plays | Decoder | Does not play |
 | --- | --- | --- | --- |
-| AAC | Mono, stereo, 3.0, and 5.1 | WebCodecs | More than 6 channels |
-| Opus, FLAC, Vorbis | Mono, stereo, 3.0, and 5.1 | WebCodecs | More than 6 channels |
+| AAC | Mono, stereo, 3.0, 5.1, and 7.1, each surround layout once the browser's decoder passes its probe; FFmpeg's channelConfiguration 7 decodes as 7.1 with back and side pairs | WebCodecs | 6.1, and more than 8 channels |
+| Opus, FLAC, Vorbis | Mono, stereo, 3.0, 5.1, and 7.1, each surround layout once the browser's decoder passes its probe | WebCodecs | 6.1, and more than 8 channels |
 | MP3 | Mono and stereo | WebCodecs | |
 | AC-3 | Mono, stereo, and 5.1 | The browser's own decoder through MSE when it has one, or an audio decoder package | Three channels |
-| E-AC-3 | Mono, stereo, 5.1, and 7.1; Dolby Atmos plays its channel bed | The browser's own decoder through MSE when it has one, or an audio decoder package | Atmos objects |
+| E-AC-3 | Mono, stereo, 5.1, and 7.1; Dolby Atmos with joint object coding renders its objects into a layout with a speaker its core lacks, heights included, or into binaural stereo, through the `eac3` package, and otherwise plays its core | The browser's own decoder through MSE when it has one, or an audio decoder package | Atmos objects in a stream whose OAMD the parser refuses, which plays its core |
 | DTS | Mono, stereo, three channels, 5.1, and 7.1, in every profile the package decodes; DTS:X plays its channel bed | An audio decoder package | DTS-ES (6.1); DTS Express in MP4, which Mediabunny maps but no package decodes; and DTS-UHD in MP4, whose sample entry nothing reads |
-| TrueHD | Mono, stereo, and 5.1; 7.1 at 48 kHz; Dolby Atmos plays its channel bed | An audio decoder package | Atmos objects |
+| TrueHD | Mono, stereo, and 5.1; 7.1 at 48 kHz; Dolby Atmos renders its 16-channel presentation, bed and objects, into a height layout or binaural stereo, and otherwise plays its 7.1 or 5.1 presentation | An audio decoder package | Atmos objects in the intermediate spatial format, which the renderer refuses; binaural rendering of Atmos at other rates than 48 kHz |
 | MLP | Mono and stereo, in Matroska | An audio decoder package | |
+| WMA | WMA v1 and v2 in mono and stereo; WMA Pro and WMA Lossless in mono, stereo, three channels, 5.1, and 7.1; WMA Voice in mono; in Matroska, AVI, and ASF (WMV and WMA files) | An audio decoder package | WMA Pro and WMA Lossless in 6.1 |
 | PCM | Integer, float, mu-law, and A-law PCM, in mono, stereo, 3.0, or 5.1 | Mediabunny | |
 
-Every other audio codec is not supported, among them MP2, WMA, ALAC, AMR, and Speex.
+Every other audio codec is not supported, among them MP2, ALAC, AMR, and Speex.
 A source whose selected audio track is not supported does not play through the pipeline.
 Every route resamples to 48 kHz.
-A three-channel or 5.1 source outputs 5.1 on a device with 6 channels or more.
-A 7.1 source outputs 7.1 on a device with 8 channels, and 5.1 on one with 6 or 7.
-Everything else downmixes to stereo.
+The host's speaker layout setting picks the output layout: `auto` takes 7.1.4 on a device with 12 channels, 7.1.2 with 10, 7.1 with 8, 5.1 with 6, and stereo below; 5.1.2 and 5.1.4 play only when chosen.
+Dolby Atmos a package renders as objects plays to the whole layout, or to binaural stereo for headphones when the host asks for it on a stereo output.
+Every other source plays within the layout's floor: a three-channel or 5.1 source outputs 5.1, a 7.1 source 7.1, or 5.1 on a 5.1 floor, and everything else downmixes to stereo.
 
 ## Subtitles
 

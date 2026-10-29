@@ -29,7 +29,12 @@ export const CUSTOM_PACKAGE_AUDIO_CODECS = [
     'eac3',
     'dts',
     'mlp',
-    'truehd'
+    'truehd',
+    'wmav1',
+    'wmav2',
+    'wmapro',
+    'wmalossless',
+    'wmavoice'
 ] as const;
 
 export const CUSTOM_AUDIO_CODECS = [

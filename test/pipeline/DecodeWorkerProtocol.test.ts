@@ -284,10 +284,13 @@ describe('DecodeWorkerProtocol', () => {
         expect(getCustomDecodeHardwareAcceleration('video-frame', true)).toBe('prefer-hardware');
     });
 
-    it('prefers software only for raw AV1 and VP9 planes, whose hardware output is opaque', () => {
+    it('prefers software only for raw AV1, H.264, and VP9 planes, whose hardware decoders do not output them', () => {
         expect(getCustomDecodeHardwareAcceleration('raw-planes', false, 'av1')).toBe('prefer-software');
         expect(getCustomDecodeHardwareAcceleration('raw-planes', true, 'av1')).toBe('prefer-software');
         expect(getCustomDecodeHardwareAcceleration('raw-planes', false, 'vp9')).toBe('prefer-software');
+        // Chromium reports H.264 beyond 8-bit 4:2:0 unsupported with prefer-hardware
+        expect(getCustomDecodeHardwareAcceleration('raw-planes', false, 'avc')).toBe('prefer-software');
+        expect(getCustomDecodeHardwareAcceleration('video-frame', false, 'avc')).toBe('no-preference');
         // Chromium has no software HEVC decoder
         expect(getCustomDecodeHardwareAcceleration('raw-planes', false, 'hevc')).toBe('no-preference');
         expect(getCustomDecodeHardwareAcceleration('video-frame', false, 'av1')).toBe('no-preference');
@@ -355,6 +358,16 @@ describe('DecodeWorkerProtocol', () => {
                 videoOutputMode: 'raw-planes'
             },
             videoCodec: 'vp9'
+        },
+        {
+            expected: 'prefer-software',
+            request: {
+                dolbyVisionProfile: null,
+                neutralizeHDRColorMetadata: false,
+                videoDecoderBackend: 'native',
+                videoOutputMode: 'raw-planes'
+            },
+            videoCodec: 'avc'
         },
         {
             expected: 'no-preference',
@@ -1289,7 +1302,7 @@ describe('DecodeWorkerProtocol', () => {
             },
             audioSampleCredits: MAX_DECODED_AUDIO_SAMPLE_CREDITS,
             audioTrackIndex: 1,
-            decodedAudioOutputChannelCount: 8,
+            decodedAudioOutputLayout: '7.1',
             dolbyVisionProfile: null,
             dolbyVisionRPUParserWASMURL: DOLBY_VISION_RPU_PARSER_WASM_URL,
             frameCredits: 1,
@@ -1319,7 +1332,7 @@ describe('DecodeWorkerProtocol', () => {
             ...decodedAudioStartRequest,
             audioDownmixSettings: undefined,
             audioOutputMode: 'native-media',
-            decodedAudioOutputChannelCount: undefined
+            decodedAudioOutputLayout: undefined
         } as const;
         expect(isDecodeWorkerRequest(nativeAudioStartRequest)).toBe(true);
         expect(isDecodeWorkerRequest({
@@ -1328,7 +1341,20 @@ describe('DecodeWorkerProtocol', () => {
         })).toBe(false);
         expect(isDecodeWorkerRequest({
             ...decodedAudioStartRequest,
-            decodedAudioOutputChannelCount: 7
+            decodedAudioOutputLayout: '6.1'
+        })).toBe(false);
+        expect(isDecodeWorkerRequest({
+            ...decodedAudioStartRequest,
+            binauralHeadphones: true,
+            decodedAudioOutputLayout: '7.1.4'
+        })).toBe(true);
+        expect(isDecodeWorkerRequest({
+            ...decodedAudioStartRequest,
+            binauralHeadphones: 'yes'
+        })).toBe(false);
+        expect(isDecodeWorkerRequest({
+            ...nativeAudioStartRequest,
+            binauralHeadphones: true
         })).toBe(false);
         expect(isDecodeWorkerRequest({
             ...decodedAudioStartRequest,
@@ -1347,7 +1373,7 @@ describe('DecodeWorkerProtocol', () => {
         expect(isDecodeWorkerRequest({
             ...decodedAudioStartRequest,
             audioOutputMode: 'native-media',
-            decodedAudioOutputChannelCount: undefined
+            decodedAudioOutputLayout: undefined
         })).toBe(false);
         expect(isDecodeWorkerRequest({
             audioSampleCredits: 2,
@@ -1455,7 +1481,7 @@ describe('DecodeWorkerProtocol', () => {
         expect(isDecodeWorkerRequest(nativeStartRequest)).toBe(true);
         expect(isDecodeWorkerRequest({
             ...nativeStartRequest,
-            decodedAudioOutputChannelCount: 6
+            decodedAudioOutputLayout: '5.1'
         })).toBe(false);
         expect(isDecodeWorkerRequest({
             ...nativeStartRequest,
@@ -1752,6 +1778,17 @@ describe('DecodeWorkerProtocol', () => {
         }
     });
 
+    it('accepts a rendered object count only with a valid epoch and a whole count', () => {
+        const objectCountResponse = { audioEpoch: 1, generation: 2, objectCount: 15, type: 'audio-object-count' } as const;
+
+        expect(isDecodeWorkerResponse(objectCountResponse)).toBe(true);
+        expect(isDecodeWorkerResponse({ ...objectCountResponse, objectCount: 0 })).toBe(true);
+        for (const objectCount of [ -1, 1.5, '3', null, undefined, Number.MAX_SAFE_INTEGER ]) {
+            expect(isDecodeWorkerResponse({ ...objectCountResponse, objectCount }), String(objectCount)).toBe(false);
+        }
+        expect(isDecodeWorkerResponse({ ...objectCountResponse, audioEpoch: -1 })).toBe(false);
+    });
+
     it('accepts a decoded audio source format only with a valid epoch, channel count, and rate', () => {
         const sourceFormatResponse = {
             audioEpoch: 0,
@@ -1818,7 +1855,7 @@ describe('DecodeWorkerProtocol', () => {
         const resyncRequest = {
             audioEpoch: 1,
             audioOutput: createAudioOutputAttachment(6),
-            decodedAudioOutputChannelCount: 6,
+            decodedAudioOutputLayout: '5.1',
             generation: 3,
             targetTimeMicroseconds: 2_500_000,
             type: 'resync-audio'
@@ -1834,15 +1871,21 @@ describe('DecodeWorkerProtocol', () => {
             undefined,
             Number.MAX_SAFE_INTEGER + 1
         ];
-        const validChannelCounts: readonly number[] = [ 2, 6, 8 ];
-        const invalidChannelCounts: readonly unknown[] = [
-            0,
-            1,
-            4,
-            7,
-            32,
-            6.5,
-            '6',
+        const validOutputLayouts: ReadonlyArray<readonly [ string, number ]> = [
+            [ 'stereo', 2 ],
+            [ '5.1', 6 ],
+            [ '7.1', 8 ],
+            [ '5.1.2', 8 ],
+            [ '5.1.4', 10 ],
+            [ '7.1.2', 10 ],
+            [ '7.1.4', 12 ]
+        ];
+        const invalidOutputLayouts: readonly unknown[] = [
+            2,
+            6,
+            '4.0',
+            '6.1',
+            '9.1.6',
             null,
             undefined
         ];
@@ -1864,24 +1907,32 @@ describe('DecodeWorkerProtocol', () => {
                 audioEpoch: invalidAudioEpoch
             })).toBe(false);
         }
-        for (const validChannelCount of validChannelCounts) {
+        for (const [ validOutputLayout, channelCount ] of validOutputLayouts) {
             expect(isDecodeWorkerRequest({
                 ...resyncRequest,
-                audioOutput: { ...resyncRequest.audioOutput, channelCount: validChannelCount },
-                decodedAudioOutputChannelCount: validChannelCount
+                audioOutput: { ...resyncRequest.audioOutput, channelCount },
+                decodedAudioOutputLayout: validOutputLayout
             })).toBe(true);
         }
-        for (const invalidChannelCount of invalidChannelCounts) {
+        for (const invalidOutputLayout of invalidOutputLayouts) {
             expect(isDecodeWorkerRequest({
                 ...resyncRequest,
-                audioOutput: { ...resyncRequest.audioOutput, channelCount: invalidChannelCount },
-                decodedAudioOutputChannelCount: invalidChannelCount
+                decodedAudioOutputLayout: invalidOutputLayout
             })).toBe(false);
         }
+        // A worklet channel count belongs to some output layout
+        expect(isDecodeWorkerRequest({
+            ...resyncRequest,
+            audioOutput: { ...resyncRequest.audioOutput, channelCount: 4 }
+        })).toBe(false);
+        expect(isDecodeWorkerRequest({ ...resyncRequest, binauralHeadphones: false })).toBe(true);
+        expect(isDecodeWorkerRequest({ ...resyncRequest, binauralHeadphones: 0 })).toBe(false);
+        expect(isDecodeWorkerRequest({ binauralHeadphones: true, generation: 3, type: 'update-audio-binaural' })).toBe(true);
+        expect(isDecodeWorkerRequest({ binauralHeadphones: 1, generation: 3, type: 'update-audio-binaural' })).toBe(false);
         // The new worklet must have the layout the resync asks for
         expect(isDecodeWorkerRequest({
             ...resyncRequest,
-            decodedAudioOutputChannelCount: 8
+            decodedAudioOutputLayout: '7.1'
         })).toBe(false);
     });
 
@@ -1917,7 +1968,7 @@ describe('DecodeWorkerProtocol', () => {
         const resyncRequest = {
             audioEpoch: 1,
             audioOutput: createAudioOutputAttachment(8, 3),
-            decodedAudioOutputChannelCount: 8,
+            decodedAudioOutputLayout: '7.1',
             generation: 3,
             targetTimeMicroseconds: 2_500_000,
             type: 'resync-audio'
@@ -1972,7 +2023,7 @@ describe('DecodeWorkerProtocol', () => {
         const resyncRequest = {
             audioEpoch: 2,
             audioOutput: createAudioOutputAttachment(2, 4),
-            decodedAudioOutputChannelCount: 2,
+            decodedAudioOutputLayout: 'stereo',
             generation: 3,
             targetTimeMicroseconds: 2_500_000,
             type: 'resync-audio'

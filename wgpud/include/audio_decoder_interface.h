@@ -30,4 +30,12 @@
 /* An attribute the decoder does not report */
 #define AUDIO_DECODER_NO_ATTRIBUTE (__builtin_nan(""))
 
+/*
+ * The optional export a module may add to version 1: int audio_decoder_drain(handle).
+ * The engine calls it once at the end of a track, after the last packet, and then calls audio_decoder_receive until it reports
+ * AUDIO_DECODER_RECEIVE_NONE, so a decoder that holds frames back outputs them. It returns AUDIO_DECODER_SUCCESS or AUDIO_DECODER_FAILED.
+ * A module without it ends a track at its last packet's blocks.
+ */
+#define AUDIO_DECODER_DRAIN_EXPORT "audio_decoder_drain"
+
 #endif

@@ -15,6 +15,7 @@ import type {
 import type { AudioDecoderPackageSelection } from 'webgpu-player/decode/audio/AudioDecoderPackageInstance';
 import type { AudioWorkletTelemetry } from 'webgpu-player/audio/output/AudioWorkletProtocol';
 import { CUSTOM_AUDIO_DOWNMIX_ALGORITHMS } from 'webgpu-player/audio/processing/CustomAudioDownmixAlgorithm';
+import { getCustomAudioOutputChannelCount } from 'webgpu-player/audio/processing/CustomAudioChannelLayout';
 import type { AudioDownmixSettings } from 'webgpu-player/audio/processing/CustomAudioDownmix';
 import type CustomDecodeAudioBridge from 'webgpu-player/audio/output/CustomDecodeAudioBridge';
 import type { CustomDecodeAudioBridgeTelemetry } from 'webgpu-player/audio/output/CustomDecodeAudioBridge';
@@ -142,6 +143,8 @@ function createDecodeTelemetry(): CustomDecodeSessionTelemetry {
         audioSampleRate: null,
         audioSourceChannelCount: null,
         audioSourceSampleRate: null,
+        decodedAudioObjectCount: null,
+        decodedAudioOutputLayout: null,
         decodedAudioSourceChannelCount: null,
         droppedFrameCount: 0,
         failureKind: null,
@@ -193,6 +196,7 @@ class FakeVideoDecodeSession implements CustomVideoDecodeSession {
     private audioEnded = false;
     private audioEpoch = 0;
     private audioResyncPending = false;
+    private decodedAudioObjectCount: number | null = null;
     private decodedAudioSourceChannelCount: number | null = null;
     private lastFrameEndMediaTimeMicroseconds: Microseconds | null = null;
     private lastFrameMediaTimeMicroseconds: Microseconds | null = null;
@@ -209,6 +213,7 @@ class FakeVideoDecodeSession implements CustomVideoDecodeSession {
     public readonly setNativeAudioMuted = vi.fn();
     public readonly setNativeAudioPlaying = vi.fn(async (): Promise<void> => undefined);
     public readonly setNativeAudioVolume = vi.fn();
+    public readonly updateAudioBinaural = vi.fn((): boolean => true);
     public readonly updateAudioDownmixSettings = vi.fn((): boolean => false);
     public readonly stop = vi.fn((): Promise<void> => {
         this.activeGeneration = null;
@@ -273,6 +278,7 @@ class FakeVideoDecodeSession implements CustomVideoDecodeSession {
             audioEnded: this.audioEnded,
             audioEpoch: this.audioEpoch,
             audioResyncPending: this.audioResyncPending,
+            decodedAudioObjectCount: this.decodedAudioObjectCount,
             decodedAudioSourceChannelCount: this.decodedAudioSourceChannelCount,
             lastFrameEndMediaTimeMicroseconds: this.lastFrameEndMediaTimeMicroseconds,
             lastFrameMediaTimeMicroseconds: this.lastFrameMediaTimeMicroseconds,
@@ -326,6 +332,10 @@ class FakeVideoDecodeSession implements CustomVideoDecodeSession {
     }
 
     /** Overrides the decoded source channel count the worker reported for the bound layout */
+    public setDecodedAudioObjectCount(objectCount: number | null): void {
+        this.decodedAudioObjectCount = objectCount;
+    }
+
     public setDecodedAudioSourceChannelCount(channelCount: number | null): void {
         this.decodedAudioSourceChannelCount = channelCount;
     }
@@ -380,7 +390,7 @@ class FakeVideoDecodeSession implements CustomVideoDecodeSession {
         const audioEpoch = this.audioEpoch;
         const resyncedAudioConfiguration: DecodeWorkerAudioConfiguration = {
             ...audioConfiguration,
-            channelCount: options.decodedAudioOutputChannelCount
+            channelCount: getCustomAudioOutputChannelCount(options.decodedAudioOutputLayout)
         };
         try {
             await options.createAudioBridge(resyncedAudioConfiguration);
@@ -953,7 +963,7 @@ describe('CustomPlaybackController', () => {
             version: 1
         };
         options.audioDownmixSettings = audioDownmixSettings;
-        options.decodedAudioOutputChannelCount = 8;
+        options.decodedAudioOutputLayout = '7.1';
 
         const startPromise = harness.controller.play(options);
         await flushAsyncWork();
@@ -962,7 +972,7 @@ describe('CustomPlaybackController', () => {
             audioDownmixAlgorithm: CUSTOM_AUDIO_DOWNMIX_ALGORITHMS.RFC7845,
             audioDownmixSettings,
             audioTrackIndex: 0,
-            decodedAudioOutputChannelCount: 8
+            decodedAudioOutputLayout: '7.1'
         });
 
         await harness.controller.destroy();
@@ -2832,7 +2842,7 @@ describe('CustomPlaybackController', () => {
             channelCount: 7,
             codec: 'ac3',
             sampleRate: 48_000
-        })).rejects.toThrow('Custom audio output requires 2, 6, or 8 channels at 48000 Hz');
+        })).rejects.toThrow('Custom audio output requires 2, 6, 8, 10, or 12 channels at 48000 Hz');
         expect(harness.audioOutput.setVolume).not.toHaveBeenCalled();
         expect(harness.audioOutput.setMuted).not.toHaveBeenCalled();
 
@@ -3811,7 +3821,7 @@ const FIVE_POINT_ONE_OUTPUT_CONFIGURATION: DecodeWorkerAudioConfiguration = {
     sourceSampleRate: 48_000
 };
 const FIVE_POINT_ONE_OUTPUT_OPTIONS: CustomPlaybackAudioOutputOptions = {
-    decodedAudioOutputChannelCount: 6
+    decodedAudioOutputLayout: '5.1'
 };
 const LIVE_DOWNMIX_SETTINGS: AudioDownmixSettings = {
     centerLevel: 0.5,
@@ -3865,10 +3875,10 @@ describe('CustomPlaybackController live audio output reconfiguration', () => {
     it.each([
         {
             errorType: RangeError,
-            label: 'an unsupported output channel count',
-            message: 'Decoded audio output channel count must be 2, 6, or 8',
+            label: 'an unsupported output layout',
+            message: 'Decoded audio output layout must be stereo, 5.1, 7.1, 5.1.2, 5.1.4, 7.1.2, or 7.1.4',
             options: {
-                decodedAudioOutputChannelCount: 4
+                decodedAudioOutputLayout: 4
             } as unknown as CustomPlaybackAudioOutputOptions
         },
         {
@@ -3877,7 +3887,7 @@ describe('CustomPlaybackController live audio output reconfiguration', () => {
             message: 'Custom playback audio downmix algorithm is invalid',
             options: {
                 audioDownmixAlgorithm: 'matrix-surround',
-                decodedAudioOutputChannelCount: 2
+                decodedAudioOutputLayout: 'stereo'
             } as unknown as CustomPlaybackAudioOutputOptions
         },
         {
@@ -3886,7 +3896,7 @@ describe('CustomPlaybackController live audio output reconfiguration', () => {
             message: 'Audio downmix center level must be between zero and two',
             options: {
                 audioDownmixSettings: { ...LIVE_DOWNMIX_SETTINGS, centerLevel: 3 },
-                decodedAudioOutputChannelCount: 2
+                decodedAudioOutputLayout: 'stereo'
             } as CustomPlaybackAudioOutputOptions
         }
     ])('rejects $label without side effects', async ({ errorType, message, options }) => {
@@ -4079,7 +4089,7 @@ describe('CustomPlaybackController live audio output reconfiguration', () => {
 
         await expect(harness.controller.reconfigureAudioOutput({
             audioDownmixSettings: LIVE_DOWNMIX_SETTINGS,
-            decodedAudioOutputChannelCount: 2
+            decodedAudioOutputLayout: 'stereo'
         })).resolves.toBe(true);
 
         expect(harness.videoDecodeSession.updateAudioDownmixSettings).toHaveBeenCalledOnce();
@@ -4094,17 +4104,18 @@ describe('CustomPlaybackController live audio output reconfiguration', () => {
         await flushAsyncWork();
         const restartOptions = harness.videoDecodeSession.starts.at(-1);
         expect(restartOptions?.audioDownmixSettings).toEqual(LIVE_DOWNMIX_SETTINGS);
-        expect(restartOptions?.decodedAudioOutputChannelCount).toBeUndefined();
+        expect(restartOptions?.decodedAudioOutputLayout).toBeUndefined();
         await harness.controller.destroy();
         await expect(seekPromise).resolves.toMatchObject({ status: 'stopped' });
     });
 
     it.each([
-        { label: 'stereo source', outputChannelCount: 2, sourceChannelCount: 2 },
-        { label: '5.1 source on 5.1 output', outputChannelCount: 6, sourceChannelCount: 6 },
-        { label: '7.1 source on 7.1 output', outputChannelCount: 8, sourceChannelCount: 8 }
+        { label: 'stereo source', outputChannelCount: 2, outputLayout: 'stereo', sourceChannelCount: 2 },
+        { label: '5.1 source on 5.1 output', outputChannelCount: 6, outputLayout: '5.1', sourceChannelCount: 6 },
+        { label: '7.1 source on 7.1 output', outputChannelCount: 8, outputLayout: '7.1', sourceChannelCount: 8 }
     ] as const)('ignores a downmix algorithm change for a $label', async ({
         outputChannelCount,
+        outputLayout,
         sourceChannelCount
     }) => {
         const harness = createControllerHarness(true);
@@ -4113,7 +4124,7 @@ describe('CustomPlaybackController live audio output reconfiguration', () => {
             true,
             {
                 audioDownmixAlgorithm: CUSTOM_AUDIO_DOWNMIX_ALGORITHMS.StandardLORO,
-                decodedAudioOutputChannelCount: outputChannelCount
+                decodedAudioOutputLayout: outputLayout
             },
             {
                 channelCount: outputChannelCount,
@@ -4126,7 +4137,7 @@ describe('CustomPlaybackController live audio output reconfiguration', () => {
 
         await expect(harness.controller.reconfigureAudioOutput({
             audioDownmixAlgorithm: CUSTOM_AUDIO_DOWNMIX_ALGORITHMS.NightModeDialogue,
-            decodedAudioOutputChannelCount: outputChannelCount
+            decodedAudioOutputLayout: outputLayout
         })).resolves.toBe(true);
 
         expect(harness.videoDecodeSession.resyncAudio).not.toHaveBeenCalled();
@@ -4149,23 +4160,23 @@ describe('CustomPlaybackController live audio output reconfiguration', () => {
         // The current or an omitted algorithm leaves the downmix as it is
         await expect(harness.controller.reconfigureAudioOutput({
             audioDownmixAlgorithm: CUSTOM_AUDIO_DOWNMIX_ALGORITHMS.RFC7845,
-            decodedAudioOutputChannelCount: 2
+            decodedAudioOutputLayout: 'stereo'
         })).resolves.toBe(true);
         await expect(harness.controller.reconfigureAudioOutput({
-            decodedAudioOutputChannelCount: 2
+            decodedAudioOutputLayout: 'stereo'
         })).resolves.toBe(true);
         expect(harness.videoDecodeSession.resyncAudio).not.toHaveBeenCalled();
 
         await expect(harness.controller.reconfigureAudioOutput({
             audioDownmixAlgorithm: CUSTOM_AUDIO_DOWNMIX_ALGORITHMS.NightModeDialogue,
-            decodedAudioOutputChannelCount: 2
+            decodedAudioOutputLayout: 'stereo'
         })).resolves.toBe(true);
 
         expect(harness.videoDecodeSession.resyncAudio).toHaveBeenCalledOnce();
         expect(harness.videoDecodeSession.resyncAudio).toHaveBeenCalledWith(
             expect.objectContaining({
                 audioDownmixAlgorithm: CUSTOM_AUDIO_DOWNMIX_ALGORITHMS.NightModeDialogue,
-                decodedAudioOutputChannelCount: 2
+                decodedAudioOutputLayout: 'stereo'
             })
         );
         expect(audioOutput.reconfigure).toHaveBeenCalledWith({
@@ -4197,7 +4208,7 @@ describe('CustomPlaybackController live audio output reconfiguration', () => {
         const switchPromise = harness.controller.reconfigureAudioOutput({
             audioDownmixAlgorithm: CUSTOM_AUDIO_DOWNMIX_ALGORITHMS.RFC7845,
             audioDownmixSettings: LIVE_DOWNMIX_SETTINGS,
-            decodedAudioOutputChannelCount: 6
+            decodedAudioOutputLayout: '5.1'
         });
 
         // The previous layout rests as soon as the switch begins
@@ -4210,7 +4221,7 @@ describe('CustomPlaybackController live audio output reconfiguration', () => {
             audioDownmixAlgorithm: CUSTOM_AUDIO_DOWNMIX_ALGORITHMS.RFC7845,
             audioDownmixSettings: LIVE_DOWNMIX_SETTINGS,
             createAudioBridge: expect.any(Function),
-            decodedAudioOutputChannelCount: 6,
+            decodedAudioOutputLayout: '5.1',
             targetTimeMicroseconds: addMicroseconds(
                 secondsToMicroseconds(7),
                 CUSTOM_PLAYBACK_AUDIO_OUTPUT_SWITCH_LEAD_MICROSECONDS
@@ -4236,7 +4247,7 @@ describe('CustomPlaybackController live audio output reconfiguration', () => {
         expect(harness.videoDecodeSession.starts.at(-1)).toMatchObject({
             audioDownmixAlgorithm: CUSTOM_AUDIO_DOWNMIX_ALGORITHMS.RFC7845,
             audioDownmixSettings: LIVE_DOWNMIX_SETTINGS,
-            decodedAudioOutputChannelCount: 6,
+            decodedAudioOutputLayout: '5.1',
             startTimeMicroseconds: secondsToMicroseconds(40)
         });
         audioOutput.setVolume.mockClear();
@@ -4430,13 +4441,13 @@ describe('CustomPlaybackController live audio output reconfiguration', () => {
         audioOutput.setPlaying.mockClear();
 
         await expect(harness.controller.reconfigureAudioOutput({
-            decodedAudioOutputChannelCount: 8
+            decodedAudioOutputLayout: '7.1'
         })).resolves.toBe(true);
 
         // A paused switch resumes audio exactly where the clock rests
         expect(harness.videoDecodeSession.resyncAudio).toHaveBeenCalledWith(
             expect.objectContaining({
-                decodedAudioOutputChannelCount: 8,
+                decodedAudioOutputLayout: '7.1',
                 targetTimeMicroseconds: secondsToMicroseconds(7)
             })
         );
@@ -4456,7 +4467,7 @@ describe('CustomPlaybackController live audio output reconfiguration', () => {
         await flushAsyncWork();
         expect(harness.videoDecodeSession.starts.at(-1)).toMatchObject({
             audioTrackIndex: 3,
-            decodedAudioOutputChannelCount: 8
+            decodedAudioOutputLayout: '7.1'
         });
         await harness.controller.destroy();
         await expect(trackSwitchPromise).resolves.toMatchObject({ status: 'stopped' });
@@ -4563,14 +4574,14 @@ describe('CustomPlaybackController live audio output reconfiguration', () => {
         // The second request arrives before the first one rebuilds the output
         const surroundSwitch = harness.controller.reconfigureAudioOutput(FIVE_POINT_ONE_OUTPUT_OPTIONS);
         const stereoSwitch = harness.controller.reconfigureAudioOutput({
-            decodedAudioOutputChannelCount: 2
+            decodedAudioOutputLayout: 'stereo'
         });
 
         await expect(surroundSwitch).resolves.toBe(false);
         await expect(stereoSwitch).resolves.toBe(true);
         expect(harness.videoDecodeSession.resyncAudio).toHaveBeenCalledOnce();
         expect(harness.videoDecodeSession.resyncAudio).toHaveBeenCalledWith(
-            expect.objectContaining({ decodedAudioOutputChannelCount: 2 })
+            expect.objectContaining({ decodedAudioOutputLayout: 'stereo' })
         );
         expect(audioOutput.reconfigure).toHaveBeenCalledOnce();
         expect(audioOutput.reconfigure).toHaveBeenCalledWith(expect.objectContaining({ channelCount: 2 }));
@@ -4580,9 +4591,133 @@ describe('CustomPlaybackController live audio output reconfiguration', () => {
 
         const seekPromise = harness.controller.seek(secondsToMicroseconds(40));
         await flushAsyncWork();
-        expect(harness.videoDecodeSession.starts.at(-1)?.decodedAudioOutputChannelCount).toBe(2);
+        expect(harness.videoDecodeSession.starts.at(-1)?.decodedAudioOutputLayout).toBe('stereo');
         await harness.controller.destroy();
         await expect(seekPromise).resolves.toMatchObject({ status: 'stopped' });
+    });
+
+    it('plays a source the package renders as objects to the whole height layout a live switch asks for', async () => {
+        const harness = createControllerHarness(true);
+        await startReadyPlayback(
+            harness,
+            true,
+            { audioRendersObjects: true, decodedAudioOutputLayout: '5.1' },
+            { channelCount: 6, codec: 'eac3', sourceChannelCount: 6, sourceSampleRate: 48_000 }
+        );
+        const audioOutput = requireAudioOutput(harness);
+
+        await expect(harness.controller.reconfigureAudioOutput({ decodedAudioOutputLayout: '7.1.4' })).resolves.toBe(true);
+
+        expect(harness.videoDecodeSession.resyncAudio).toHaveBeenCalledWith(
+            expect.objectContaining({ decodedAudioOutputLayout: '7.1.4' })
+        );
+        expect(audioOutput.reconfigure).toHaveBeenCalledWith(expect.objectContaining({ channelCount: 12 }));
+        await harness.controller.destroy();
+    });
+
+    it('keeps a source that is not rendered as objects on the floor of a height layout', async () => {
+        const harness = createControllerHarness(true);
+        await startReadyPlayback(
+            harness,
+            true,
+            { decodedAudioOutputLayout: '5.1' },
+            { channelCount: 6, codec: 'eac3', sourceChannelCount: 6, sourceSampleRate: 48_000 }
+        );
+        harness.videoDecodeSession.setDecodedAudioSourceChannelCount(6);
+        const audioOutput = requireAudioOutput(harness);
+
+        await expect(harness.controller.reconfigureAudioOutput({ decodedAudioOutputLayout: '7.1.4' })).resolves.toBe(true);
+
+        expect(harness.videoDecodeSession.resyncAudio).not.toHaveBeenCalled();
+        expect(audioOutput.reconfigure).not.toHaveBeenCalled();
+        await harness.controller.destroy();
+    });
+
+    it('switches binaural rendering live on an unchanged stereo layout, and keeps it for later restarts', async () => {
+        const harness = createControllerHarness(true);
+        await startReadyPlayback(
+            harness,
+            true,
+            { audioRendersObjects: true, binauralHeadphones: false, decodedAudioOutputLayout: 'stereo' },
+            { channelCount: 2, codec: 'truehd', sourceChannelCount: 8, sourceSampleRate: 48_000 }
+        );
+        const audioOutput = requireAudioOutput(harness);
+        audioOutput.setPlaying.mockClear();
+
+        await expect(harness.controller.reconfigureAudioOutput({
+            binauralHeadphones: true,
+            decodedAudioOutputLayout: 'stereo'
+        })).resolves.toBe(true);
+        // The same setting again changes nothing
+        await expect(harness.controller.reconfigureAudioOutput({
+            binauralHeadphones: true,
+            decodedAudioOutputLayout: 'stereo'
+        })).resolves.toBe(true);
+
+        expect(harness.videoDecodeSession.updateAudioBinaural).toHaveBeenCalledOnce();
+        expect(harness.videoDecodeSession.updateAudioBinaural).toHaveBeenCalledWith(true);
+        expect(harness.videoDecodeSession.resyncAudio).not.toHaveBeenCalled();
+        expect(audioOutput.reconfigure).not.toHaveBeenCalled();
+        expect(audioOutput.setPlaying).not.toHaveBeenCalled();
+
+        const seekPromise = harness.controller.seek(secondsToMicroseconds(40));
+        await flushAsyncWork();
+        expect(harness.videoDecodeSession.starts.at(-1)).toMatchObject({ binauralHeadphones: true, decodedAudioOutputLayout: 'stereo' });
+        await harness.controller.destroy();
+        await expect(seekPromise).resolves.toMatchObject({ status: 'stopped' });
+    });
+
+    it('applies a live switch to the source layout, not the binaural stereo a package renders', async () => {
+        const harness = createControllerHarness(true);
+        await startReadyPlayback(
+            harness,
+            true,
+            { audioDownmixAlgorithm: CUSTOM_AUDIO_DOWNMIX_ALGORITHMS.StandardLORO, binauralHeadphones: true, decodedAudioOutputLayout: 'stereo' },
+            { channelCount: 2, codec: 'eac3', sourceChannelCount: 6, sourceSampleRate: 48_000 }
+        );
+        // The package renders 6 declared channels binaurally, so its blocks are stereo with objects
+        harness.videoDecodeSession.setDecodedAudioSourceChannelCount(2);
+        harness.videoDecodeSession.setDecodedAudioObjectCount(10);
+
+        // A new algorithm matters to the 5.1 decode the package returns to once binaural turns off
+        await expect(harness.controller.reconfigureAudioOutput({
+            audioDownmixAlgorithm: CUSTOM_AUDIO_DOWNMIX_ALGORITHMS.NightModeDialogue,
+            decodedAudioOutputLayout: 'stereo'
+        })).resolves.toBe(true);
+        expect(harness.videoDecodeSession.resyncAudio).toHaveBeenLastCalledWith(expect.objectContaining({
+            audioDownmixAlgorithm: CUSTOM_AUDIO_DOWNMIX_ALGORITHMS.NightModeDialogue,
+            decodedAudioOutputLayout: 'stereo'
+        }));
+        harness.videoDecodeSession.completeAudioResync();
+        await vi.advanceTimersByTimeAsync(AUDIO_OUTPUT_SWITCH_LEAD_MILLISECONDS);
+
+        // A 5.1 device takes the 5.1 source, which the rendered stereo would have mixed down
+        await expect(harness.controller.reconfigureAudioOutput({ decodedAudioOutputLayout: '5.1' })).resolves.toBe(true);
+        expect(harness.videoDecodeSession.resyncAudio).toHaveBeenLastCalledWith(
+            expect.objectContaining({ decodedAudioOutputLayout: '5.1' })
+        );
+        await harness.controller.destroy();
+    });
+
+    it('carries the binaural setting into the attempt a layout switch opens', async () => {
+        const harness = createControllerHarness(true);
+        await startReadyPlayback(
+            harness,
+            true,
+            { audioRendersObjects: true, binauralHeadphones: true, decodedAudioOutputLayout: 'stereo' },
+            { channelCount: 2, codec: 'truehd', sourceChannelCount: 8, sourceSampleRate: 48_000 }
+        );
+
+        await expect(harness.controller.reconfigureAudioOutput({
+            binauralHeadphones: false,
+            decodedAudioOutputLayout: '7.1.2'
+        })).resolves.toBe(true);
+
+        expect(harness.videoDecodeSession.resyncAudio).toHaveBeenCalledWith(
+            expect.objectContaining({ binauralHeadphones: false, decodedAudioOutputLayout: '7.1.2' })
+        );
+        expect(harness.videoDecodeSession.updateAudioBinaural).not.toHaveBeenCalled();
+        await harness.controller.destroy();
     });
 
     it('folds a 7.1 source into a 5.1 ceiling', async () => {
@@ -4590,7 +4725,7 @@ describe('CustomPlaybackController live audio output reconfiguration', () => {
         await startReadyPlayback(
             harness,
             true,
-            { decodedAudioOutputChannelCount: 8 },
+            { decodedAudioOutputLayout: '7.1' },
             { channelCount: 8, sourceChannelCount: 8, sourceSampleRate: 48_000 }
         );
         const audioOutput = requireAudioOutput(harness);
@@ -4598,7 +4733,7 @@ describe('CustomPlaybackController live audio output reconfiguration', () => {
         await expect(harness.controller.reconfigureAudioOutput(FIVE_POINT_ONE_OUTPUT_OPTIONS)).resolves.toBe(true);
 
         expect(harness.videoDecodeSession.resyncAudio).toHaveBeenCalledWith(
-            expect.objectContaining({ decodedAudioOutputChannelCount: 6 })
+            expect.objectContaining({ decodedAudioOutputLayout: '5.1' })
         );
         expect(audioOutput.reconfigure).toHaveBeenCalledWith(
             expect.objectContaining({ channelCount: 6, sourceChannelCount: 8 })
@@ -4611,13 +4746,13 @@ describe('CustomPlaybackController live audio output reconfiguration', () => {
         await startReadyPlayback(
             harness,
             true,
-            { decodedAudioOutputChannelCount: 6 },
+            { decodedAudioOutputLayout: '5.1' },
             { channelCount: 6, sourceChannelCount: 6, sourceSampleRate: 48_000 }
         );
         const audioOutput = requireAudioOutput(harness);
 
         await expect(harness.controller.reconfigureAudioOutput({
-            decodedAudioOutputChannelCount: 2
+            decodedAudioOutputLayout: 'stereo'
         })).resolves.toBe(true);
 
         expect(audioOutput.reconfigure).toHaveBeenCalledWith(
@@ -4631,17 +4766,17 @@ describe('CustomPlaybackController live audio output reconfiguration', () => {
         await startReadyPlayback(
             harness,
             true,
-            { decodedAudioOutputChannelCount: 6 },
+            { decodedAudioOutputLayout: '5.1' },
             { channelCount: 6, sourceChannelCount: 6, sourceSampleRate: 48_000 }
         );
         harness.videoDecodeSession.setDecodedAudioSourceChannelCount(8);
 
         await expect(harness.controller.reconfigureAudioOutput({
-            decodedAudioOutputChannelCount: 8
+            decodedAudioOutputLayout: '7.1'
         })).resolves.toBe(true);
 
         expect(harness.videoDecodeSession.resyncAudio).toHaveBeenCalledWith(
-            expect.objectContaining({ decodedAudioOutputChannelCount: 8 })
+            expect.objectContaining({ decodedAudioOutputLayout: '7.1' })
         );
         await harness.controller.destroy();
     });
@@ -4657,7 +4792,7 @@ describe('CustomPlaybackController live audio output reconfiguration', () => {
         await startReadyPlayback(
             harness,
             true,
-            { decodedAudioOutputChannelCount: 6 },
+            { decodedAudioOutputLayout: '5.1' },
             {
                 channelCount: 6,
                 sourceChannelCount: declaredChannelCount,
@@ -4668,7 +4803,7 @@ describe('CustomPlaybackController live audio output reconfiguration', () => {
         const audioOutput = requireAudioOutput(harness);
 
         await expect(harness.controller.reconfigureAudioOutput({
-            decodedAudioOutputChannelCount: 8
+            decodedAudioOutputLayout: '7.1'
         })).resolves.toBe(true);
 
         expect(harness.videoDecodeSession.resyncAudio).not.toHaveBeenCalled();
@@ -4683,11 +4818,11 @@ describe('CustomPlaybackController live audio output reconfiguration', () => {
         harness.videoDecodeSession.setDecodedAudioSourceChannelCount(null);
 
         await expect(harness.controller.reconfigureAudioOutput({
-            decodedAudioOutputChannelCount: 8
+            decodedAudioOutputLayout: '7.1'
         })).resolves.toBe(true);
 
         expect(harness.videoDecodeSession.resyncAudio).toHaveBeenCalledWith(
-            expect.objectContaining({ decodedAudioOutputChannelCount: 8 })
+            expect.objectContaining({ decodedAudioOutputLayout: '7.1' })
         );
         await harness.controller.destroy();
     });
@@ -4749,11 +4884,11 @@ describe('CustomPlaybackController live audio output reconfiguration', () => {
         const audioOutput = requireAudioOutput(harness);
 
         await expect(harness.controller.reconfigureAudioOutput({
-            decodedAudioOutputChannelCount: 8
+            decodedAudioOutputLayout: '7.1'
         })).resolves.toBe(true);
 
         expect(harness.videoDecodeSession.resyncAudio).toHaveBeenCalledWith(
-            expect.objectContaining({ decodedAudioOutputChannelCount: 6 })
+            expect.objectContaining({ decodedAudioOutputLayout: '5.1' })
         );
         expect(audioOutput.reconfigure).toHaveBeenCalledWith(FIVE_POINT_ONE_OUTPUT_CONFIGURATION);
         await harness.controller.destroy();
@@ -4764,7 +4899,7 @@ describe('CustomPlaybackController live audio output reconfiguration', () => {
         await startReadyPlayback(
             harness,
             true,
-            { decodedAudioOutputChannelCount: 6 },
+            { decodedAudioOutputLayout: '5.1' },
             FIVE_POINT_ONE_OUTPUT_CONFIGURATION
         );
 
@@ -4772,19 +4907,19 @@ describe('CustomPlaybackController live audio output reconfiguration', () => {
         await expect(harness.controller.reconfigureAudioOutput({
             audioDownmixAlgorithm: CUSTOM_AUDIO_DOWNMIX_ALGORITHMS.NightModeDialogue,
             audioDownmixSettings: LIVE_DOWNMIX_SETTINGS,
-            decodedAudioOutputChannelCount: 6
+            decodedAudioOutputLayout: '5.1'
         })).resolves.toBe(true);
         expect(harness.videoDecodeSession.resyncAudio).not.toHaveBeenCalled();
         expect(harness.videoDecodeSession.updateAudioDownmixSettings).not.toHaveBeenCalled();
 
         // A track switch that mixes down starts with both
-        const trackSwitchPromise = harness.controller.setAudioStreamIndex(3, 'decoded-pcm', 2);
+        const trackSwitchPromise = harness.controller.setAudioStreamIndex(3, 'decoded-pcm', 'stereo');
         await flushAsyncWork();
         expect(harness.videoDecodeSession.starts.at(-1)).toMatchObject({
             audioDownmixAlgorithm: CUSTOM_AUDIO_DOWNMIX_ALGORITHMS.NightModeDialogue,
             audioDownmixSettings: LIVE_DOWNMIX_SETTINGS,
             audioTrackIndex: 3,
-            decodedAudioOutputChannelCount: 2
+            decodedAudioOutputLayout: 'stereo'
         });
         await harness.controller.destroy();
         await expect(trackSwitchPromise).resolves.toMatchObject({ status: 'stopped' });
@@ -4799,7 +4934,7 @@ describe('CustomPlaybackController live audio output reconfiguration', () => {
 
         await expect(harness.controller.reconfigureAudioOutput({
             audioDownmixAlgorithm: CUSTOM_AUDIO_DOWNMIX_ALGORITHMS.RFC7845,
-            decodedAudioOutputChannelCount: 6
+            decodedAudioOutputLayout: '5.1'
         })).resolves.toBe(false);
 
         expect(audioOutput.setPlaying.mock.calls).toEqual([ [ false ], [ true ] ]);
@@ -4816,7 +4951,7 @@ describe('CustomPlaybackController live audio output reconfiguration', () => {
         await flushAsyncWork();
         const restartOptions = harness.videoDecodeSession.starts.at(-1);
         expect(restartOptions?.startTimeMicroseconds).toBe(secondsToMicroseconds(40));
-        expect(restartOptions?.decodedAudioOutputChannelCount).toBeUndefined();
+        expect(restartOptions?.decodedAudioOutputLayout).toBeUndefined();
         expect(restartOptions?.audioDownmixAlgorithm).toBeUndefined();
         await harness.controller.destroy();
         await expect(seekPromise).resolves.toMatchObject({ status: 'stopped' });

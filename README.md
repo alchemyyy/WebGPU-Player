@@ -55,7 +55,8 @@ npm run build
 ## Credits
 
 - [Mediabunny](https://github.com/Vanilagy/mediabunny) (MPL-2.0) demuxes media and remuxes audio to fragmented MP4.
-- [FFmpeg](https://ffmpeg.org/) (LGPL-2.1-or-later), built from a pinned revision, is the AC-3 and E-AC-3 and the TrueHD and MLP decoder packages.
+- [FFmpeg](https://ffmpeg.org/) (LGPL-2.1-or-later), built from a pinned revision, is the AC-3 and E-AC-3, the TrueHD and MLP, and the WMA decoder packages; the TrueHD package's 16-channel Atmos decoder is a port of its MLP decoder.
+- The MIT KEMAR measurements of Bill Gardner and Keith Martin (MIT Media Lab, 1994) are the head-related impulse responses of the Atmos binaural renderer in the E-AC-3 and TrueHD packages.
 - [libdcadec](https://github.com/foo86/dcadec) (LGPL-2.1-or-later) is the DTS decoder package, DTS-HD MA included.
 - The `dolby_vision` crate from [dovi_tool](https://github.com/quietvoid/dovi_tool) (MIT) parses Dolby Vision RPUs.
 

@@ -16,8 +16,11 @@ export type VC1DecoderDescriptionResult =
     | Readonly<{ description: Uint8Array, status: 'read' }>
     | Readonly<{ failure: string, status: 'failed' }>;
 
-/** A Matroska VfW track's FourCC and the extradata after its BITMAPINFOHEADER, which may be empty, or the check its CodecPrivate failed, as `code: detail`. */
-export type MatroskaVFWCodecPrivateResult =
+/**
+ * A Video for Windows track's FourCC and the extradata after its BITMAPINFOHEADER, which may be empty, or the check its codec private data failed, as
+ * `code: detail`: a Matroska VfW track's CodecPrivate, or an AVI or ASF stream's format, which `VFWStreamFormat.ts` reads.
+ */
+export type VFWCodecPrivateResult =
     | Readonly<{ extradata: Uint8Array, fourCC: string, status: 'read' }>
     | Readonly<{ failure: string, status: 'failed' }>;
 
@@ -37,7 +40,7 @@ function fail(failure: string): Readonly<{ failure: string, status: 'failed' }> 
  * Reads a Matroska VFW track's FourCC, as `formatFourCC` gives it, and the extradata after its BITMAPINFOHEADER.
  * As FFmpeg's Matroska demuxer reads it, the extradata is everything after the 40-byte header, and neither the header's biSize nor its frame size is read.
  */
-export function readMatroskaVFWCodecPrivate(track: InputVideoTrack): MatroskaVFWCodecPrivateResult {
+export function readMatroskaVFWCodecPrivate(track: InputVideoTrack): VFWCodecPrivateResult {
     // Mediabunny preserves unsupported Matroska codecs but does not expose CodecPrivate through getDecoderConfig(), so contain the backing access here
     const backing = (track as unknown as { _backing?: MatroskaVFWTrackBacking })._backing;
     const codecPrivate = backing?.internalTrack?.codecPrivate;
@@ -51,9 +54,8 @@ export function readMatroskaVFWCodecPrivate(track: InputVideoTrack): MatroskaVFW
     return { extradata: codecPrivate.slice(BITMAP_INFO_HEADER_BYTE_LENGTH), fourCC: readBitmapInfoHeaderFourCC(codecPrivate), status: 'read' };
 }
 
-/** Reads the extradata after a Matroska VFW CodecPrivate's BITMAPINFOHEADER when it has any and its FourCC is one of the codec's. */
-function readMatroskaVFWExtradata(track: InputVideoTrack, fourCCs: readonly string[]): MatroskaVFWCodecPrivateResult {
-    const codecPrivate = readMatroskaVFWCodecPrivate(track);
+/** Requires a VfW track's extradata, when it has any and its FourCC is one of the codec's. */
+function requireVFWExtradata(codecPrivate: VFWCodecPrivateResult, fourCCs: readonly string[]): VFWCodecPrivateResult {
     if (codecPrivate.status === 'failed') {
         return codecPrivate;
     }
@@ -64,11 +66,11 @@ function readMatroskaVFWExtradata(track: InputVideoTrack, fourCCs: readonly stri
 }
 
 /**
- * Reads the extradata FFmpeg's vc1 decoder gets from a Matroska VFW track of VC-1 Advanced profile, its WVC1 or WMVA FourCC:
+ * Reads the extradata FFmpeg's vc1 decoder gets from a VfW track of VC-1 Advanced profile, its WVC1 or WMVA FourCC:
  * the sequence header and entry point after their start codes, which may follow a size byte.
  */
-export function readMatroskaVC1DecoderDescription(track: InputVideoTrack): VC1DecoderDescriptionResult {
-    const extradata = readMatroskaVFWExtradata(track, VC1_FOURCCS);
+export function readVFWVC1DecoderDescription(codecPrivate: VFWCodecPrivateResult): VC1DecoderDescriptionResult {
+    const extradata = requireVFWExtradata(codecPrivate, VC1_FOURCCS);
     if (extradata.status === 'failed') {
         return extradata;
     }
@@ -76,16 +78,16 @@ export function readMatroskaVC1DecoderDescription(track: InputVideoTrack): VC1De
 }
 
 /**
- * Builds the codec private data of a Matroska VFW track of WMV3, the VC-1 Simple and Main profiles: a 40-byte BITMAPINFOHEADER, then the STRUCT_C sequence header FFmpeg's wmv3 decoder gets as its extradata.
+ * Builds the codec private data of a VfW track of WMV3, the VC-1 Simple and Main profiles: a 40-byte BITMAPINFOHEADER, then the STRUCT_C sequence header FFmpeg's wmv3 decoder gets as its extradata.
  * The sequence header holds no frame size, which FFmpeg takes from the container, and a GPU decoder sees only the frame pool's size, which is padded.
  * So the header carries the container's coded size, as a Video for Windows header does, and the WMV3 FourCC that tells the decoder which sequence header follows.
  */
-export function readMatroskaWMV3DecoderDescription(
-    track: InputVideoTrack,
+export function readVFWWMV3DecoderDescription(
+    codecPrivate: VFWCodecPrivateResult,
     codedWidth: number,
     codedHeight: number
 ): VC1DecoderDescriptionResult {
-    const extradata = readMatroskaVFWExtradata(track, WMV3_FOURCCS);
+    const extradata = requireVFWExtradata(codecPrivate, WMV3_FOURCCS);
     if (extradata.status === 'failed') {
         return extradata;
     }

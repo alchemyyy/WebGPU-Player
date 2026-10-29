@@ -14,7 +14,7 @@ import {
 } from 'webgpu-player/TimingTrace';
 import type CustomDecodeAudioBridge from 'webgpu-player/audio/output/CustomDecodeAudioBridge';
 import type { CustomDecodeAudioBridgeStartOptions } from 'webgpu-player/audio/output/CustomDecodeAudioBridge';
-import type { CustomAudioOutputChannelCount } from 'webgpu-player/audio/processing/CustomAudioChannelLayout';
+import type { CustomAudioOutputLayout } from 'webgpu-player/audio/processing/CustomAudioChannelLayout';
 import {
     CUSTOM_AUDIO_DOWNMIX_ALGORITHMS,
     type CustomAudioDownmixAlgorithm
@@ -522,7 +522,7 @@ async function expectAudioResyncDeclined(session: CustomDecodeSession, worker: M
 
     await expect(session.resyncAudio({
         createAudioBridge,
-        decodedAudioOutputChannelCount: 6,
+        decodedAudioOutputLayout: '5.1',
         targetTimeMicroseconds: secondsToMicroseconds(5)
     })).resolves.toBeNull();
 
@@ -1241,7 +1241,7 @@ describe('CustomDecodeSession', () => {
             audioDownmixAlgorithm: CUSTOM_AUDIO_DOWNMIX_ALGORITHMS.RFC7845,
             audioDownmixSettings,
             audioTrackIndex: 0,
-            decodedAudioOutputChannelCount: 8,
+            decodedAudioOutputLayout: '7.1',
             dolbyVisionProfile: null,
             generation: 9,
             maximumCodedHeight: 1_080,
@@ -1260,7 +1260,7 @@ describe('CustomDecodeSession', () => {
             audioDownmixAlgorithm: CUSTOM_AUDIO_DOWNMIX_ALGORITHMS.RFC7845,
             audioDownmixSettings,
             audioTrackIndex: 0,
-            decodedAudioOutputChannelCount: 8,
+            decodedAudioOutputLayout: '7.1',
             generation: 9,
             type: 'start'
         });
@@ -1351,14 +1351,14 @@ describe('CustomDecodeSession', () => {
             {
                 accepted: true,
                 channelCount: 2,
-                decodedAudioOutputChannelCount: 2 as const,
+                decodedAudioOutputLayout: 'stereo' as const,
                 generation: 40,
                 sourceChannelCount: 2
             },
             {
                 accepted: false,
                 channelCount: 8,
-                decodedAudioOutputChannelCount: 8 as const,
+                decodedAudioOutputLayout: '7.1' as const,
                 generation: 41,
                 sourceChannelCount: 8
             }
@@ -1374,7 +1374,7 @@ describe('CustomDecodeSession', () => {
             );
             session.start({
                 audioTrackIndex: 0,
-                decodedAudioOutputChannelCount: configuration.decodedAudioOutputChannelCount,
+                decodedAudioOutputLayout: configuration.decodedAudioOutputLayout,
                 dolbyVisionProfile: null,
                 generation: configuration.generation,
                 maximumCodedHeight: 1_080,
@@ -1493,7 +1493,7 @@ describe('CustomDecodeSession', () => {
         );
         session.start({
             audioTrackIndex: 0,
-            decodedAudioOutputChannelCount: 8,
+            decodedAudioOutputLayout: '7.1',
             dolbyVisionProfile: null,
             generation: 10,
             maximumCodedHeight: 1_080,
@@ -2980,7 +2980,7 @@ describe('CustomDecodeSession', () => {
             audioDownmixAlgorithm: CUSTOM_AUDIO_DOWNMIX_ALGORITHMS.RFC7845,
             audioDownmixSettings,
             createAudioBridge,
-            decodedAudioOutputChannelCount: 6,
+            decodedAudioOutputLayout: '5.1',
             targetTimeMicroseconds: secondsToMicroseconds(5)
         });
 
@@ -3022,7 +3022,7 @@ describe('CustomDecodeSession', () => {
             },
             audioEpoch: 1,
             audioOutput: resyncedAudioOutput,
-            decodedAudioOutputChannelCount: 6,
+            decodedAudioOutputLayout: '5.1',
             generation: 80,
             targetTimeMicroseconds: 5_000_000,
             type: 'resync-audio'
@@ -3056,7 +3056,7 @@ describe('CustomDecodeSession', () => {
         const resyncedAudioBridge = createSubmittingAudioBridge(4);
         await expect(session.resyncAudio({
             createAudioBridge: async (): Promise<CustomDecodeAudioBridge> => resyncedAudioBridge,
-            decodedAudioOutputChannelCount: 8,
+            decodedAudioOutputLayout: '7.1',
             targetTimeMicroseconds: secondsToMicroseconds(5)
         })).resolves.toBe(1);
         const eventCount = events.length;
@@ -3100,7 +3100,7 @@ describe('CustomDecodeSession', () => {
         const deferredAudioBridge = createDeferred<CustomDecodeAudioBridge>();
         const resyncPromise = session.resyncAudio({
             createAudioBridge: (): Promise<CustomDecodeAudioBridge> => deferredAudioBridge.promise,
-            decodedAudioOutputChannelCount: 6,
+            decodedAudioOutputLayout: '5.1',
             targetTimeMicroseconds: secondsToMicroseconds(5)
         });
         const eventCount = events.length;
@@ -3147,13 +3147,13 @@ describe('CustomDecodeSession', () => {
         const firstResyncedAudioBridge = createSubmittingAudioBridge(4);
         await expect(session.resyncAudio({
             createAudioBridge: async (): Promise<CustomDecodeAudioBridge> => firstResyncedAudioBridge,
-            decodedAudioOutputChannelCount: 6,
+            decodedAudioOutputLayout: '5.1',
             targetTimeMicroseconds: secondsToMicroseconds(5)
         })).resolves.toBe(1);
         const secondResyncedAudioBridge = createSubmittingAudioBridge(4);
         await expect(session.resyncAudio({
             createAudioBridge: async (): Promise<CustomDecodeAudioBridge> => secondResyncedAudioBridge,
-            decodedAudioOutputChannelCount: 8,
+            decodedAudioOutputLayout: '7.1',
             targetTimeMicroseconds: secondsToMicroseconds(6)
         })).resolves.toBe(2);
         // A completed resync's bridge is the active output that the next resync stops
@@ -3165,8 +3165,8 @@ describe('CustomDecodeSession', () => {
             getStartedAudioOutput(secondResyncedAudioBridge)
         ];
         expect(resyncRequests.map(({ message }) => message)).toMatchObject([
-            { audioEpoch: 1, audioOutput: resyncedAudioOutputs[0], decodedAudioOutputChannelCount: 6 },
-            { audioEpoch: 2, audioOutput: resyncedAudioOutputs[1], decodedAudioOutputChannelCount: 8 }
+            { audioEpoch: 1, audioOutput: resyncedAudioOutputs[0], decodedAudioOutputLayout: '5.1' },
+            { audioEpoch: 2, audioOutput: resyncedAudioOutputs[1], decodedAudioOutputLayout: '7.1' }
         ]);
         expect(resyncRequests.map(({ transfer }) => transfer)).toEqual(resyncedAudioOutputs.map(audioOutput => [ audioOutput.port ]));
         expect(resyncedAudioOutputs.map(audioOutput => audioOutput.channelCount)).toEqual([ 6, 8 ]);
@@ -3231,13 +3231,13 @@ describe('CustomDecodeSession', () => {
 
             const firstResyncPromise = session.resyncAudio({
                 createAudioBridge: (): Promise<CustomDecodeAudioBridge> => firstDeferredAudioBridge.promise,
-                decodedAudioOutputChannelCount: 6,
+                decodedAudioOutputLayout: '5.1',
                 targetTimeMicroseconds: secondsToMicroseconds(5)
             });
             // No bridge is active while the first output is built, yet the newer layout proceeds
             const secondResyncPromise = session.resyncAudio({
                 createAudioBridge: secondCreateAudioBridge,
-                decodedAudioOutputChannelCount: 8,
+                decodedAudioOutputLayout: '7.1',
                 targetTimeMicroseconds: secondsToMicroseconds(6)
             });
 
@@ -3282,7 +3282,7 @@ describe('CustomDecodeSession', () => {
             expect(worker.postedMessages.slice(postedMessageCount)).toStrictEqual([ {
                 audioEpoch: 2,
                 audioOutput: secondAudioOutput,
-                decodedAudioOutputChannelCount: 8,
+                decodedAudioOutputLayout: '7.1',
                 generation: 84,
                 targetTimeMicroseconds: 6_000_000,
                 type: 'resync-audio'
@@ -3312,12 +3312,12 @@ describe('CustomDecodeSession', () => {
 
         const firstResyncPromise = session.resyncAudio({
             createAudioBridge: (): Promise<CustomDecodeAudioBridge> => Promise.reject(new Error('The superseded output failed')),
-            decodedAudioOutputChannelCount: 6,
+            decodedAudioOutputLayout: '5.1',
             targetTimeMicroseconds: secondsToMicroseconds(5)
         });
         const secondResyncPromise = session.resyncAudio({
             createAudioBridge: async (): Promise<CustomDecodeAudioBridge> => secondAudioBridge,
-            decodedAudioOutputChannelCount: 2,
+            decodedAudioOutputLayout: 'stereo',
             targetTimeMicroseconds: secondsToMicroseconds(5)
         });
 
@@ -3341,7 +3341,7 @@ describe('CustomDecodeSession', () => {
 
         await expect(session.resyncAudio({
             createAudioBridge: (): Promise<CustomDecodeAudioBridge> => Promise.reject(new Error('AudioWorklet creation failed')),
-            decodedAudioOutputChannelCount: 6,
+            decodedAudioOutputLayout: '5.1',
             targetTimeMicroseconds: secondsToMicroseconds(5)
         })).resolves.toBeNull();
 
@@ -3375,7 +3375,7 @@ describe('CustomDecodeSession', () => {
 
         await expect(session.resyncAudio({
             createAudioBridge: async (): Promise<CustomDecodeAudioBridge> => resyncedAudioBridge,
-            decodedAudioOutputChannelCount: 6,
+            decodedAudioOutputLayout: '5.1',
             targetTimeMicroseconds: secondsToMicroseconds(5)
         })).resolves.toBeNull();
 
@@ -3400,7 +3400,7 @@ describe('CustomDecodeSession', () => {
         const resyncedAudioBridge = createSubmittingAudioBridge(4);
         await expect(session.resyncAudio({
             createAudioBridge: async (): Promise<CustomDecodeAudioBridge> => resyncedAudioBridge,
-            decodedAudioOutputChannelCount: 6,
+            decodedAudioOutputLayout: '5.1',
             targetTimeMicroseconds: secondsToMicroseconds(5)
         })).resolves.toBe(1);
 
@@ -3430,7 +3430,7 @@ describe('CustomDecodeSession', () => {
 
         await expect(session.resyncAudio({
             createAudioBridge: async (): Promise<CustomDecodeAudioBridge> => createSubmittingAudioBridge(4),
-            decodedAudioOutputChannelCount: 6,
+            decodedAudioOutputLayout: '5.1',
             targetTimeMicroseconds: secondsToMicroseconds(5)
         })).resolves.toBe(1);
         // A 5.1 output carries no stereo downmix to adjust
@@ -3438,7 +3438,7 @@ describe('CustomDecodeSession', () => {
 
         await expect(session.resyncAudio({
             createAudioBridge: async (): Promise<CustomDecodeAudioBridge> => createSubmittingAudioBridge(4),
-            decodedAudioOutputChannelCount: 2,
+            decodedAudioOutputLayout: 'stereo',
             targetTimeMicroseconds: secondsToMicroseconds(6)
         })).resolves.toBe(2);
         expect(session.updateAudioDownmixSettings(settings)).toBe(true);
@@ -3462,7 +3462,7 @@ describe('CustomDecodeSession', () => {
         // A resync restarts audio, so the previous track end no longer applies
         await expect(session.resyncAudio({
             createAudioBridge: async (): Promise<CustomDecodeAudioBridge> => createSubmittingAudioBridge(4),
-            decodedAudioOutputChannelCount: 2,
+            decodedAudioOutputLayout: 'stereo',
             targetTimeMicroseconds: secondsToMicroseconds(5)
         })).resolves.toBe(1);
         expect(session.getTelemetry().audioEnded).toBe(false);
@@ -3511,7 +3511,7 @@ describe('CustomDecodeSession', () => {
         const { events, session, worker } = startReadyDecodedAudioSession(100);
         await expect(session.resyncAudio({
             createAudioBridge: async (): Promise<CustomDecodeAudioBridge> => createSubmittingAudioBridge(4),
-            decodedAudioOutputChannelCount: 6,
+            decodedAudioOutputLayout: '5.1',
             targetTimeMicroseconds: secondsToMicroseconds(9)
         })).resolves.toBe(1);
         expect(session.getTelemetry().audioResyncPending).toBe(true);
@@ -3571,10 +3571,14 @@ describe('CustomDecodeSession', () => {
             decodedAudioSourceChannelCount: 8,
             state: 'ready'
         });
+        expect(session.getTelemetry().decodedAudioObjectCount).toBeNull();
+        // A package that renders object audio reports its objects
+        worker.emitMessage({ audioEpoch: 0, generation: 104, objectCount: 9, type: 'audio-object-count' });
+        expect(session.getTelemetry()).toMatchObject({ decodedAudioObjectCount: 9, decodedAudioOutputLayout: 'stereo' });
 
         await expect(session.resyncAudio({
             createAudioBridge: async (): Promise<CustomDecodeAudioBridge> => createSubmittingAudioBridge(4),
-            decodedAudioOutputChannelCount: 6,
+            decodedAudioOutputLayout: '5.1',
             targetTimeMicroseconds: secondsToMicroseconds(5)
         })).resolves.toBe(1);
         // A replaced epoch's report no longer applies
@@ -3586,6 +3590,11 @@ describe('CustomDecodeSession', () => {
             type: 'audio-source-format'
         });
         expect(session.getTelemetry().decodedAudioSourceChannelCount).toBe(8);
+        // The new epoch's package has reported no objects yet, and a replaced epoch's report no longer applies
+        worker.emitMessage({ audioEpoch: 0, generation: 104, objectCount: 7, type: 'audio-object-count' });
+        expect(session.getTelemetry()).toMatchObject({ decodedAudioObjectCount: null, decodedAudioOutputLayout: '5.1' });
+        worker.emitMessage({ audioEpoch: 1, generation: 104, objectCount: 0, type: 'audio-object-count' });
+        expect(session.getTelemetry().decodedAudioObjectCount).toBe(0);
         worker.emitMessage({
             audioEpoch: 1,
             channelCount: 6,
@@ -3822,7 +3831,7 @@ describe('CustomDecodeSession', () => {
         const stoppedResyncedAudioBridge = createSubmittingAudioBridge(4);
         const stoppedResyncPromise = stoppedHarness.session.resyncAudio({
             createAudioBridge: (): Promise<CustomDecodeAudioBridge> => stoppedDeferredAudioBridge.promise,
-            decodedAudioOutputChannelCount: 6,
+            decodedAudioOutputLayout: '5.1',
             targetTimeMicroseconds: secondsToMicroseconds(5)
         });
         const stopPromise = stoppedHarness.session.stop();
@@ -3845,7 +3854,7 @@ describe('CustomDecodeSession', () => {
         const endedResyncedAudioBridge = createSubmittingAudioBridge(4);
         const endedResyncPromise = endedHarness.session.resyncAudio({
             createAudioBridge: (): Promise<CustomDecodeAudioBridge> => endedDeferredAudioBridge.promise,
-            decodedAudioOutputChannelCount: 6,
+            decodedAudioOutputLayout: '5.1',
             targetTimeMicroseconds: secondsToMicroseconds(5)
         });
         endedHarness.worker.emitMessage({ generation: 97, type: 'ended' });
@@ -3870,23 +3879,68 @@ describe('CustomDecodeSession', () => {
         });
     });
 
+    it('posts a live binaural switch to a decoded PCM run, and carries the setting in its start and resync requests', async () => {
+        const { session, worker } = startReadyDecodedAudioSession(97);
+
+        expect(session.updateAudioBinaural(true)).toBe(true);
+        expect(getPostedMessagesOfType(worker, 'update-audio-binaural').map(({ message }) => message)).toEqual([
+            { binauralHeadphones: true, generation: 97, type: 'update-audio-binaural' }
+        ]);
+        await expect(session.resyncAudio({
+            binauralHeadphones: true,
+            createAudioBridge: async (): Promise<CustomDecodeAudioBridge> => createSubmittingAudioBridge(4),
+            decodedAudioOutputLayout: '7.1.4',
+            targetTimeMicroseconds: secondsToMicroseconds(5)
+        })).resolves.toBe(1);
+        expect(getPostedMessagesOfType(worker, 'resync-audio').map(({ message }) => message)).toMatchObject([
+            { audioOutput: { channelCount: 12 }, binauralHeadphones: true, decodedAudioOutputLayout: '7.1.4' }
+        ]);
+        expect(session.getTelemetry()).toMatchObject({ audioChannelCount: 12, decodedAudioOutputLayout: '7.1.4' });
+    });
+
+    it('posts a resync with the binaural setting a live switch made while its bridge was being built', async () => {
+        const { session, worker } = startReadyDecodedAudioSession(96);
+        const bridgeBuild: { resolve?: (bridge: CustomDecodeAudioBridge) => void } = {};
+        const bridgePromise = new Promise<CustomDecodeAudioBridge>(resolve => {
+            bridgeBuild.resolve = resolve;
+        });
+
+        const resync = session.resyncAudio({
+            binauralHeadphones: false,
+            createAudioBridge: (): Promise<CustomDecodeAudioBridge> => bridgePromise,
+            decodedAudioOutputLayout: 'stereo',
+            targetTimeMicroseconds: secondsToMicroseconds(5)
+        });
+        expect(session.updateAudioBinaural(true)).toBe(true);
+        bridgeBuild.resolve?.(createSubmittingAudioBridge(4));
+
+        await expect(resync).resolves.toBe(1);
+        expect(getPostedMessagesOfType(worker, 'resync-audio').map(({ message }) => message)).toMatchObject([
+            { binauralHeadphones: true, decodedAudioOutputLayout: 'stereo' }
+        ]);
+    });
+
     it('rejects invalid audio resync options before changing the session', async () => {
         const { audioBridge, session, worker } = startReadyDecodedAudioSession(98);
         const createAudioBridge = vi.fn(async (): Promise<CustomDecodeAudioBridge> => createSubmittingAudioBridge(4));
         const resyncOptions: CustomDecodeAudioResyncOptions = {
             createAudioBridge,
-            decodedAudioOutputChannelCount: 6,
+            decodedAudioOutputLayout: '5.1',
             targetTimeMicroseconds: secondsToMicroseconds(5)
         };
-        const invalidChannelCounts: readonly number[] = [ 0, 1, 4, 7, 16 ];
+        const invalidOutputLayouts: readonly unknown[] = [ 2, 6, '4.0', '6.1', '9.1.6', undefined ];
         const postedMessageCount = worker.postedMessages.length;
 
-        for (const invalidChannelCount of invalidChannelCounts) {
+        for (const invalidOutputLayout of invalidOutputLayouts) {
             await expect(session.resyncAudio({
                 ...resyncOptions,
-                decodedAudioOutputChannelCount: invalidChannelCount as CustomAudioOutputChannelCount
+                decodedAudioOutputLayout: invalidOutputLayout as CustomAudioOutputLayout
             })).rejects.toThrow(RangeError);
         }
+        await expect(session.resyncAudio({
+            ...resyncOptions,
+            binauralHeadphones: 1 as unknown as boolean
+        })).rejects.toThrow(TypeError);
         await expect(session.resyncAudio({
             ...resyncOptions,
             audioDownmixAlgorithm: 'unsupported' as unknown as CustomAudioDownmixAlgorithm
@@ -3932,8 +3986,8 @@ describe('CustomDecodeSession', () => {
         );
         await expect(unstartedSession.resyncAudio({
             ...resyncOptions,
-            decodedAudioOutputChannelCount: 7 as unknown as CustomAudioOutputChannelCount
-        })).rejects.toThrow('Decoded audio output channel count must be 2, 6, or 8');
+            decodedAudioOutputLayout: '6.1' as unknown as CustomAudioOutputLayout
+        })).rejects.toThrow('Decoded audio output layout must be stereo, 5.1, 7.1, 5.1.2, 5.1.4, 7.1.2, or 7.1.4');
     });
 });
 

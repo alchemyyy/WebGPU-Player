@@ -8,7 +8,7 @@ The host turns the same evidence into what it advertises to its server; the Jell
 A host calls these, in this order, for each playback:
 
 1. `CustomPlaybackEligibility.hasPotentialCustomPlaybackVideoRoute`, the metadata-only prefilter, when it chooses a player.
-   The prefilter declines a source whose containers no route in `CUSTOM_CONTAINER_CODEC_RULES` carries, such as FLV, ASF, or an MPEG program stream.
+   The prefilter declines a source whose containers no route in `CUSTOM_CONTAINER_CODEC_RULES` carries, such as FLV, Ogg, or an MPEG program stream.
    It also declines a video codec no route decodes, such as Theora, rotated video, and interlaced HEVC and JPEG 2000, which code their fields apart (see [Interlaced video](#interlaced-video)).
 2. `CustomPlaybackRuntime.getCustomPlaybackRuntimeAvailability`, which fails without a secure context, Worker, `navigator.gpu`, or `VideoFrame`.
 3. `probeCustomDecodeCapabilities(item)`, the native-media audio probe, and the GPU authorizations the item needs (5 s each), before it advertises anything; see [Probes and caching](#probes-and-caching).
@@ -37,12 +37,15 @@ A host calls these, in this order, for each playback:
 
 An ineligible result carries its reason, and the host falls back.
 
-The worker refuses what only the file shows, with a message that names the check: a track whose edit list Mediabunny cannot honor (`getUnsupportedFeatures()`), an AVI video track that outruns its index (`avi-index-incomplete`), a video track Mediabunny names no codec for that no frame-pool route takes (`no decode route: fourcc: <FourCC>` for an AVI track, `codec-id: <ID>` for another container's), and a DTS Express audio track (`no decode route: dtse`).
+The worker refuses what only the file shows, with a message that names the check: a track whose edit list Mediabunny cannot honor (`getUnsupportedFeatures()`), an AVI video track that outruns its index (`avi-index-incomplete`), a video track Mediabunny names no codec for that no frame-pool route takes (`no decode route: fourcc: <FourCC>` for an AVI or ASF track, `codec-id: <ID>` for another container's), and a DTS Express audio track (`no decode route: dtse`).
 On the frame-pool route an MPEG-TS or M2TS track of MPEG-1, MPEG-2, or VC-1 must carry the negotiated codec (`container-codec`), and takes its first sequence header's extradata as codec private data (`sequence-header-missing` when none of its first 64 packets has one).
-An MPEG-4 Part 2, H.263, or MS-MPEG4 track must have a codec ID of the negotiated codec (`codec-id`): Matroska's `V_MPEG4/ISO/SP`, `ASP`, or `AP` and ISO base media's `mp4v` for MPEG-4 Part 2, which Mediabunny names `mpeg4` (`container-codec` otherwise), `s263` or `h263` for H.263, `V_MPEG4/MS/V3` for MS-MPEG4 v3, and Matroska's `V_MS/VFW/FOURCC` or AVI for any of them.
-A VfW or AVI track's FourCC must be one FFmpeg's `riff.c` maps to the negotiated codec, compared upper-cased (`fourcc`), and Mediabunny leaves every such AVI track but MPEG-4 Part 2 codec-less, with the FourCC as its codec ID.
+A VC-1 or WMV3 track must be a Matroska `V_MS/VFW/FOURCC` track, an ISO base media `vc-1` sample entry (VC-1 only), or an ASF stream of `WVC1` or `WMVA` (VC-1) or `WMV3` (`codec-id`); an AVI stream of those FourCCs is refused, as no container rule places VC-1 in AVI.
+An ASF stream's FourCC and extradata come from its BITMAPINFOHEADER, and its media objects, in decode order like a Matroska VfW track's, are restamped in presentation order by `VC1PresentationOrder.ts`.
+An MPEG-4 Part 2, H.263, or MS-MPEG4 track must have a codec ID of the negotiated codec (`codec-id`): Matroska's `V_MPEG4/ISO/SP`, `ASP`, or `AP` and ISO base media's `mp4v` for MPEG-4 Part 2, which Mediabunny names `mpeg4` (`container-codec` otherwise), `s263` or `h263` for H.263, `V_MPEG4/MS/V3` for MS-MPEG4 v3, and Matroska's `V_MS/VFW/FOURCC`, AVI, or ASF for any of them.
+A VfW, AVI, or ASF track's FourCC must be one FFmpeg's `riff.c` maps to the negotiated codec, compared upper-cased (`fourcc`), and Mediabunny leaves every such AVI or ASF track but MPEG-4 Part 2 codec-less, with the FourCC as its codec ID.
+A codec-less AVI or ASF track's extradata is the one after its BITMAPINFOHEADER (`demux/VFWStreamFormat.ts`), as FFmpeg's AVI and ASF demuxers pass it.
 The codec private data is a 40-byte BITMAPINFOHEADER of the track's coded size and FourCC (`mp4v`, `s263`, or `MP43` for a track without one), then the track's extradata (see [Decoder packages](decoder-packages.md)).
-AVI and Matroska VfW stamp packets in decode order, so `MPEG4PresentationOrder.ts` restamps an MPEG-4 Part 2 track from them that FFmpeg outputs one VOP late: its video object layer, from the extradata or else the first key packet, clears `low_delay` in its `vol_control_parameters`, or has none and is neither Simple nor Advanced Simple, or has none and its first group holds a B-VOP.
+AVI, ASF, and Matroska VfW stamp packets in decode order, so `MPEG4PresentationOrder.ts` restamps an MPEG-4 Part 2 track from them that FFmpeg outputs one VOP late: its video object layer, from the extradata or else the first key packet, clears `low_delay` in its `vol_control_parameters`, or has none and is neither Simple nor Advanced Simple, or has none and its first group holds a B-VOP.
 An I, P, or S-VOP then takes the time of the next coded VOP that is no B-VOP, passing over N-VOPs, for which FFmpeg outputs nothing, and a B-VOP keeps its own.
 AVI audio takes the same routes as any container's: Mediabunny reads a WAVE_FORMAT_EXTENSIBLE track's codec from its SubFormat, and gives FLAC and Vorbis the decoder descriptions their `strf` extradata holds.
 A track whose container declares a WAVE channel mask, which Mediabunny's `getChannelMask` reports for WAVE_FORMAT_EXTENSIBLE, is laid out by that mask: the worker takes its layout from `CustomWaveChannelLayout.ts` and passes the mask to the audio decode worker's attempt, whose output stage binds Mediabunny's decoded samples to it.
@@ -56,14 +59,14 @@ A mask of 0, or none, lays channels out by their count; a mask the output stage 
 - GPU: presentation authorization reads back renders of the production shaders.
   Results are cached per `GPUDevice`, canvas format, and shader signature, and dropped on device loss.
 - `selectCustomDecodeProbes(item)` picks the probes an item needs.
-  Every audio probe runs for every item, because a playing item can switch to any of its audio tracks.
-  The video probes follow the union of the video streams across the item's sources: the codec picks its native probes, a range extension picks its own variants, a stream beyond 8-bit SDR adds the raw-plane and native HDR probes, and a range that is neither SDR nor static HDR adds the Dolby Vision probe.
+  Every audio probe runs for every item, because a playing item can switch to any of its audio tracks: the stereo probes (`native-audio`), the 5.1 probes (`native-surround-audio`), and the 7.1 probes (`native-seven-point-one-audio`).
+  The video probes follow the union of the video streams across the item's sources: the codec picks its native probes, a range extension picks its own variants, an H.264 stream beyond 8-bit 4:2:0 picks every raw format variant its profile codes at its depth beside the per-profile probe, since a host advertises the profile at that depth only when all of them qualify, a stream beyond 8-bit SDR adds the raw-plane and native HDR probes, and a range that is neither SDR nor static HDR adds the Dolby Vision probe.
   JPEG 2000, MPEG-2, VC-1, MPEG-4 Part 2, H.263, and MS-MPEG4 streams pick none, since only a GPU decoder package decodes them.
   An HDR item also runs the HEVC and AV1 probes, because an HDR transcode targets those codecs and their ranges bound it.
   An item without stream metadata, or with a video stream that names no codec, runs every probe.
 - A probe the item does not select reads `not-probed`, which no profile rule or eligibility check treats as support, and its H.264 profile result is absent; `probeStates` records which probes a result ran.
   At eligibility, the host keeps the negotiated result when `hasProbedCustomDecodeSelection` says it covers the played source, and otherwise probes that source.
-- A range-extension probe downloads its vector before its decode timeout starts, under its own 30 s bound (`capability/CapabilityAssetLoading.ts`), so a slow link never reads as a slow decoder or trips the queue's timeout.
+- A range-extension or raw-format probe downloads its vector before its decode timeout starts, under its own 30 s bound (`capability/CapabilityAssetLoading.ts`), so a slow link never reads as a slow decoder or trips the queue's timeout.
   A download that fails with a network error, 408, 429, or 5xx is retried after 250 ms and again after 1 s, inside the same 30 s bound; any other HTTP failure, or the bound ending, is final and reports `asset-unavailable` with an unknown status.
 - Each probe is one promise per page, so a later item runs only the probes no earlier item ran.
   It is dropped only when the store clears a stored verdict it holds, or replaced when a background rerun reaches a new verdict.
@@ -108,12 +111,12 @@ A host may start the probes before its first negotiation with `warmCustomDecodeC
 | --- | --- | --- | --- |
 | `native` SDR | `video-frame` | H.264 per-profile keyframes; HEVC 1080p access unit; VP8, VP9, AV1 64x64; 4K variants | `getOrdinarySDRVideoSelection` |
 | `native` HEVC Main 10 and AV1 Main 10 HDR, Dolby Vision base | `video-frame`, with `nativeHDRTransfer` pq or hlg, neutralized | 4K Main 10 decode (`nativeHDRHEVC`, `nativeHDRAV1`), plus that codec's external HDR or the Dolby Vision GPU authorization | `getNativeHDRVideoCodec`, `selectNativeDolbyVisionBaseOutput` (HEVC only) |
-| `native` raw | `raw-planes`: I420P10 for HDR, 10-bit SDR, and Dolby Vision (HEVC Main 10, AV1 Main, VP9 Profile 2), I420 to I444P12 for range extensions and for AV1 outside Main 10 | `copyTo` plane fingerprints; nine 192x192 two-access-unit range-extension probes and eight 192x192 two-temporal-unit AV1 raw format probes; raw GPU authorization | `supportsRawHDRVideo`, `selectHEVCRangeExtensionVideoOutput`, `selectAV1RawFormatVideoOutput` |
+| `native` raw | `raw-planes`: I420P10 for HDR, 10-bit SDR, and Dolby Vision (HEVC Main 10, AV1 Main, VP9 Profile 2), I420 to I444P12 for range extensions, for AV1 outside Main 10, and for H.264 beyond 8-bit 4:2:0 | `copyTo` plane fingerprints; nine 192x192 two-access-unit range-extension probes, eight 192x192 two-temporal-unit AV1 raw format probes, and five 192x192 I, P, B H.264 raw format probes, whose B frame outputs before the P frame; raw GPU authorization | `supportsRawHDRVideo`, `selectHEVCRangeExtensionVideoOutput`, `selectAV1RawFormatVideoOutput`, `selectH264RawFormatVideoOutput` |
 | `gpu` | `frame-pool`: I420 to I444P12, the stream's own format | None at eligibility: a host offers its GPU decoder packages, whose own vectors run only when the host verifies one | `selectGPUVideoOutput`; native wins |
 | Audio decoder package | `decoded-pcm` | None at eligibility: a host offers its audio decoder packages | `findAudioDecoderPackage`, for a codec no engine decoder supports |
 | Mediabunny PCM | `decoded-pcm` | None at runtime; always marked supported | `isSupportedCustomAudioInputLayout` |
 | MSE AC-3/E-AC-3 bridge | `native-media` | `isTypeSupported`, an fMP4 append, playback advancing; 2 or 6 channels at 48 kHz | `getSupportedNativeMediaAudioRoute`, checked first |
-| WebCodecs aac, opus, flac, mp3, vorbis | `decoded-pcm` | Stereo 48 kHz silence vectors; separate 5.1 vectors | `capabilities.audio[codec]` |
+| WebCodecs aac, opus, flac, mp3, vorbis | `decoded-pcm` | Stereo 48 kHz silence vectors; separate 5.1 silence vectors; separate 7.1 tone vectors whose decoded planes must carry each source channel's tone in WAVE 7.1 order | `capabilities.audio[codec]`, `nativeSurroundAudio[codec]` for 6 channels, `nativeSevenPointOneAudio[codec]` for 8 |
 
 ## Video route selection
 
@@ -154,7 +157,9 @@ A host may start the probes before its first negotiation with `warmCustomDecodeC
    The BT.2020 10 and 12-bit transfers read as SDR, SMPTE 170M and SMPTE 240M primaries as `smpte170m`, BT.470 BG primaries as `bt470bg`, and the SMPTE 170M and BT.470 BG matrices as BT.601.
    Any other value is unrecognized and fails.
 3. An HEVC range extension needs its exact variant capability and raw key, and so does AV1 outside Main 10 (High 4:4:4, Professional 4:2:2 or 12 bits), through `av1RawFormats[variant]`.
-   A range extension or an AV1 raw format variant never falls through to steps 4 and 5.
+   So does H.264 beyond 8-bit 4:2:0 through `h264RawFormats[variant]`: a profile beyond High (High 10, High 4:2:2, High 4:4:4 Predictive, their Intra profiles, High 4:4:4, or CAVLC 4:4:4) whose pixel format is one of the five variants, I420P10, I422, I422P10, I444, or I444P10, and one the profile codes.
+   The SDR keys go by matrix, primaries, and range, and 10-bit PQ or HLG takes the raw HDR key of the variant's format.
+   A range extension or a raw format variant never falls through to steps 4 and 5; a profile beyond High at 8-bit 4:2:0, 9, 12, or 14 bits, 4:0:0, or RGB has no variant and no other route, so it is refused.
 4. SDR: `native`, or native Main 10 SDR.
    Then, for 10-bit 4:2:0 SDR that neither decodes (AV1 Main, VP9 Profile 2, or HEVC Main 10 without native decode), raw I420P10 through the raw SDR key of its matrix, primaries, and range.
    JPEG 2000, MPEG-1, MPEG-2, VC-1, WMV3, MPEG-4 Part 2, H.263, and MS-MPEG4 have no native route (`CUSTOM_PACKAGE_VIDEO_CODECS`).
@@ -193,7 +198,7 @@ A summary without a header takes every stream of its codecs and formats, and lea
 
 A package's self-test vectors run only when a host calls `verifyGPUDecoderPackage` (see [Decoder packages](decoder-packages.md)); eligibility never waits on them, and offering an unverified package is the host's choice.
 
-VP9 and HEVC range extensions present HDR only through raw planes, and AV1 keeps its raw route beside its native external one, so a host must settle the raw HDR keys for them whatever the external result.
+VP9, HEVC range extensions, and H.264 beyond 8-bit 4:2:0 present HDR only through raw planes, and AV1 keeps its raw route beside its native external one, so a host must settle the raw HDR keys for them whatever the external result.
 The AV1 external keys authorize on first use: `getCustomPresentationEligibilityOptions` waits for the key of an AV1 HDR stream's transfer before eligibility, through `WebGPUPresenter.waitForExternalHDRRouteAuthorization`.
 The Dolby Vision keys a source needs on first use (Profile 4 in any format, or Profile 7 or single-layer reconstruction in a format other than I420P10) must settle before eligibility.
 
@@ -213,7 +218,7 @@ MPEG-1, H.263, MS-MPEG4, VP8, VP9, and AV1 have no interlaced coding.
 | Route | Interlaced video | Field order from |
 | --- | --- | --- |
 | Native `VideoFrame` (`external-texture`, `external-hdr`) | Deinterlaced; the browser upsampled its chroma progressively | The container's scan, else the host's `FieldOrder` and `IsInterlaced` |
-| Raw planes (`raw-yuv`) | Deinterlaced, 4:2:0 chroma read within each field | As the native route |
+| Raw planes (`raw-yuv`) | Deinterlaced, 4:2:0 chroma read within each field | As the native route; an H.264 raw format variant decodes through the same sample path as native H.264, so its frames carry the same fields |
 | GPU (`frame-pool`) | Deinterlaced, 4:2:0 chroma read within each field | The decoder's `reportPictureFields`, else its parser's `parser_picture_fields`, else as the native route |
 | Dolby Vision (`external-dolby-vision`, `raw-dolby-vision`) | Refused unless `IsInterlaced` is false | None |
 
@@ -234,41 +239,51 @@ MPEG-1, H.263, MS-MPEG4, VP8, VP9, and AV1 have no interlaced coding.
 </div>
 
 - Track: `DefaultAudioStreamIndex`, else the first audio stream.
-  Codec aliases: DCA is dts, EC-3 is eac3, TRUE-HD is truehd.
-- Order: the native-media MSE bridge for AC-3 and E-AC-3 (2 or 6 channels, exactly 48 kHz) comes first.
+  Codec aliases: DCA is dts, EC-3 is eac3, TRUE-HD is truehd; WMA takes FFmpeg's decoder names, wmav1, wmav2, wmapro, wmalossless, and wmavoice.
+- Order: an E-AC-3 or TrueHD stream whose Jellyfin `Profile` names Atmos takes the first offered package that declares `renderChannelMask` when the host's `audioRenderTarget` needs its objects: a height speaker layout, a floor wider than the declared channels (7.1 from a 5.1 core), or binaural headphones on a stereo layout; the declared layout must still pass the codec's input routes, and the eligibility sets `audioRendersObjects`.
+  Otherwise the native-media MSE bridge for AC-3 and E-AC-3 (2 or 6 channels, exactly 48 kHz) comes first.
   Otherwise `decoded-pcm`: through the engine's own decoders when the codec capability and the input layout qualify, the browser's for WebCodecs codecs and Mediabunny's for PCM.
-  A codec no engine decoder supports, AC-3, E-AC-3, DTS, TrueHD, and MLP among them, takes the first of the host's audio decoder packages whose manifest accepts it.
+  A codec no engine decoder supports, AC-3, E-AC-3, DTS, TrueHD, MLP, and WMA among them, takes the first of the host's audio decoder packages whose manifest accepts it.
 - Input channels, as declared by Jellyfin.
   The decoded format is authoritative at runtime, and any decoded layout maps to the output by channel name:
 
   | Codec | Channels |
   | --- | --- |
   | PCM | 1, 2, 3, 6 (3 needs a `3.0` layout) |
-  | aac, flac, opus, vorbis | 1, 2, 3, 6 (3 needs a `3.0` layout; 3 and 6 are advertised only with the 5.1 probe, and 6 needs it) |
+  | aac, flac, opus, vorbis | 1, 2, 3, 6, 8 (3 needs a `3.0` layout; 6 needs the codec's 5.1 verdict and 8 its 7.1 verdict) |
   | ac3 | 1, 2, 6 (2/1 and 3/0 both arrive as `3.0`, and no evidence covers either) |
   | eac3 | 1, 2, 6, 8 |
   | mp3 | 1, 2 |
   | dts | 1, 2, 3, 6, 8 |
   | truehd | 1, 2, 6, 8 (8 only at 48 kHz) |
   | mlp | 1, 2 |
+  | wmav1, wmav2 | 1, 2 |
+  | wmapro, wmalossless | 1, 2, 3, 6, 8 |
+  | wmavoice | 1 |
 
   Jellyfin keeps only the part of FFmpeg's layout name before `(`, so `3.0(back)` arrives as `3.0` and `7.1(wide)` as `7.1`.
   A package reports each block's speaker mask, so the mask, not the declared layout, tells them apart at runtime: a DTS 3.0(back) plays with its back center on the surrounds, and a mask with no output layout fails the attempt as `decode-failed`, which renegotiates.
   DTS-ES carries the only 6.1 bed, whose reported geometry failed validation, so seven channels have no route.
+  For the same reason seven-channel WMA Pro and WMA Lossless have none.
+  An 8-channel AAC, Opus, FLAC, or Vorbis track declares no mask, so it lays out by its count as WAVE 7.1 (`CUSTOM_SEVEN_POINT_ONE_CHANNEL_LAYOUT`), the order its 7.1 probe proved.
+  FFmpeg's encoder writes 7.1 AAC as AudioSpecificConfig channelConfiguration 7, which FFmpeg's decoder, and so Chrome's, reads as 7.1 with back and side pairs, not the specification's 7.1(wide); either reaches the engine as `7.1`.
 - DTS and TrueHD play from Matroska and from MP4, M4V, and MOV (the `DTS `, `dtsc`, `dtsh`, `dtsl`, and `mlpa` sample entries); MLP plays only from Matroska.
+- WMA plays from Matroska `A_MS/ACM` tracks and AVI and ASF streams, which Mediabunny leaves codec-less: the worker reads the WAVEFORMATEX (`demux/WaveFormatAudioConfiguration.ts`), names the codec by its format tag, and refuses a track whose tag names another codec than the package decodes it as.
+  The package configures with that WAVEFORMATEX before its first packet (see [Decoder packages](decoder-packages.md#codec-private-data-1)).
 - Rates: any positive integer, resampled to 48 kHz.
   Past 192 kHz the resampler's kernel widens in proportion, so its band edge stays as sharp as at 192 kHz.
   A browser decoder judges its own rates per item, and a rate it refuses falls back.
-- Output channels: `selectCustomAudioOutputChannelCountForMaximum` (`audio/NativeMultichannelAudioOutput.ts`) gives a three-channel or 5.1 source 6 when `destination.maxChannelCount` is at least 6, and a 6.1 or 7.1 source 8 when it is at least 8, else 6 when it is at least 6.
-  Everything else downmixes to 2 with the selected algorithm.
-  A host may force 2.
+- Output layout (`audio/NativeMultichannelAudioOutput.ts`): `selectCustomAudioSpeakerLayout` resolves the host's speaker layout setting on `destination.maxChannelCount`: `auto` takes 7.1.4 from 12 channels, 7.1.2 from 10, 7.1 from 8, 5.1 from 6, else stereo; an explicit stereo, 5.1, 7.1, 5.1.2, 5.1.4, 7.1.2, or 7.1.4 needs a destination with its channels, else resolves as `auto`.
+  `selectCustomAudioOutputLayout` then gives a source a package renders as objects the whole speaker layout, and every other source the floor rule within the layout's floor: three channels and 5.1 take 5.1, 6.1 and 7.1 take 7.1 or fold into 5.1, everything else downmixes to stereo with the selected algorithm.
+  A host may force stereo.
   A live layout switch applies the same rule to the decoded layout.
+  The output plays 2, 6, 8, 10, or 12 channels in WAVE order (5.1 in Web Audio's order); a decoded layout maps by channel name, a height the output lacks folds into the floor pair beneath it, and a height layout mixes to stereo through its folded floor.
 
 ## Gotchas
 
 - Native decode uses the hint its probes measured (`getCustomDecodeHardwareAcceleration`).
   Only the routes that present the decoder's opaque hardware output (native external HDR, the native Dolby Vision base, and external Profile 5) prefer hardware.
-  Raw-plane AV1 and VP9 prefer software, because Chromium's hardware decoders return opaque 10-bit surfaces.
+  Raw-plane AV1 and VP9 prefer software, because Chromium's hardware decoders return opaque 10-bit surfaces, and so does raw-plane H.264, whose profiles beyond High Chromium reports unsupported with `prefer-hardware`.
   Every other native route uses `no-preference`, so a codec without a hardware decoder, such as VP8 in Chromium on Windows, decodes in software.
   One exception: 10-bit SDR HEVC has no probe of its own.
   The native HDR HEVC probe gates it with `prefer-hardware`, while the SDR route requests `no-preference`.

@@ -405,7 +405,7 @@ An audio package's decoder section is its manifest, a `//!` header like a video 
 | `id` | Yes | The package's id, as [Identity](#identity) describes |
 | `name` | Yes | Any text |
 | `decoder` | Yes | `audio` |
-| `accepts` | Yes | `codec in [<codecs>]`, by the engine's audio codec names, such as `ac3`, `eac3`, `dts`, `mlp`, or `truehd` |
+| `accepts` | Yes | `codec in [<codecs>]`, by the engine's audio codec names, such as `ac3`, `eac3`, `dts`, `mlp`, `truehd`, `wmav1`, `wmav2`, `wmapro`, `wmalossless`, or `wmavoice` |
 | `packet` | No | The largest packet it takes, at most 16 MiB; 2 MiB by default |
 | `attribute` | Repeatable | `<key>, <name>`: a codec-specific value the module reports, key 1 to 255 |
 | `option` | Repeatable | `<key>, <name>`: a codec-specific setting a host may set, key 1 to 255 |
@@ -421,6 +421,17 @@ An audio package's decoder section is its manifest, a `//!` header like a video 
 //! error: 1, input
 //! error: 2, send
 ```
+
+### Codec private data
+
+The decode worker reads a track's codec private data for its codec, as FFmpeg's demuxers hand it to their decoders, and sends it with the attempt's package selection to the audio decode worker.
+There `PackageSoftwareAudioDecoder` hands it to `audio_decoder_configure` once, before the attempt's first packet; a track without any makes no configure call.
+A configure call that fails ends the attempt with the package's named error.
+
+| Codec | `audio_decoder_configure` reads |
+| --- | --- |
+| `ac3`, `eac3`, `dts`, `mlp`, `truehd` | Nothing; the decoder finds everything in its packets |
+| `wmav1`, `wmav2`, `wmapro`, `wmalossless`, `wmavoice` | The track's WAVEFORMATEX: its 18-byte header (format tag, channels, rate, average bytes per second, block alignment, bits per sample, and cbSize, little-endian), then the cbSize bytes after it, the WAVE_FORMAT_EXTENSIBLE fields first when the tag is 0xFFFE; a Matroska `A_MS/ACM` track's CodecPrivate up to the end of those bytes, whatever follows, or an AVI stream's `strf` chunk, which the worker writes back from the fields the fork parsed |
 
 ### The audio decoder interface
 
@@ -456,8 +467,33 @@ The module implements version 1 of this interface, which `wgpud/include/audio_de
 A dropped packet, and one before a sync point, decode to nothing and fail nothing.
 After an accepted packet the engine calls `audio_decoder_receive` until it returns 0, and copies each block out of the instance's memory: its channels' planar floats, its layout, its timestamp, and every attribute the manifest names.
 A packet's blocks number at most its byte length, and their frames at most 65536 per byte.
-A block's channel mask must be one the engine mixes: mono, stereo, 3.0, 2.1, 3.0 with a back center, 5.1 with back or side speakers, 6.1, or 7.1.
+A block's channel mask must be one the engine mixes: mono, stereo, 3.0, 2.1, 3.0 with a back center, 5.1 with back or side speakers, 6.1, 7.1, or one of FFmpeg's height layouts, 5.1.2 (`0x503F`), 5.1.4 (`0x2D03F`), 7.1.2 (`0x563F`), and 7.1.4 (`0x2D63F`), or 5.1 with side speakers and the top front pair (`0x560F`), which FFmpeg's E-AC-3 decoder reports for a dependent stream with heights.
+A height layout's channels follow its mask bits too: the floor's, then top front left and right, then top back left and right.
+An E-AC-3 or TrueHD package's block may have a height mask whatever channel count the track declares; any other package's blocks must fit its codec's input routes (see [Audio routes](routes.md#audio-routes)).
 Every start and seek is a new attempt on a new instance, which `audio_decoder_destroy` ends, so a decoder never sees a jump in its packets.
+
+A module may also export `int audio_decoder_drain(handle)`, which returns 0 or -1.
+The engine calls it once at the end of a track, after the attempt's last packet, then calls `audio_decoder_receive` until it returns 0, so a decoder that holds frames back, as FFmpeg's do, outputs them; at most 64 blocks follow.
+A drained block without a timestamp of its own continues from where the last block ended, or, when no block came before it, as after a seek onto a track's last packet, starts at the last packet's time.
+A module without the export ends the track at its last packet's blocks, and `findMissingAudioDecoderExports` never asks for it.
+
+### Object audio
+
+A package that renders object audio, such as Dolby Atmos in E-AC-3 and TrueHD, declares two options and one attribute by these names; their keys are its own.
+
+| Name | Directive | Value |
+| --- | --- | --- |
+| `renderChannelMask` | `option` | The WAVE channel mask of the playback's output layout: stereo `0x3`, 5.1 `0x60F`, 7.1 `0x63F`, 5.1.2 `0x503F`, 5.1.4 `0x2D03F`, 7.1.2 `0x563F`, or 7.1.4 `0x2D63F` |
+| `renderBinaural` | `option` | 1 when the output is stereo and the host asked for binaural headphone rendering, else 0 |
+| `objectCount` | `attribute` | Per block: the dynamic objects the block renders, 0 for a stock decode |
+
+The audio decode worker sets both options with `audio_decoder_set_option` after `audio_decoder_configure` and before the attempt's first packet (`PackageSoftwareAudioDecoder.setRenderTarget`), and sets `renderBinaural` again between two packets when the host switches binaural rendering live.
+A live change of the output layout starts a new attempt on a new instance, which takes the new mask before its first packet.
+A package that declares neither option is never asked, and one that declares only `renderChannelMask` gets no `renderBinaural`.
+The package renders object audio into exactly the mask's layout, or into binaural stereo (`0x3`) with `renderBinaural` 1, and reports its blocks with that mask.
+Where the target adds nothing to what its stock decode outputs, the package outputs the stock decode with its own mask instead, and a stream without objects always does; the engine plays either, folding or mixing it to the output layout by channel name.
+The worker reports each change of the blocks' `objectCount` to the page, whose decode telemetry shows it as `decodedAudioObjectCount`; a count above 1024 fails the attempt.
+A block with objects passes through the output stage's peak limiter, since the package sums them unlimited.
 
 ## Hosts
 
@@ -483,6 +519,8 @@ Every start and seek is a new attempt on a new instance, which `audio_decoder_de
 - `getGPUVideoDecoderOffers(presenter, videoPackages, options)` in `src/presentation/PresentationSetup.ts` returns the packages whose `accepts` names the stream's codec and whose `output` lists its format, in the host's order, with the device's buffer limit, the smaller of its largest buffer and its largest storage binding.
   The host passes them as the eligibility's `gpuVideoDecoders`.
 - The host passes its audio packages, in its order, as the eligibility's `audioDecoders`.
+  With them it passes `audioRenderTarget`, the speaker layout it chose for the destination and its binaural headphone setting, so that a Dolby Atmos stream whose objects the target needs takes a package that declares `renderChannelMask` ahead of the browser's own decoder (see [Audio routes](routes.md#audio-routes)).
+  The eligibility then sets `audioRendersObjects`, and the host plays the track to the whole speaker layout.
 - A host that fetches packages only when a playback needs them asks first what the playback decodes: `getGPUVideoDecodeTarget(options)` in `src/capability/CustomPlaybackEligibility.ts` names the video's codec and frame pool format, and `getPlaybackAudioCodec(options)` the codec of the audio track the eligibility selects.
 - Before a playback, a host passes what its video packages decode as `hasEligibleCustomVideoRoute`'s `gpuVideoDecoderSummaries`: their codecs and output formats, and where it has them, each package's header and the device's buffer limit, so the summary runs the offers' fit check; see [GPU decoders](routes.md#gpu-decoders).
   `parseGPUDecoderHeader` in `src/decode/video/gpu/GPUDecoderManifest.ts` reads a header without its body, such as a server's catalog carries, with every check of the manifest parser but the body's.

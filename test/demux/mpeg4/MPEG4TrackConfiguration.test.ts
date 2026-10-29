@@ -12,6 +12,7 @@ import {
     type MPEG4TrackConfiguration
 } from 'webgpu-player/demux/mpeg4/MPEG4TrackConfiguration';
 
+import { createASF } from '../../helpers/asfMedia';
 import { concatenate } from '../../helpers/byteArrays';
 import { DECODERS_DIRECTORY } from '../../helpers/enginePaths';
 import { createVideoTrackMatroska, type SyntheticMatroskaBlock } from '../../helpers/matroskaElements';
@@ -76,10 +77,10 @@ function openMatroskaTrack(codecID: string, codecPrivate: Uint8Array | null, key
     }));
 }
 
-async function readConfiguration(codec: MPEG4TrackCodec, track: InputVideoTrack, avi = false): Promise<MPEG4TrackConfiguration> {
+async function readConfiguration(codec: MPEG4TrackCodec, track: InputVideoTrack, fourCCCodecID = false): Promise<MPEG4TrackConfiguration> {
     const [ containerCodec, internalCodecID ] = await Promise.all([ track.getCodec(), track.getInternalCodecId() ]);
     return readMPEG4TrackConfiguration(codec, track, {
-        avi,
+        fourCCCodecID,
         codedHeight: CODED_HEIGHT,
         codedWidth: CODED_WIDTH,
         containerCodec,
@@ -170,6 +171,30 @@ describe('readMPEG4TrackConfiguration', () => {
         const configuration = requireRead(await readConfiguration('msmpeg4v3', track));
 
         expect(readExtradata(configuration.description, 'div3')).toEqual(new Uint8Array());
+        expect(configuration.videoTrack).toBe(track);
+    });
+
+    it('gives an ASF M4S2 stream, which Mediabunny names no codec, the extradata of its BITMAPINFOHEADER, and restamps its B-VOPs', async () => {
+        const extradata = createMPEG4Extradata(B_VOP_LAYER);
+        const stream = { bitmapInfoHeader: createVFWCodecPrivate('M4S2', CODED_WIDTH, CODED_HEIGHT, extradata), codedHeight: CODED_HEIGHT, codedWidth: CODED_WIDTH, kind: 'video' } as const;
+        const objects = createBlocks(new Uint8Array()).map(block => ({ ...block, streamIndex: 0 }));
+        const track = await openTrack(createASF([ stream ], objects));
+
+        const configuration = requireRead(await readConfiguration('mpeg4', track, true));
+
+        expect(await track.getCodec()).toBeNull();
+        expect(readExtradata(configuration.description, 'M4S2')).toEqual(extradata);
+        expect(await readFrames(configuration.videoTrack)).toEqual([ 1, 3, 2 ]);
+    });
+
+    it('gives an ASF MP43 stream its FourCC and the extradata of its BITMAPINFOHEADER', async () => {
+        const extradata = new Uint8Array([ 0x01, 0x02, 0x03, 0x04 ]);
+        const stream = { bitmapInfoHeader: createVFWCodecPrivate('MP43', CODED_WIDTH, CODED_HEIGHT, extradata), codedHeight: CODED_HEIGHT, codedWidth: CODED_WIDTH, kind: 'video' } as const;
+        const track = await openTrack(createASF([ stream ], [ { data: new Uint8Array(8), keyframe: true, streamIndex: 0, timestampMilliseconds: 0 } ]));
+
+        const configuration = requireRead(await readConfiguration('msmpeg4v3', track, true));
+
+        expect(readExtradata(configuration.description, 'MP43')).toEqual(extradata);
         expect(configuration.videoTrack).toBe(track);
     });
 

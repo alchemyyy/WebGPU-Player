@@ -4,10 +4,14 @@
 //! accepts: codec in [eac3, ac3]
 //! packet: 2 MiB
 //! attribute: 1, libraryVersion
+//! attribute: 2, objectCount
+//! option: 1, renderChannelMask
+//! option: 2, renderBinaural
 //! error: 1, input
 //! error: 2, send
 //! error: 3, receive
 //! error: 4, sampleFormat
 //! error: 5, option
+//! error: 6, output
 
 The manifest of the E-AC-3 decoder package; the keys and codes are the ones ffmpeg_eac3_bridge.c declares.

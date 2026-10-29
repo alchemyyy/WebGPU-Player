@@ -2,9 +2,11 @@ import { describe, expect, it } from 'vitest';
 
 import {
     configureCustomAudioDestination,
-    selectCustomAudioOutputChannelCount,
-    selectCustomAudioOutputChannelCountForMaximum
+    isCustomAudioSpeakerLayout,
+    selectCustomAudioOutputLayout,
+    selectCustomAudioSpeakerLayout
 } from 'webgpu-player/audio/NativeMultichannelAudioOutput';
+import type { CustomAudioOutputLayout } from 'webgpu-player/audio/processing/CustomAudioChannelLayout';
 
 type FakeDestination = {
     channelCount: number
@@ -20,107 +22,124 @@ function createAudioContext(maxChannelCount: number): AudioContext {
     } as AudioContext;
 }
 
+/** The output a source takes on a destination of a channel count with the `auto` speaker layout, as the floor rule chooses it. */
+function selectAutomaticFloorOutput(maximumChannelCount: number | null, sourceChannelCount: number | null): CustomAudioOutputLayout {
+    return selectCustomAudioOutputLayout(selectCustomAudioSpeakerLayout('auto', maximumChannelCount), sourceChannelCount, false);
+}
+
 describe('native multichannel audio output', () => {
     it.each([
-        { expected: 2, maximum: 2, source: 6 },
-        { expected: 6, maximum: 6, source: 6 },
-        { expected: 6, maximum: 8, source: 6 },
-        { expected: 6, maximum: 6, source: 3 },
-        { expected: 6, maximum: 6, source: 8 },
-        { expected: 8, maximum: 8, source: 8 },
-        { expected: 8, maximum: 8, source: 7 },
-        { expected: 2, maximum: 8, source: 2 }
-    ])('selects $expected channels for source $source with hardware max $maximum', ({
+        { expected: 'stereo', maximum: null },
+        { expected: 'stereo', maximum: 1 },
+        { expected: 'stereo', maximum: 5 },
+        { expected: '5.1', maximum: 6 },
+        { expected: '5.1', maximum: 7 },
+        { expected: '7.1', maximum: 8 },
+        { expected: '7.1', maximum: 9 },
+        { expected: '7.1.2', maximum: 10 },
+        { expected: '7.1.2', maximum: 11 },
+        { expected: '7.1.4', maximum: 12 },
+        { expected: '7.1.4', maximum: 32 }
+    ] as const)('resolves the auto speaker layout to $expected on a destination of $maximum channels', ({ expected, maximum }) => {
+        expect(selectCustomAudioSpeakerLayout('auto', maximum)).toBe(expected);
+    });
+
+    it.each([
+        // An explicit layout plays when the destination has its channels, which 5.1.2 and 5.1.4 need to be chosen at all
+        { expected: '5.1.2', maximum: 8, speakerLayout: '5.1.2' },
+        { expected: '5.1.4', maximum: 12, speakerLayout: '5.1.4' },
+        { expected: 'stereo', maximum: 12, speakerLayout: 'stereo' },
+        { expected: '5.1', maximum: 12, speakerLayout: '5.1' },
+        { expected: '7.1.2', maximum: 12, speakerLayout: '7.1.2' },
+        // A destination too small for it resolves as auto does
+        { expected: '7.1', maximum: 8, speakerLayout: '7.1.4' },
+        { expected: '7.1', maximum: 8, speakerLayout: '5.1.4' },
+        { expected: '5.1', maximum: 6, speakerLayout: '5.1.2' },
+        { expected: 'stereo', maximum: 2, speakerLayout: '7.1' },
+        { expected: 'stereo', maximum: null, speakerLayout: '5.1' }
+    ] as const)('resolves the $speakerLayout speaker layout to $expected on a destination of $maximum channels', ({
         expected,
         maximum,
-        source
+        speakerLayout
     }) => {
-        expect(selectCustomAudioOutputChannelCount(
-            createAudioContext(maximum),
-            source
-        )).toBe(expected);
+        expect(selectCustomAudioSpeakerLayout(speakerLayout, maximum)).toBe(expected);
     });
 
-    it('uses stereo when an AudioContext capability probe is unavailable', () => {
-        expect(selectCustomAudioOutputChannelCount(null, 8)).toBe(2);
-        expect(selectCustomAudioOutputChannelCount(
-            createAudioContext(Number.NaN),
-            6
-        )).toBe(2);
-    });
-
-    it('uses stereo when the destination probe throws or reports no channels', () => {
-        const closedAudioContext = {
-            get destination(): AudioDestinationNode {
-                throw new Error('The AudioContext is closed');
-            }
-        } as unknown as AudioContext;
-
-        expect(selectCustomAudioOutputChannelCount(closedAudioContext, 8)).toBe(2);
-        expect(selectCustomAudioOutputChannelCount(createAudioContext(0), 6)).toBe(2);
+    it('recognizes the speaker layout settings', () => {
+        for (const speakerLayout of [ 'auto', 'stereo', '5.1', '7.1', '5.1.2', '5.1.4', '7.1.2', '7.1.4' ]) {
+            expect(isCustomAudioSpeakerLayout(speakerLayout), speakerLayout).toBe(true);
+        }
+        for (const speakerLayout of [ '6.1', '9.1.6', 'Auto', 8, null, undefined ]) {
+            expect(isCustomAudioSpeakerLayout(speakerLayout), String(speakerLayout)).toBe(false);
+        }
     });
 
     it.each([
         // An unknown sink mixes every source to stereo
-        { expected: 2, maximum: null, source: 3 },
-        { expected: 2, maximum: null, source: 6 },
-        { expected: 2, maximum: null, source: 7 },
-        { expected: 2, maximum: null, source: 8 },
+        { expected: 'stereo', maximum: null, source: 3 },
+        { expected: 'stereo', maximum: null, source: 6 },
+        { expected: 'stereo', maximum: null, source: 7 },
+        { expected: 'stereo', maximum: null, source: 8 },
         // Three-channel and 5.1 sources use a 5.1 sink
-        { expected: 2, maximum: 2, source: 3 },
-        { expected: 2, maximum: 5, source: 3 },
-        { expected: 6, maximum: 6, source: 3 },
-        { expected: 6, maximum: 8, source: 3 },
-        { expected: 2, maximum: 5, source: 6 },
-        { expected: 6, maximum: 6, source: 6 },
-        { expected: 6, maximum: 8, source: 6 },
-        // 6.1 and 7.1 sources use a 7.1 sink or fold into a 5.1 one
-        { expected: 2, maximum: 5, source: 7 },
-        { expected: 6, maximum: 6, source: 7 },
-        { expected: 6, maximum: 7, source: 7 },
-        { expected: 8, maximum: 8, source: 7 },
-        { expected: 2, maximum: 2, source: 8 },
-        { expected: 2, maximum: 5, source: 8 },
-        { expected: 6, maximum: 6, source: 8 },
-        { expected: 6, maximum: 7, source: 8 },
-        { expected: 8, maximum: 8, source: 8 },
-        { expected: 8, maximum: 32, source: 8 },
+        { expected: 'stereo', maximum: 2, source: 3 },
+        { expected: 'stereo', maximum: 5, source: 3 },
+        { expected: '5.1', maximum: 6, source: 3 },
+        { expected: '5.1', maximum: 8, source: 3 },
+        { expected: 'stereo', maximum: 5, source: 6 },
+        { expected: '5.1', maximum: 6, source: 6 },
+        { expected: '5.1', maximum: 8, source: 6 },
+        { expected: '5.1', maximum: 12, source: 6 },
+        // 6.1 and 7.1 sources use a 7.1 sink or fold into a 5.1 one, and stay on the floor of a height destination
+        { expected: 'stereo', maximum: 5, source: 7 },
+        { expected: '5.1', maximum: 6, source: 7 },
+        { expected: '5.1', maximum: 7, source: 7 },
+        { expected: '7.1', maximum: 8, source: 7 },
+        { expected: 'stereo', maximum: 2, source: 8 },
+        { expected: 'stereo', maximum: 5, source: 8 },
+        { expected: '5.1', maximum: 6, source: 8 },
+        { expected: '5.1', maximum: 7, source: 8 },
+        { expected: '7.1', maximum: 8, source: 8 },
+        { expected: '7.1', maximum: 10, source: 8 },
+        { expected: '7.1', maximum: 32, source: 8 },
         // Every other source mixes to stereo
-        { expected: 2, maximum: 8, source: 1 },
-        { expected: 2, maximum: 8, source: 2 },
-        { expected: 2, maximum: 8, source: 4 },
-        { expected: 2, maximum: 8, source: 5 },
-        { expected: 2, maximum: 8, source: null }
-    ])('selects $expected channels for source $source with a reported sink maximum of $maximum', ({
+        { expected: 'stereo', maximum: 8, source: 1 },
+        { expected: 'stereo', maximum: 8, source: 2 },
+        { expected: 'stereo', maximum: 8, source: 4 },
+        { expected: 'stereo', maximum: 8, source: 5 },
+        { expected: 'stereo', maximum: 12, source: 12 },
+        { expected: 'stereo', maximum: 8, source: null }
+    ] as const)('plays a $source-channel source on a $maximum-channel destination to $expected', ({
         expected,
         maximum,
         source
     }) => {
-        expect(selectCustomAudioOutputChannelCountForMaximum(maximum, source)).toBe(expected);
+        expect(selectAutomaticFloorOutput(maximum, source)).toBe(expected);
     });
 
-    it('selects the same layout from an AudioContext as from its reported maximum', () => {
-        const maximumChannelCounts = [ 1, 2, 5, 6, 7, 8, 32 ];
-        const sourceChannelCounts = [ null, 1, 2, 3, 6, 7, 8 ];
-        for (const maximumChannelCount of maximumChannelCounts) {
-            for (const sourceChannelCount of sourceChannelCounts) {
-                expect(selectCustomAudioOutputChannelCount(
-                    createAudioContext(maximumChannelCount),
-                    sourceChannelCount
-                )).toBe(selectCustomAudioOutputChannelCountForMaximum(
-                    maximumChannelCount,
-                    sourceChannelCount
-                ));
+    it.each([
+        { expected: '5.1', source: 6, speakerLayout: '7.1.4' },
+        { expected: '5.1', source: 8, speakerLayout: '5.1.4' },
+        { expected: '5.1', source: 8, speakerLayout: '5.1.2' },
+        { expected: '7.1', source: 8, speakerLayout: '7.1.2' }
+    ] as const)('keeps a $source-channel source within the floor of a $speakerLayout layout', ({ expected, source, speakerLayout }) => {
+        expect(selectCustomAudioOutputLayout(speakerLayout, source, false)).toBe(expected);
+    });
+
+    it.each([ 'stereo', '5.1', '7.1', '5.1.2', '5.1.4', '7.1.2', '7.1.4' ] as const)(
+        'plays a source a package renders as objects to the whole %s layout',
+        speakerLayout => {
+            for (const source of [ 6, 8, null ]) {
+                expect(selectCustomAudioOutputLayout(speakerLayout, source, true)).toBe(speakerLayout);
             }
         }
-    });
+    );
 
-    it('configures an exact supported destination channel count', () => {
-        const audioContext = createAudioContext(8);
+    it.each([ 8, 10, 12 ])('configures an exact %i-channel destination', channelCount => {
+        const audioContext = createAudioContext(12);
 
-        configureCustomAudioDestination(audioContext, 8);
+        configureCustomAudioDestination(audioContext, channelCount);
 
-        expect(audioContext.destination.channelCount).toBe(8);
+        expect(audioContext.destination.channelCount).toBe(channelCount);
     });
 
     it('rejects a requested layout larger than the physical destination', () => {

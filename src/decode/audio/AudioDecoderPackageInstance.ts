@@ -29,6 +29,11 @@ export const AUDIO_DECODER_EXPORTS = Object.freeze({
     timestamp: 'audio_decoder_timestamp'
 });
 
+/** The export a module may add to version 1 of the interface, which the engine calls once at the end of a track. */
+export const AUDIO_DECODER_OPTIONAL_EXPORTS = Object.freeze({
+    drain: 'audio_decoder_drain'
+});
+
 /** What a send call reports. */
 const SEND_STATUS = Object.freeze({
     accepted: 0,
@@ -46,6 +51,8 @@ const SUCCESS_STATUS = 0;
 // A decoded block holds at most this many frames, and a packet's blocks at most this many in all
 const MAXIMUM_BLOCK_FRAME_COUNT = 1 << 16;
 const MAXIMUM_CHANNEL_COUNT = 32;
+// The blocks a drain may output: a decoder holds back a few frames, never a stream's worth
+const MAXIMUM_DRAIN_BLOCK_COUNT = 64;
 
 type WASMFunction = (...values: number[]) => number;
 
@@ -173,6 +180,7 @@ function requireExports(instance: WebAssembly.Instance): AudioDecoderExports {
 /** One decoder of one codec on its own instance of an audio decoder package. */
 export default class AudioDecoderPackageInstance {
     private closed = false;
+    private readonly drainExport: WASMFunction | null;
     private readonly exports: AudioDecoderExports;
     private readonly handle: number;
     private readonly manifest: AudioDecoderManifest;
@@ -180,6 +188,8 @@ export default class AudioDecoderPackageInstance {
 
     private constructor(instance: WebAssembly.Instance, memory: WebAssembly.Memory, manifest: AudioDecoderManifest, codecIndex: number) {
         this.exports = requireExports(instance);
+        const drainExport = (instance.exports as unknown as Record<string, unknown>)[AUDIO_DECODER_OPTIONAL_EXPORTS.drain];
+        this.drainExport = typeof drainExport === 'function' ? drainExport as WASMFunction : null;
         this.memory = memory;
         this.manifest = manifest;
         const version = this.exports.abiVersion();
@@ -257,14 +267,10 @@ export default class AudioDecoderPackageInstance {
         const blocks: AudioDecoderPackageBlock[] = [];
         let frameCount = 0;
         for (;;) {
-            const receiveStatus = this.exports.receive(this.handle);
-            if (receiveStatus === RECEIVE_STATUS.none) {
+            const block = this.receiveBlock();
+            if (!block) {
                 return { blocks, kind: 'decoded' };
             }
-            if (receiveStatus !== RECEIVE_STATUS.ready) {
-                this.check(receiveStatus);
-            }
-            const block = this.copyBlock();
             frameCount += block.frameCount;
             // A packet's blocks each consume at least one of its bytes, and together stay within the frame bound
             if (blocks.length >= packet.byteLength || frameCount > MAXIMUM_BLOCK_FRAME_COUNT * packet.byteLength) {
@@ -272,6 +278,26 @@ export default class AudioDecoderPackageInstance {
             }
             blocks.push(block);
         }
+    }
+
+    /**
+     * Ends the track: a module with `audio_decoder_drain` outputs the frames its decoder held back, block by block, and a module without it none.
+     * The decoder takes no packet after it until `clear`.
+     */
+    drain(): AudioDecoderPackageBlock[] {
+        this.requireOpen();
+        if (!this.drainExport) {
+            return [];
+        }
+        this.check(this.drainExport(this.handle));
+        const blocks: AudioDecoderPackageBlock[] = [];
+        for (let block = this.receiveBlock(); block; block = this.receiveBlock()) {
+            if (blocks.length >= MAXIMUM_DRAIN_BLOCK_COUNT) {
+                throw new RangeError(`audio decoder drain output more than ${MAXIMUM_DRAIN_BLOCK_COUNT} blocks`);
+            }
+            blocks.push(block);
+        }
+        return blocks;
     }
 
     /** Clears inter-frame state before a seek or a source change. */
@@ -287,6 +313,18 @@ export default class AudioDecoderPackageInstance {
         }
         this.closed = true;
         this.exports.destroy(this.handle);
+    }
+
+    /** Receives the decoder's next block and copies it out, or returns null when it has none left. */
+    private receiveBlock(): AudioDecoderPackageBlock | null {
+        const receiveStatus = this.exports.receive(this.handle);
+        if (receiveStatus === RECEIVE_STATUS.none) {
+            return null;
+        }
+        if (receiveStatus !== RECEIVE_STATUS.ready) {
+            this.check(receiveStatus);
+        }
+        return this.copyBlock();
     }
 
     private copyBlock(): AudioDecoderPackageBlock {

@@ -133,7 +133,7 @@ describe('the DTS package on AudioDecoderPackageInstance', () => {
 describe('the DTS package on PackageSoftwareAudioDecoder', () => {
     it('starts a block, which has no timestamp of its own, at its packet\'s time', async () => {
         const [ firstPacket ] = readDTSVectorPackets(CORE_VECTOR_FILE_NAME).packets;
-        const decoder = await PackageSoftwareAudioDecoder.create(source, DTS_CODEC);
+        const decoder = await PackageSoftwareAudioDecoder.create(source, DTS_CODEC, null);
 
         const outputs = decoder.decode(firstPacket, DTS_PACKET_TIME_MICROSECONDS);
 

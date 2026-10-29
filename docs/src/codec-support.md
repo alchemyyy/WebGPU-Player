@@ -126,6 +126,25 @@ Chrome's software AV1 decoder decodes and copies the 8 and 10-bit variants, and 
 `hasPotentialCustomPlaybackVideoRoute` keeps AV1 outside Main 4:2:0 potential for these routes.
 On GPU the decoder receives the track's av1C (see [Codec private data](decoder-packages.md#codec-private-data)).
 
+## H.264 beyond 8-bit 4:2:0
+
+Native H.264 decodes Constrained Baseline, Baseline, Main, and High at 8-bit 4:2:0 to VF-SDR, each profile through its own `h264Profiles` probe.
+A profile beyond High takes raw planes in the exact format of its raw format variant through `h264RawFormats[variant]`: an I, a P, then a B access unit at 192x192, decoded with `prefer-software`, whose B frame must output before the P frame.
+The profile must code the variant's chroma format: High 10 and High 10 Intra code 4:2:0, High 4:2:2 and High 4:2:2 Intra up to 4:2:2, and High 4:4:4 Predictive, High 4:4:4 Intra, the removed High 4:4:4, and CAVLC 4:4:4 up to 4:4:4.
+The PixelFormat names the variant, and FFmpeg's yuvj names of a full-range 8-bit stream count as their yuv formats.
+No GPU decoder package decodes H.264, so a variant without its capability or raw key is refused.
+
+| Variant | Eligible | Route | Evidence |
+| --- | --- | --- | --- |
+| 10-bit 4:2:0 (`high420-10`) | Yes | RAW in I420P10: SDR, and PQ or HLG through the raw HDR keys | `h264RawFormats['high420-10']` and the raw key of the format and color |
+| 4:2:2 at 8 or 10 bits (`high422-8`, `high422-10`) | Yes | RAW in I422 or I422P10; HDR at 10 bits only | `h264RawFormats[variant]` and the raw key of the format and color |
+| 4:4:4 at 8 or 10 bits (`high444-8`, `high444-10`) | Yes | RAW in I444 or I444P10; HDR at 10 bits only | As 4:2:2 |
+| 8-bit 4:2:0 under a profile beyond High, such as x264's lossless High 4:4:4 Predictive | No: `codec-unsupported` | None | No variant |
+| 9, 12, or 14 bits, 4:0:0, or RGB (`gbrp`) | No | None | No variant |
+
+Chrome's software H.264 decoder is FFmpeg's, which outputs the same planes as the reference decode the vectors pin, while `prefer-hardware` reports these profiles unsupported.
+The worker decodes them through Mediabunny's sample path, as native H.264, which orders B frames, reads avcC or Annex B as the container gives it, and takes the presentation times the fork's AVI demuxer gives each picture.
+
 ## Interlaced video
 
 The deinterlacing pass presents interlaced frames on every route but Dolby Vision's (see [Architecture](architecture.md#deinterlacing) and [Eligibility and routes](routes.md#interlaced-video)).
@@ -133,7 +152,7 @@ This table covers every codec, beyond this chapter's HEVC and Dolby Vision.
 
 | Codec | Interlaced | Route | Each frame's fields |
 | --- | --- | --- | --- |
-| H.264 (PAFF field pairs and MBAFF) | Yes | VF-SDR native, deinterlaced; the browser upsampled its chroma progressively | The container's scan, else the host's `FieldOrder` and `IsInterlaced` |
+| H.264 (PAFF field pairs and MBAFF) | Yes | VF-SDR native, or RAW for a raw format variant, deinterlaced; the browser upsampled VF-SDR's chroma progressively | The container's scan, else the host's `FieldOrder` and `IsInterlaced` |
 | MPEG-2, field and frame pictures, at 4:2:0, 4:2:2, and 4:4:4 | Yes | GPU, deinterlaced, 4:2:0 chroma read within each field | The decoder's `reportPictureFields`, per picture, from `progressive_frame`, `top_field_first`, and `repeat_first_field` as FFmpeg reads them |
 | VC-1 Advanced, field and frame interlace | Yes | GPU, deinterlaced, 4:2:0 chroma read within each field | The parser's `parser_picture_fields`, per picture, from FCM, TFF, and RFF as FFmpeg reads them |
 | MPEG-4 Part 2 interlaced VOPs | Yes | GPU, deinterlaced, 4:2:0 chroma read within each field | The parser's `parser_picture_fields`, per VOP, from `interlaced` and `top_field_first` as FFmpeg reads them |
@@ -198,6 +217,7 @@ Probes, all in `capability/CustomDecodeCapabilities.ts`:
 | `rawHDRVideo.av1` | A 4K AV1 Main 10 keyframe decoded with `prefer-software` and its I420P10 `copyTo` fingerprint |
 | `hevcRangeExtensions[variant]` | The exact configuration, the two-frame vector, the exact copy format, and pinned fingerprints |
 | `av1RawFormats[variant]` | The exact configuration, the two-temporal-unit vector, the exact copy format, and pinned fingerprints |
+| `h264RawFormats[variant]` | The exact configuration, the three-access-unit vector, the exact copy format, and pinned fingerprints in presentation order |
 
 GPU has no probe: a package's own vectors run only when the host verifies it (see [Decoder packages](decoder-packages.md#self-test-vectors)).
 

@@ -5,7 +5,7 @@ import {
     CUSTOM_STEREO_CHANNEL_LAYOUT,
     CUSTOM_THREE_POINT_ZERO_BACK_CHANNEL_LAYOUT,
     CUSTOM_THREE_POINT_ZERO_CHANNEL_LAYOUT,
-    type CustomAudioOutputChannelCount
+    type CustomAudioOutputLayout
 } from 'webgpu-player/audio/processing/CustomAudioChannelLayout';
 import DecodedAudioOutputStage, {
     UnsupportedDecodedAudioFormatError,
@@ -31,7 +31,7 @@ type RecordingStage = {
 
 function createRecordingStage(
     routeCodec: string,
-    outputChannelCount: CustomAudioOutputChannelCount
+    outputLayout: CustomAudioOutputLayout
 ): RecordingStage {
     const sourceFormats: DecodedAudioSourceFormat[] = [];
     const stage = new DecodedAudioOutputStage({
@@ -40,7 +40,7 @@ function createRecordingStage(
         onSourceFormat: (sourceFormat: DecodedAudioSourceFormat): void => {
             sourceFormats.push(sourceFormat);
         },
-        outputChannelCount,
+        outputLayout,
         routeCodec,
         timestampToleranceMicroseconds: 1_000
     });
@@ -80,7 +80,7 @@ function expectBridgeContinuity(outputs: readonly StreamingAudioResamplerOutput[
 
 describe('DecodedAudioOutputStage', () => {
     it('binds the first decoded format once and reports it', () => {
-        const { sourceFormats, stage } = createRecordingStage('aac', 2);
+        const { sourceFormats, stage } = createRecordingStage('aac', 'stereo');
         expect(stage.sourceFormat).toBeNull();
         expect(stage.getTelemetry()).toBeNull();
 
@@ -99,7 +99,7 @@ describe('DecodedAudioOutputStage', () => {
     });
 
     it('binds a track declared stereo that decodes to 5.1 and limits its fold-down', () => {
-        const { sourceFormats, stage } = createRecordingStage('aac', 2);
+        const { sourceFormats, stage } = createRecordingStage('aac', 'stereo');
 
         const binding = stage.bind({ channelCount: 6, layout: null, sampleRate: 48_000 }, null);
 
@@ -108,13 +108,13 @@ describe('DecodedAudioOutputStage', () => {
         expect(stage.getTelemetry()?.peakLimiterEnabled).toBe(true);
 
         // A 5.1 output carries the same bed without summing channels
-        const surroundStage = createRecordingStage('aac', 6).stage;
+        const surroundStage = createRecordingStage('aac', '5.1').stage;
         surroundStage.bind({ channelCount: 6, layout: null, sampleRate: 48_000 }, null);
         expect(surroundStage.getTelemetry()?.peakLimiterEnabled).toBe(false);
     });
 
     it('turns the limiter on mid-stream when the decoded layout starts to fold down', () => {
-        const { sourceFormats, stage } = createRecordingStage('aac', 2);
+        const { sourceFormats, stage } = createRecordingStage('aac', 'stereo');
         const stereoBinding = stage.bind({ channelCount: 2, layout: null, sampleRate: 48_000 }, null);
         const outputs = stereoBinding.pipeline.push({
             channelData: createStereoInput(4_800, 0.25),
@@ -143,8 +143,25 @@ describe('DecodedAudioOutputStage', () => {
         expectBridgeContinuity(outputs);
     });
 
+    it('limits a package\'s object render, which arrives in the output layout already summed', () => {
+        const unrendered = createRecordingStage('eac3', 'stereo').stage;
+        unrendered.bind({ channelCount: 2, layout: CUSTOM_STEREO_CHANNEL_LAYOUT, rendered: false, sampleRate: 48_000 }, null);
+        expect(unrendered.getTelemetry()?.peakLimiterEnabled).toBe(false);
+
+        const { stage } = createRecordingStage('eac3', 'stereo');
+        const binding = stage.bind({ channelCount: 2, layout: CUSTOM_STEREO_CHANNEL_LAYOUT, rendered: true, sampleRate: 48_000 }, null);
+        const outputs = binding.pipeline.push({
+            channelData: createStereoInput(9_600, 2),
+            mediaTimeMicroseconds: requireMicroseconds(1_000_000)
+        });
+        outputs.push(...stage.finalize());
+
+        expect(stage.getTelemetry()?.peakLimiterEnabled).toBe(true);
+        expect(getMaximumPeak(outputs)).toBeLessThanOrEqual(CUSTOM_AUDIO_LIMITER_CEILING_GAIN + LIMITER_CEILING_TOLERANCE);
+    });
+
     it('rebinds the resampler on a rate change with the limiter active within the bridge tolerance', () => {
-        const { sourceFormats, stage } = createRecordingStage('aac', 2);
+        const { sourceFormats, stage } = createRecordingStage('aac', 'stereo');
         const setSampleRate = vi.fn();
         const streamingDownmixSettings = {
             setSampleRate
@@ -185,7 +202,7 @@ describe('DecodedAudioOutputStage', () => {
     });
 
     it('rejects decoded three-channel E-AC-3, which no qualified route covers', () => {
-        const { sourceFormats, stage } = createRecordingStage('eac3', 2);
+        const { sourceFormats, stage } = createRecordingStage('eac3', 'stereo');
 
         const bindThreeChannels = (): unknown => stage.bind({
             channelCount: 3,
@@ -204,7 +221,7 @@ describe('DecodedAudioOutputStage', () => {
     });
 
     it('rejects an invalid rate and a layout that does not describe the decoded channels', () => {
-        const { stage } = createRecordingStage('aac', 2);
+        const { stage } = createRecordingStage('aac', 'stereo');
 
         expect(() => stage.bind({ channelCount: 2, layout: null, sampleRate: ZERO_SAMPLE_RATE }, null))
             .toThrow(INVALID_SAMPLE_RATE_ERROR);
@@ -219,7 +236,7 @@ describe('DecodedAudioOutputStage', () => {
     });
 
     it('keeps the 3.0(back) layout a DTS speaker mask reports', () => {
-        const { stage } = createRecordingStage('dts', 6);
+        const { stage } = createRecordingStage('dts', '5.1');
 
         const binding = stage.bind({
             channelCount: 3,

@@ -18,6 +18,8 @@ const MPEG2_FILE_NAME = 'mpeg2video-bframes-ac3.ts';
 const MPEG2_M2TS_FILE_NAME = 'mpeg2video-bframes-ac3.m2ts';
 const VC1_FILE_NAME = 'vc1-advanced.ts';
 const VC1_M2TS_FILE_NAME = 'vc1-advanced.m2ts';
+// vc1-advanced.ts with its PMT stripped of the VC-1 registration descriptor
+const UNREGISTERED_VC1_FILE_NAME = 'vc1-advanced-unregistered.ts';
 const VIDEO_FRAME_COUNT = 12;
 const VIDEO_FRAME_RATE = 24;
 const ENCODED_SIZE = 192;
@@ -53,11 +55,12 @@ const TRANSPORT_STREAM_ROUTES: readonly TransportStreamRouteExpectation[] = [
     { codec: 'mpeg2video', codecPrivateByteLength: 22, fileName: MPEG2_FILE_NAME, height: ENCODED_SIZE, keyPacketIndices: MPEG2_KEY_PACKET_INDICES, skippedFrameSlots: 0, width: ENCODED_SIZE },
     { codec: 'mpeg2video', codecPrivateByteLength: 22, fileName: MPEG2_M2TS_FILE_NAME, height: ENCODED_SIZE, keyPacketIndices: MPEG2_KEY_PACKET_INDICES, skippedFrameSlots: 0, width: ENCODED_SIZE },
     { codec: 'vc1', codecPrivateByteLength: 30, fileName: VC1_FILE_NAME, height: VC1_HEIGHT, keyPacketIndices: VC1_KEY_PACKET_INDICES, skippedFrameSlots: VC1_SKIPPED_FRAME_SLOTS, width: VC1_WIDTH },
-    { codec: 'vc1', codecPrivateByteLength: 30, fileName: VC1_M2TS_FILE_NAME, height: VC1_HEIGHT, keyPacketIndices: VC1_KEY_PACKET_INDICES, skippedFrameSlots: VC1_SKIPPED_FRAME_SLOTS, width: VC1_WIDTH }
+    { codec: 'vc1', codecPrivateByteLength: 30, fileName: VC1_M2TS_FILE_NAME, height: VC1_HEIGHT, keyPacketIndices: VC1_KEY_PACKET_INDICES, skippedFrameSlots: VC1_SKIPPED_FRAME_SLOTS, width: VC1_WIDTH },
+    { codec: 'vc1', codecPrivateByteLength: 30, fileName: UNREGISTERED_VC1_FILE_NAME, height: VC1_HEIGHT, keyPacketIndices: VC1_KEY_PACKET_INDICES, skippedFrameSlots: VC1_SKIPPED_FRAME_SLOTS, width: VC1_WIDTH }
 ];
 
 const MEDIA_FILES = new Map<string, Uint8Array>(
-    [ MPEG1_FILE_NAME, MPEG2_FILE_NAME, MPEG2_M2TS_FILE_NAME, VC1_FILE_NAME, VC1_M2TS_FILE_NAME ].map(
+    [ MPEG1_FILE_NAME, MPEG2_FILE_NAME, MPEG2_M2TS_FILE_NAME, VC1_FILE_NAME, VC1_M2TS_FILE_NAME, UNREGISTERED_VC1_FILE_NAME ].map(
         (fileName: string): [string, Uint8Array] => [ fileName, new Uint8Array(readFileSync(join(TRANSPORT_STREAM_VECTOR_DIRECTORY, fileName))) ]
     )
 );

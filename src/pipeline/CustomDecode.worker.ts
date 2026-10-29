@@ -1,6 +1,7 @@
 /* eslint-disable no-restricted-globals */
 import {
     ALL_FORMATS,
+    AsfInputFormat,
     AviInputFormat,
     BlobSource,
     Input,
@@ -11,6 +12,7 @@ import {
     type AudioCodec,
     type EncodedPacket,
     type InputAudioTrack,
+    type InputFormat,
     type InputVideoTrack,
     type Source,
     type VideoCodec,
@@ -38,8 +40,9 @@ import {
 } from '../audio/processing/CustomAudioDownmixAlgorithm';
 import {
     getCustomAudioChannelLayout,
+    getCustomAudioOutputChannelCount,
     type CustomAudioChannelLayout,
-    type CustomAudioOutputChannelCount
+    type CustomAudioOutputLayout
 } from '../audio/processing/CustomAudioChannelLayout';
 import { getQualifiedCustomWaveChannelLayout } from '../audio/processing/CustomWaveChannelLayout';
 import {
@@ -47,7 +50,6 @@ import {
     type AudioDownmixSettings
 } from '../audio/processing/CustomAudioDownmix';
 import {
-    CUSTOM_AUDIO_OUTPUT_CHANNEL_COUNT,
     CUSTOM_AUDIO_OUTPUT_SAMPLE_RATE,
     isSupportedCustomAudioInputLayout
 } from '../audio/CustomAudioOutputPolicy';
@@ -63,6 +65,7 @@ import {
     getDeclaredAudioSampleRate,
     isDTSExpressTrack
 } from '../demux/CustomAudioTrackMetadata';
+import { readWaveFormatAudioTrack, type WaveFormatAudioCodec } from '../demux/WaveFormatAudioConfiguration';
 import { createEngineWorker, type EngineWorkerPath } from '../EngineAssets';
 import AudioDecodeWorkerClient, {
     AudioDecodeWorkerAttemptError,
@@ -70,11 +73,13 @@ import AudioDecodeWorkerClient, {
     AudioDecodeWorkerPCMBatchBuilder,
     type AudioDecodeWorkerAttempt
 } from './AudioDecodeWorkerClient';
-import type {
-    AudioDecodeWorkerDecoderBackend,
-    AudioDecodeWorkerPCMSample,
-    AudioDecodeWorkerProgressResponse,
-    AudioDecodeWorkerSourceFormatResponse
+import {
+    MAXIMUM_AUDIO_DECODE_WORKER_CODEC_PRIVATE_BYTE_LENGTH,
+    type AudioDecodeWorkerDecoderBackend,
+    type AudioDecodeWorkerObjectCountResponse,
+    type AudioDecodeWorkerPCMSample,
+    type AudioDecodeWorkerProgressResponse,
+    type AudioDecodeWorkerSourceFormatResponse
 } from './AudioDecodeWorkerProtocol';
 import {
     getCustomDecodeRequestHardwareAcceleration,
@@ -268,7 +273,9 @@ type AudioAttemptControl = {
     audioEpoch: number
     /** The new worklet's channel, whose credit window replaces the old one */
     audioOutput: DecodeWorkerAudioOutputAttachment
-    decodedAudioOutputChannelCount: CustomAudioOutputChannelCount
+    /** The binaural setting the resync carries, or undefined to keep the run's */
+    binauralHeadphones: boolean | undefined
+    decodedAudioOutputLayout: CustomAudioOutputLayout
     targetTimeMicroseconds: Microseconds
 };
 
@@ -297,6 +304,8 @@ type DecodeRun = {
     iteratorRetirementPromise: Promise<void> | null
     /** The newest downmix gains: the start's, then each resync's or live update's; every attempt opens with them */
     latestAudioDownmixSettings: AudioDownmixSettings | undefined
+    /** The newest binaural headphone setting, which a stereo attempt's package renders with and later attempts open with */
+    latestBinauralHeadphones: boolean
     maximumCodedHeight: number
     maximumCodedWidth: number
     metadataAbortController: AbortController | null
@@ -380,7 +389,9 @@ type PreparedAudioTrack = {
     inputChannelCount: number
     inputChannelLayout: CustomAudioChannelLayout
     outputMode: CustomDecodeAudioOutputMode
-    outputChannelCount: CustomAudioOutputChannelCount
+    outputLayout: CustomAudioOutputLayout
+    /** The codec private data a `package` track's decoder configures with, such as a WMA track's WAVEFORMATEX; null for every other track */
+    packageCodecPrivate: Uint8Array | null
     /** The codec name the decoded PCM route tables qualify */
     routeCodec: string
     /** Declared by the container; the decoded rate is authoritative */
@@ -397,8 +408,12 @@ type SelectedAudioTrackMetadata = {
     /** The WAVE channel mask the container declares, which `inputChannelLayout` follows, or null */
     declaredChannelMask: number | null
     inputChannelLayout: CustomAudioChannelLayout
+    /** The codec private data a decoder package configures with: the WAVEFORMATEX of a track the engine reads its codec from, or null */
+    packageCodecPrivate: Uint8Array | null
     sampleRate: number
     timeResolution: number
+    /** The codec a track's WAVEFORMATEX names, which only a package of that codec decodes, or null for a track without one */
+    waveFormatCodec: WaveFormatAudioCodec | null
 };
 
 type WorkerScope = {
@@ -825,8 +840,8 @@ function classifyFailure(error: unknown): CustomDecodeFailureKind {
 
 /** How a GPU decoder reads a track of a codec Mediabunny does not decode: by the container codec IDs of the tracks it takes. */
 type FocusedVideoRoute = Readonly<{
-    /** Whether the route reads AVI tracks, whose codec ID is the strf FourCC its track configuration checks */
-    aviTracks: boolean
+    /** Whether the route reads AVI and ASF tracks by any codec ID, as the FourCC its track configuration checks; the others read ASF tracks by their codec IDs only */
+    fourCCTracks: boolean
     codec: 'jpeg2000' | 'mpeg1video' | 'mpeg2video' | MPEG4TrackCodec | VC1TrackCodec
     decoderCodec: string
     errorName: string
@@ -835,8 +850,8 @@ type FocusedVideoRoute = Readonly<{
 }>;
 
 type FocusedVideoTrackInput = Readonly<{
-    /** Whether the track is an AVI track, whose codec ID is its strf FourCC */
-    avi: boolean
+    /** The container of a track whose codec ID is its FourCC: AVI or ASF, or null for any other */
+    fourCCContainer: 'asf' | 'avi' | null
     availableVideoTracks: readonly InputVideoTrack[]
     codedHeight: number
     codedWidth: number
@@ -851,25 +866,25 @@ type FocusedVideoTrackInput = Readonly<{
 }>;
 
 const JPEG2000_FOCUSED_ROUTE: FocusedVideoRoute = {
-    aviTracks: false,
+    fourCCTracks: false,
     codec: 'jpeg2000',
     decoderCodec: 'mjp2',
     errorName: 'MJ2',
     includeColorSpace: false,
     internalCodecIDs: [ 'mjp2' ]
 };
-// VC-1 Advanced profile in Matroska VfW tracks and ISO base media vc-1 sample entries
+// VC-1 Advanced profile in Matroska VfW tracks, ISO base media vc-1 sample entries, and ASF streams, by their codec IDs
 const VC1_FOCUSED_ROUTE: FocusedVideoRoute = {
-    aviTracks: false,
+    fourCCTracks: false,
     codec: 'vc1',
     decoderCodec: 'vc1',
     errorName: 'VC-1',
     includeColorSpace: true,
     internalCodecIDs: VC1_TRACK_INTERNAL_CODEC_IDS.vc1
 };
-// WMV3, the VC-1 Simple and Main profiles, in Matroska VfW tracks
+// WMV3, the VC-1 Simple and Main profiles, in Matroska VfW tracks and ASF streams, by their codec IDs
 const WMV3_FOCUSED_ROUTE: FocusedVideoRoute = {
-    aviTracks: false,
+    fourCCTracks: false,
     codec: 'wmv3',
     decoderCodec: 'wmv3',
     errorName: 'WMV3',
@@ -877,7 +892,7 @@ const WMV3_FOCUSED_ROUTE: FocusedVideoRoute = {
     internalCodecIDs: VC1_TRACK_INTERNAL_CODEC_IDS.wmv3
 };
 const MPEG1_FOCUSED_ROUTE: FocusedVideoRoute = {
-    aviTracks: false,
+    fourCCTracks: false,
     codec: 'mpeg1video',
     decoderCodec: 'mpeg1video',
     errorName: 'MPEG-1',
@@ -885,17 +900,17 @@ const MPEG1_FOCUSED_ROUTE: FocusedVideoRoute = {
     internalCodecIDs: [ MATROSKA_MPEG1_CODEC_ID ]
 };
 const MPEG2_FOCUSED_ROUTE: FocusedVideoRoute = {
-    aviTracks: false,
+    fourCCTracks: false,
     codec: 'mpeg2video',
     decoderCodec: 'mpeg2video',
     errorName: 'MPEG-2',
     includeColorSpace: true,
     internalCodecIDs: [ MATROSKA_MPEG2_CODEC_ID ]
 };
-// MPEG-4 Part 2, H.263, and MS-MPEG4 in Matroska, ISO base media, and AVI tracks, which Mediabunny names mpeg4 or leaves codec-less
+// MPEG-4 Part 2, H.263, and MS-MPEG4 in Matroska, ISO base media, AVI, and ASF tracks, which Mediabunny names mpeg4 or leaves codec-less
 const MPEG4_FOCUSED_ROUTES: Readonly<Record<MPEG4TrackCodec, FocusedVideoRoute>> = {
     h263: {
-        aviTracks: true,
+        fourCCTracks: true,
         codec: 'h263',
         decoderCodec: 'h263',
         errorName: 'H.263',
@@ -903,7 +918,7 @@ const MPEG4_FOCUSED_ROUTES: Readonly<Record<MPEG4TrackCodec, FocusedVideoRoute>>
         internalCodecIDs: MPEG4_TRACK_INTERNAL_CODEC_IDS.h263
     },
     mpeg4: {
-        aviTracks: true,
+        fourCCTracks: true,
         codec: 'mpeg4',
         decoderCodec: 'mpeg4',
         errorName: 'MPEG-4 Part 2',
@@ -911,7 +926,7 @@ const MPEG4_FOCUSED_ROUTES: Readonly<Record<MPEG4TrackCodec, FocusedVideoRoute>>
         internalCodecIDs: MPEG4_TRACK_INTERNAL_CODEC_IDS.mpeg4
     },
     msmpeg4v1: {
-        aviTracks: true,
+        fourCCTracks: true,
         codec: 'msmpeg4v1',
         decoderCodec: 'msmpeg4v1',
         errorName: 'MS-MPEG4 v1',
@@ -919,7 +934,7 @@ const MPEG4_FOCUSED_ROUTES: Readonly<Record<MPEG4TrackCodec, FocusedVideoRoute>>
         internalCodecIDs: MPEG4_TRACK_INTERNAL_CODEC_IDS.msmpeg4v1
     },
     msmpeg4v2: {
-        aviTracks: true,
+        fourCCTracks: true,
         codec: 'msmpeg4v2',
         decoderCodec: 'msmpeg4v2',
         errorName: 'MS-MPEG4 v2',
@@ -927,7 +942,7 @@ const MPEG4_FOCUSED_ROUTES: Readonly<Record<MPEG4TrackCodec, FocusedVideoRoute>>
         internalCodecIDs: MPEG4_TRACK_INTERNAL_CODEC_IDS.msmpeg4v2
     },
     msmpeg4v3: {
-        aviTracks: true,
+        fourCCTracks: true,
         codec: 'msmpeg4v3',
         decoderCodec: 'msmpeg4v3',
         errorName: 'MS-MPEG4 v3',
@@ -999,7 +1014,7 @@ async function readFocusedVideoTrackConfiguration(
             return requireFocusedTrackConfiguration(
                 route,
                 await readMPEG4TrackConfiguration(route.codec, input.videoTrack, {
-                    avi: input.avi,
+                    fourCCCodecID: input.fourCCContainer !== null,
                     codedHeight: input.codedHeight,
                     codedWidth: input.codedWidth,
                     containerCodec: input.containerCodec,
@@ -1029,8 +1044,14 @@ function findFocusedVideoRouteMismatch(route: FocusedVideoRoute, input: FocusedV
         if (getTransportStreamVideoCodec(input.containerCodec) !== route.codec) {
             return `container-codec: ${input.containerCodec}`;
         }
-    } else if (!(input.avi && route.aviTracks) && (typeof input.internalCodecID !== 'string' || !route.internalCodecIDs.includes(input.internalCodecID))) {
-        // An AVI track's codec ID is its FourCC, which the route's track configuration checks
+    } else if (input.fourCCContainer === 'avi' && !route.fourCCTracks) {
+        // The VC-1 and WMV3 routes read FourCC codec IDs from ASF streams alone, as the container rules place them in no AVI file
+        return `codec-id: ${String(input.internalCodecID)}`;
+    } else if (
+        !(input.fourCCContainer !== null && route.fourCCTracks)
+        && (typeof input.internalCodecID !== 'string' || !route.internalCodecIDs.includes(input.internalCodecID))
+    ) {
+        // An AVI or ASF track's codec ID is its FourCC, which the route's track configuration checks
         return `codec-id: ${String(input.internalCodecID)}`;
     }
     if (input.request.videoOutputMode !== 'frame-pool') {
@@ -1215,12 +1236,20 @@ function requireRouteVideoCodec(codec: VideoCodec, request: Extract<DecodeWorker
 }
 
 /**
- * Names the codec ID of a track no route takes because Mediabunny names no codec for it: an AVI track's strf FourCC, as `fourcc: <FourCC>`, and any
- * other container's codec ID, as `codec-id: <ID>`.
+ * Names the codec ID of a track no route takes because Mediabunny names no codec for it: an AVI or ASF track's FourCC, as `fourcc: <FourCC>`, and
+ * any other container's codec ID, as `codec-id: <ID>`.
  */
-function describeCodecLessVideoTrack(internalCodecID: unknown, avi: boolean): string {
+function describeCodecLessVideoTrack(internalCodecID: unknown, fourCCCodecID: boolean): string {
     const codecID = String(internalCodecID);
-    return avi ? `fourcc: ${formatFourCC(codecID)}` : `codec-id: ${codecID}`;
+    return fourCCCodecID ? `fourcc: ${formatFourCC(codecID)}` : `codec-id: ${codecID}`;
+}
+
+/** Returns the container of a format whose streams name their codec by a FourCC, which is the track's codec ID: AVI or ASF, or null for any other. */
+function getFourCCContainer(inputFormat: InputFormat): 'asf' | 'avi' | null {
+    if (inputFormat instanceof AviInputFormat) {
+        return 'avi';
+    }
+    return inputFormat instanceof AsfInputFormat ? 'asf' : null;
 }
 
 /** Refuses a video track Mediabunny identifies but no route can play as it demuxes it. */
@@ -1277,15 +1306,15 @@ async function prepareVideoTrack(
     }
 
     const inputFormat = await input.getFormat();
-    const avi = inputFormat instanceof AviInputFormat;
+    const fourCCContainer = getFourCCContainer(inputFormat);
     const focusedTrack = await prepareFocusedVideoTrack({
-        avi,
         availableVideoTracks: videoTracks,
         codedHeight,
         codedWidth,
         containerCodec: codec,
         displayHeight,
         displayWidth,
+        fourCCContainer,
         internalCodecID,
         request,
         transportStream: inputFormat instanceof MpegTsInputFormat,
@@ -1295,7 +1324,9 @@ async function prepareVideoTrack(
         return focusedTrack;
     }
     if (!codec) {
-        throw new UnsupportedCustomDecodeSourceError(`The selected video track has no decode route: ${describeCodecLessVideoTrack(internalCodecID, avi)}`);
+        throw new UnsupportedCustomDecodeSourceError(
+            `The selected video track has no decode route: ${describeCodecLessVideoTrack(internalCodecID, fourCCContainer !== null)}`
+        );
     }
 
     // The frame-pool route decodes on the page's GPU, so the browser's own decoders need not take the track
@@ -1410,9 +1441,18 @@ async function getSelectedAudioTrackMetadata(
         audioTrack.getSampleRate(),
         audioTrack.getTimeResolution()
     ]);
-    // Matroska and ISO BMFF TrueHD tracks, and QuickTime DTS core tracks, have no Mediabunny codec, which only a package decodes
     const sampleRate = getDeclaredAudioSampleRate(internalCodecID, declaredSampleRate);
-    if ((!codec || !decoderConfig) && getContainerAudioCodec(codec, internalCodecID) === null) {
+    // Matroska and ISO BMFF TrueHD tracks, QuickTime DTS core tracks, and Matroska A_MS/ACM tracks and AVI streams of a format tag Mediabunny does not
+    // map have no Mediabunny codec, which only a package decodes; the last two carry a WAVEFORMATEX, whose format tag names the codec
+    const waveFormatTrack = codec === null ? readWaveFormatAudioTrack(audioTrack) : null;
+    if (waveFormatTrack?.status === 'failed') {
+        throw new UnsupportedCustomDecodeSourceError(`The selected audio codec has no decode route: ${waveFormatTrack.failure}`);
+    }
+    // The audio decode worker refuses an open request past this bound, so a track past it is refused here as a source
+    if (waveFormatTrack && waveFormatTrack.waveFormat.byteLength > MAXIMUM_AUDIO_DECODE_WORKER_CODEC_PRIVATE_BYTE_LENGTH) {
+        throw new UnsupportedCustomDecodeSourceError(`The selected audio track's WAVEFORMATEX of ${waveFormatTrack.waveFormat.byteLength} bytes is too large`);
+    }
+    if ((!codec || !decoderConfig) && getContainerAudioCodec(codec, internalCodecID) === null && waveFormatTrack === null) {
         throw new UnsupportedCustomDecodeSourceError('The selected audio codec configuration is unavailable');
     }
     if (isDTSExpressTrack(codec, decoderConfig)) {
@@ -1437,8 +1477,10 @@ async function getSelectedAudioTrackMetadata(
         declaredChannelMask,
         decoderConfig,
         inputChannelLayout,
+        packageCodecPrivate: waveFormatTrack?.waveFormat ?? null,
         sampleRate,
-        timeResolution
+        timeResolution,
+        waveFormatCodec: waveFormatTrack?.codec ?? null
     };
 }
 
@@ -1508,7 +1550,8 @@ function prepareNativeMediaAudioTrack(metadata: SelectedAudioTrackMetadata): Pre
         declaredChannelMask,
         inputChannelLayout,
         outputMode: 'native-media',
-        outputChannelCount: channelCount as 2 | 6,
+        outputLayout: channelCount === 6 ? '5.1' : 'stereo',
+        packageCodecPrivate: null,
         routeCodec: codec,
         sourceSampleRate: sampleRate,
         timeResolution
@@ -1530,17 +1573,24 @@ function isDeclaredPackageInputLayout(codec: string, channelCount: number, sampl
 function preparePackageAudioTrack(
     metadata: SelectedAudioTrackMetadata,
     packageDecoder: AudioDecoderPackageSelection,
-    outputChannelCount: CustomAudioOutputChannelCount
+    outputLayout: CustomAudioOutputLayout
 ): PreparedAudioTrack {
     const {
         audioTrack,
         channelCount,
         declaredChannelMask,
         inputChannelLayout,
+        packageCodecPrivate,
         sampleRate,
-        timeResolution
+        timeResolution,
+        waveFormatCodec
     } = metadata;
     const routeCodec = packageDecoder.codec;
+    if (waveFormatCodec !== null && waveFormatCodec !== routeCodec) {
+        throw new UnsupportedCustomDecodeSourceError(
+            `The selected audio track's WAVEFORMATEX names ${waveFormatCodec}, not the ${routeCodec} its package decodes`
+        );
+    }
     if (!isDeclaredPackageInputLayout(routeCodec, channelCount, sampleRate)) {
         throw new UnsupportedCustomDecodeSourceError(
             `The selected audio track does not match a qualified decoded PCM route of ${packageDecoder.source.manifest.name}`
@@ -1549,7 +1599,7 @@ function preparePackageAudioTrack(
 
     return {
         audioConfiguration: {
-            channelCount: outputChannelCount,
+            channelCount: getCustomAudioOutputChannelCount(outputLayout),
             codec: routeCodec,
             sampleRate: CUSTOM_AUDIO_OUTPUT_SAMPLE_RATE,
             sourceChannelCount: channelCount,
@@ -1562,7 +1612,8 @@ function preparePackageAudioTrack(
         declaredChannelMask,
         inputChannelLayout,
         outputMode: 'decoded-pcm',
-        outputChannelCount,
+        outputLayout,
+        packageCodecPrivate,
         routeCodec,
         sourceSampleRate: sampleRate,
         timeResolution
@@ -1571,7 +1622,7 @@ function preparePackageAudioTrack(
 
 async function prepareMediabunnyDecodedAudioTrack(
     metadata: SelectedAudioTrackMetadata,
-    outputChannelCount: CustomAudioOutputChannelCount
+    outputLayout: CustomAudioOutputLayout
 ): Promise<PreparedAudioTrack> {
     const {
         audioTrack,
@@ -1601,7 +1652,7 @@ async function prepareMediabunnyDecodedAudioTrack(
 
     return {
         audioConfiguration: {
-            channelCount: outputChannelCount,
+            channelCount: getCustomAudioOutputChannelCount(outputLayout),
             codec: decoderConfig.codec,
             sampleRate: CUSTOM_AUDIO_OUTPUT_SAMPLE_RATE,
             sourceChannelCount: channelCount,
@@ -1614,7 +1665,8 @@ async function prepareMediabunnyDecodedAudioTrack(
         declaredChannelMask,
         inputChannelLayout,
         outputMode: 'decoded-pcm',
-        outputChannelCount,
+        outputLayout,
+        packageCodecPrivate: null,
         routeCodec: codec,
         sourceSampleRate: sampleRate,
         timeResolution
@@ -1626,7 +1678,7 @@ async function prepareAudioTrack(
     run: DecodeRun,
     audioTrackOrdinal: number,
     outputMode: CustomDecodeAudioOutputMode,
-    decodedAudioOutputChannelCount: CustomAudioOutputChannelCount,
+    decodedAudioOutputLayout: CustomAudioOutputLayout,
     packageDecoder: AudioDecoderPackageSelection | null
 ): Promise<PreparedAudioTrack> {
     const metadata = await getSelectedAudioTrackMetadata(input, run, audioTrackOrdinal);
@@ -1635,8 +1687,8 @@ async function prepareAudioTrack(
             return prepareNativeMediaAudioTrack(metadata);
         case 'decoded-pcm':
             return packageDecoder ?
-                preparePackageAudioTrack(metadata, packageDecoder, decodedAudioOutputChannelCount) :
-                prepareMediabunnyDecodedAudioTrack(metadata, decodedAudioOutputChannelCount);
+                preparePackageAudioTrack(metadata, packageDecoder, decodedAudioOutputLayout) :
+                prepareMediabunnyDecodedAudioTrack(metadata, decodedAudioOutputLayout);
     }
 }
 
@@ -2171,6 +2223,19 @@ function postDecodedAudioSourceFormat(run: DecodeRun, response: AudioDecodeWorke
         generation: run.generation,
         sampleRate: response.sampleRate,
         type: 'audio-source-format'
+    });
+}
+
+/** Reports a change of the dynamic objects an audio attempt's package renders */
+function postDecodedAudioObjectCount(run: DecodeRun, response: AudioDecodeWorkerObjectCountResponse): void {
+    if (isAudioAttemptStopped(run) || run.audioEpoch !== response.audioEpoch) {
+        return;
+    }
+    postResponse({
+        audioEpoch: response.audioEpoch,
+        generation: run.generation,
+        objectCount: response.objectCount,
+        type: 'audio-object-count'
     });
 }
 
@@ -3585,8 +3650,10 @@ function openAudioDecodeAttempt(
         channelMask: preparedAudioTrack.declaredChannelMask,
         decoderBackend: getAudioDecodeWorkerDecoderBackend(preparedAudioTrack),
         generation: run.generation,
-        outputChannelCount: preparedAudioTrack.outputChannelCount,
+        outputLayout: preparedAudioTrack.outputLayout,
+        packageCodecPrivate: preparedAudioTrack.packageCodecPrivate,
         packageDecoder: preparedAudioTrack.decoderBackend === 'package' ? request.audioPackageDecoder ?? null : null,
+        renderBinaural: run.latestBinauralHeadphones && preparedAudioTrack.outputLayout === 'stereo',
         routeCodec: preparedAudioTrack.routeCodec,
         sourceSampleRate: preparedAudioTrack.sourceSampleRate,
         startTimeMicroseconds: request.startTimeMicroseconds,
@@ -3594,6 +3661,9 @@ function openAudioDecodeAttempt(
     }, {
         onChange: (): void => {
             wakeWaiters(run.wakeAudioCreditWaiters);
+        },
+        onObjectCount: (response: AudioDecodeWorkerObjectCountResponse): void => {
+            postDecodedAudioObjectCount(run, response);
         },
         onProgress: (response: AudioDecodeWorkerProgressResponse): void => {
             postAudioProgress(run, response);
@@ -3832,7 +3902,7 @@ function streamPreparedAudio(
 /** Rebuilds only the decoded output stage; the track and decoder backend stay */
 function createAudioAttemptTrack(
     preparedAudioTrack: PreparedAudioTrack,
-    outputChannelCount: CustomAudioOutputChannelCount
+    outputLayout: CustomAudioOutputLayout
 ): PreparedAudioTrack {
     if (preparedAudioTrack.outputMode !== 'decoded-pcm') {
         throw new UnsupportedCustomDecodeSourceError('Only decoded PCM audio can change its output layout');
@@ -3841,9 +3911,9 @@ function createAudioAttemptTrack(
         ...preparedAudioTrack,
         audioConfiguration: {
             ...preparedAudioTrack.audioConfiguration,
-            channelCount: outputChannelCount
+            channelCount: getCustomAudioOutputChannelCount(outputLayout)
         },
-        outputChannelCount
+        outputLayout
     };
 }
 
@@ -3858,6 +3928,7 @@ function takeAudioAttemptControl(run: DecodeRun, control: AudioAttemptControl): 
     run.pendingAudioOutput = control.audioOutput;
     run.audioStreamFinished = false;
     run.latestAudioDownmixSettings = control.audioDownmixSettings ?? run.latestAudioDownmixSettings;
+    run.latestBinauralHeadphones = control.binauralHeadphones ?? run.latestBinauralHeadphones;
 }
 
 /**
@@ -3875,12 +3946,12 @@ async function streamAudioAttempts(
         const control = run.pendingAudioControl;
         if (control) {
             takeAudioAttemptControl(run, control);
-            attemptTrack = createAudioAttemptTrack(preparedAudioTrack, control.decodedAudioOutputChannelCount);
+            attemptTrack = createAudioAttemptTrack(preparedAudioTrack, control.decodedAudioOutputLayout);
             attemptRequest = {
                 ...request,
                 audioDownmixAlgorithm: control.audioDownmixAlgorithm
                     ?? request.audioDownmixAlgorithm,
-                decodedAudioOutputChannelCount: control.decodedAudioOutputChannelCount,
+                decodedAudioOutputLayout: control.decodedAudioOutputLayout,
                 startTimeMicroseconds: control.targetTimeMicroseconds
             };
         }
@@ -3946,8 +4017,7 @@ async function prepareRunTracks(
                 run,
                 request.audioTrackIndex,
                 request.audioOutputMode ?? 'decoded-pcm',
-                request.decodedAudioOutputChannelCount
-                    ?? CUSTOM_AUDIO_OUTPUT_CHANNEL_COUNT,
+                request.decodedAudioOutputLayout ?? 'stereo',
                 request.audioPackageDecoder ?? null
             )
     ];
@@ -4080,6 +4150,7 @@ function createDecodeRun(request: Extract<DecodeWorkerRequest, { type: 'start' }
         input: null,
         iteratorRetirementPromise: null,
         latestAudioDownmixSettings: request.audioDownmixSettings,
+        latestBinauralHeadphones: request.binauralHeadphones ?? false,
         maximumCodedHeight: request.maximumCodedHeight,
         maximumCodedWidth: request.maximumCodedWidth,
         metadataAbortController: null,
@@ -4142,7 +4213,8 @@ function handleAudioControlRequest(request: Extract<DecodeWorkerRequest, { type:
         audioDownmixSettings: request.audioDownmixSettings,
         audioEpoch: request.audioEpoch,
         audioOutput: request.audioOutput,
-        decodedAudioOutputChannelCount: request.decodedAudioOutputChannelCount,
+        binauralHeadphones: request.binauralHeadphones,
+        decodedAudioOutputLayout: request.decodedAudioOutputLayout,
         targetTimeMicroseconds: request.targetTimeMicroseconds
     });
 }
@@ -4183,6 +4255,20 @@ function updateAudioDownmixSettings(request: Extract<DecodeWorkerRequest, { type
         run.pendingAudioControl.audioDownmixSettings = request.audioDownmixSettings;
     }
     audioDecodeWorkerClient?.updateDownmixSettings(request.generation, request.audioDownmixSettings);
+}
+
+/** Switches binaural rendering of the run's open attempt live, and keeps the setting for the attempts it opens later. */
+function updateAudioBinaural(request: Extract<DecodeWorkerRequest, { type: 'update-audio-binaural' }>): void {
+    const run = currentRun;
+    if (run?.generation !== request.generation || run.cancelled) {
+        return;
+    }
+    run.latestBinauralHeadphones = request.binauralHeadphones;
+    // A pending resync carries an older setting than this update
+    if (run.pendingAudioControl) {
+        run.pendingAudioControl.binauralHeadphones = request.binauralHeadphones;
+    }
+    audioDecodeWorkerClient?.updateBinaural(request.generation, request.binauralHeadphones);
 }
 
 /**
@@ -4265,6 +4351,9 @@ function handleRequest(requestValue: unknown): void {
             break;
         case 'update-audio-downmix-settings':
             updateAudioDownmixSettings(requestValue);
+            break;
+        case 'update-audio-binaural':
+            updateAudioBinaural(requestValue);
             break;
     }
 }

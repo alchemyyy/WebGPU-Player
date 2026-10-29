@@ -1,19 +1,27 @@
 /*
- * FFmpeg's MLP and TrueHD decoders behind version 1 of the engine's audio decoder interface.
+ * FFmpeg's MLP and TrueHD decoders behind version 1 of the engine's audio decoder interface, with Dolby Atmos object rendering.
  * truehd.manifest beside this file names the codecs, attributes, options, and error codes declared here.
+ *
+ * Stock FFmpeg decodes every packet, and its decode is the output unless the render target needs objects:
+ * a TrueHD Atmos stream whose target layout has speakers FFmpeg's presentation lacks, or binaural rendering.
+ * Then truehd_objects.c decodes the stream's 16-channel presentation and renders it into the target, packet by packet,
+ * once a major sync and the object metadata have arrived; until then the stock decode plays.
  */
 
 #include <emscripten.h>
+#include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
 
 #include "libavcodec/avcodec.h"
+#include "libavcodec/defs.h"
 #include "libavutil/channel_layout.h"
 #include "libavutil/error.h"
 #include "libavutil/log.h"
 #include "libavutil/samplefmt.h"
 
 #include "audio_decoder_interface.h"
+#include "truehd_objects.h"
 
 /* The codecs in the manifest's `accepts:` order */
 enum TrueHDCodec {
@@ -26,12 +34,15 @@ enum TrueHDAttribute {
     TRUEHD_ATTRIBUTE_BITS_PER_SAMPLE = 1,
     TRUEHD_ATTRIBUTE_PROFILE = 2,
     TRUEHD_ATTRIBUTE_PCM_FINGERPRINT = 3,
-    TRUEHD_ATTRIBUTE_LIBRARY_VERSION = 4
+    TRUEHD_ATTRIBUTE_LIBRARY_VERSION = 4,
+    TRUEHD_ATTRIBUTE_OBJECT_COUNT = 5
 };
 
 /* The manifest's option keys */
 enum TrueHDOption {
-    TRUEHD_OPTION_PCM_FINGERPRINT = 1
+    TRUEHD_OPTION_PCM_FINGERPRINT = 1,
+    TRUEHD_OPTION_RENDER_CHANNEL_MASK = 2,
+    TRUEHD_OPTION_RENDER_BINAURAL = 3
 };
 
 /* The manifest's error codes */
@@ -48,6 +59,12 @@ enum TrueHDError {
 #define FNV1A_OFFSET_BASIS 2166136261U
 #define FNV1A_PRIME 16777619U
 
+/* Which decode the current block is */
+enum TrueHDBlock {
+    TRUEHD_BLOCK_STOCK = 0,
+    TRUEHD_BLOCK_RENDERED = 1
+};
+
 typedef struct TrueHDDecoder {
     AVCodecContext *codec_context;
     AVPacket *packet;
@@ -57,6 +74,16 @@ typedef struct TrueHDDecoder {
     size_t plane_capacity;
     int computes_pcm_fingerprint;
     uint32_t pcm_fingerprint;
+    /* Object rendering, for the TrueHD codec only */
+    TrueHDObjects *objects;
+    int has_render_target;
+    uint32_t render_channel_mask;
+    int render_binaural;
+    /* Whether the latest packet rendered objects, and the rendered block waiting for receive */
+    int renders_objects;
+    int rendered_pending;
+    double rendered_timestamp;
+    enum TrueHDBlock block;
     uint32_t error_code;
     uint32_t error_value;
 } TrueHDDecoder;
@@ -71,6 +98,7 @@ static void free_decoder(TrueHDDecoder *decoder) {
     av_frame_free(&decoder->frame);
     av_packet_free(&decoder->packet);
     avcodec_free_context(&decoder->codec_context);
+    truehd_objects_destroy(decoder->objects);
     free(decoder->planes);
     free(decoder);
 }
@@ -141,6 +169,43 @@ static int convert_frame(TrueHDDecoder *decoder) {
     }
 }
 
+/* The WAVE channel mask of FFmpeg's latest output layout, or 0 before one or for a layout without one */
+static uint32_t stock_channel_mask(const AVChannelLayout *layout) {
+    if (layout->order != AV_CHANNEL_ORDER_NATIVE || (layout->u.mask >> 32) != 0) {
+        return 0;
+    }
+    return (uint32_t) layout->u.mask;
+}
+
+/*
+ * Whether the render target needs the stream's objects: a TrueHD Atmos stream, and binaural rendering
+ * or a target layout with speakers that FFmpeg's presentation lacks.
+ */
+static int needs_objects(const TrueHDDecoder *decoder) {
+    if (decoder->objects == NULL || !decoder->has_render_target || decoder->codec_context->profile != AV_PROFILE_TRUEHD_ATMOS
+            || !truehd_objects_target_renderable(decoder->objects)) {
+        return 0;
+    }
+    if (decoder->render_binaural) {
+        return 1;
+    }
+    return (decoder->render_channel_mask & ~stock_channel_mask(&decoder->codec_context->ch_layout)) != 0;
+}
+
+/* Discards FFmpeg's frames of a packet whose objects rendered */
+static int discard_stock_frames(TrueHDDecoder *decoder) {
+    for (;;) {
+        av_frame_unref(decoder->frame);
+        const int result = avcodec_receive_frame(decoder->codec_context, decoder->frame);
+        if (result == AVERROR(EAGAIN) || result == AVERROR_EOF || result == AVERROR_INVALIDDATA) {
+            return AUDIO_DECODER_SUCCESS;
+        }
+        if (result < 0) {
+            return fail(decoder, TRUEHD_ERROR_RECEIVE, (uint32_t) -result);
+        }
+    }
+}
+
 EMSCRIPTEN_KEEPALIVE
 uint32_t audio_decoder_abi_version(void) {
     return AUDIO_DECODER_ABI_VERSION;
@@ -162,7 +227,11 @@ TrueHDDecoder *audio_decoder_create(int codec) {
     decoder->codec_context = avcodec_alloc_context3(codec_implementation);
     decoder->packet = av_packet_alloc();
     decoder->frame = av_frame_alloc();
-    if (decoder->codec_context == NULL || decoder->packet == NULL || decoder->frame == NULL) {
+    if (codec == TRUEHD_CODEC_TRUEHD) {
+        decoder->objects = truehd_objects_create();
+    }
+    if (decoder->codec_context == NULL || decoder->packet == NULL || decoder->frame == NULL
+            || (codec == TRUEHD_CODEC_TRUEHD && decoder->objects == NULL)) {
         free_decoder(decoder);
         return NULL;
     }
@@ -207,9 +276,26 @@ int audio_decoder_set_option(TrueHDDecoder *decoder, uint32_t key, double value)
         case TRUEHD_OPTION_PCM_FINGERPRINT:
             decoder->computes_pcm_fingerprint = value != 0.0;
             return AUDIO_DECODER_SUCCESS;
+        case TRUEHD_OPTION_RENDER_CHANNEL_MASK:
+            if (!(value >= 0.0 && value <= (double) UINT32_MAX) || floor(value) != value) {
+                return fail(decoder, TRUEHD_ERROR_OPTION, key);
+            }
+            decoder->has_render_target = 1;
+            decoder->render_channel_mask = (uint32_t) value;
+            break;
+        case TRUEHD_OPTION_RENDER_BINAURAL:
+            if (value != 0.0 && value != 1.0) {
+                return fail(decoder, TRUEHD_ERROR_OPTION, key);
+            }
+            decoder->render_binaural = value == 1.0;
+            break;
         default:
             return fail(decoder, TRUEHD_ERROR_OPTION, key);
     }
+    if (decoder->objects != NULL) {
+        truehd_objects_set_target(decoder->objects, decoder->render_channel_mask, decoder->render_binaural);
+    }
+    return AUDIO_DECODER_SUCCESS;
 }
 
 EMSCRIPTEN_KEEPALIVE
@@ -220,7 +306,17 @@ int audio_decoder_send(TrueHDDecoder *decoder, uint32_t byte_length, double time
     decoder->packet->size = (int) byte_length;
     decoder->packet->pts = (int64_t) timestamp;
     decoder->packet->dts = (int64_t) timestamp;
+    decoder->rendered_pending = 0;
     const int result = avcodec_send_packet(decoder->codec_context, decoder->packet);
+    // FFmpeg has read the packet's first access unit, so its profile and output layout are current
+    if (result == 0 && needs_objects(decoder)) {
+        decoder->rendered_pending = truehd_objects_decode(decoder->objects, decoder->packet->data, byte_length);
+        decoder->rendered_timestamp = timestamp;
+    } else if (decoder->objects != NULL) {
+        // A packet the objects decoder never sees breaks its filter and matrix state, so it resumes at the next major sync
+        truehd_objects_reset(decoder->objects);
+    }
+    decoder->renders_objects = decoder->rendered_pending;
     av_packet_unref(decoder->packet);
     if (result == 0) {
         return AUDIO_DECODER_SEND_ACCEPTED;
@@ -233,6 +329,14 @@ int audio_decoder_send(TrueHDDecoder *decoder, uint32_t byte_length, double time
 
 EMSCRIPTEN_KEEPALIVE
 int audio_decoder_receive(TrueHDDecoder *decoder) {
+    if (decoder->rendered_pending) {
+        decoder->rendered_pending = 0;
+        if (discard_stock_frames(decoder) != AUDIO_DECODER_SUCCESS) {
+            return AUDIO_DECODER_FAILED;
+        }
+        decoder->block = TRUEHD_BLOCK_RENDERED;
+        return AUDIO_DECODER_RECEIVE_READY;
+    }
     av_frame_unref(decoder->frame);
     const int result = avcodec_receive_frame(decoder->codec_context, decoder->frame);
     if (result == AVERROR(EAGAIN) || result == AVERROR_EOF || result == AVERROR_INVALIDDATA) {
@@ -244,36 +348,59 @@ int audio_decoder_receive(TrueHDDecoder *decoder) {
     if (convert_frame(decoder) != AUDIO_DECODER_SUCCESS) {
         return AUDIO_DECODER_FAILED;
     }
+    decoder->block = TRUEHD_BLOCK_STOCK;
     return AUDIO_DECODER_RECEIVE_READY;
+}
+
+/* Ends the track: a binaural rendering outputs the tail its convolution delay holds back */
+EMSCRIPTEN_KEEPALIVE
+int audio_decoder_drain(TrueHDDecoder *decoder) {
+    if (decoder->renders_objects && truehd_objects_drain(decoder->objects)) {
+        decoder->rendered_pending = 1;
+        decoder->rendered_timestamp = AUDIO_DECODER_NO_TIMESTAMP;
+    }
+    decoder->renders_objects = 0;
+    return AUDIO_DECODER_SUCCESS;
 }
 
 EMSCRIPTEN_KEEPALIVE
 uint32_t audio_decoder_frame_count(TrueHDDecoder *decoder) {
+    if (decoder->block == TRUEHD_BLOCK_RENDERED) {
+        return truehd_objects_frame_count(decoder->objects);
+    }
     return (uint32_t) decoder->frame->nb_samples;
 }
 
 EMSCRIPTEN_KEEPALIVE
 uint32_t audio_decoder_sample_rate(TrueHDDecoder *decoder) {
+    if (decoder->block == TRUEHD_BLOCK_RENDERED) {
+        return truehd_objects_sample_rate(decoder->objects);
+    }
     return (uint32_t) decoder->frame->sample_rate;
 }
 
 EMSCRIPTEN_KEEPALIVE
 uint32_t audio_decoder_channel_count(TrueHDDecoder *decoder) {
+    if (decoder->block == TRUEHD_BLOCK_RENDERED) {
+        return truehd_objects_channel_count(decoder->objects);
+    }
     return (uint32_t) decoder->frame->ch_layout.nb_channels;
 }
 
 /* The WAVE channel mask of a native-order layout, or 0 for a layout without one */
 EMSCRIPTEN_KEEPALIVE
 uint32_t audio_decoder_channel_mask(TrueHDDecoder *decoder) {
-    const AVChannelLayout *layout = &decoder->frame->ch_layout;
-    if (layout->order != AV_CHANNEL_ORDER_NATIVE || (layout->u.mask >> 32) != 0) {
-        return 0;
+    if (decoder->block == TRUEHD_BLOCK_RENDERED) {
+        return truehd_objects_channel_mask(decoder->objects);
     }
-    return (uint32_t) layout->u.mask;
+    return stock_channel_mask(&decoder->frame->ch_layout);
 }
 
 EMSCRIPTEN_KEEPALIVE
 float *audio_decoder_channel_pointer(TrueHDDecoder *decoder, uint32_t channel) {
+    if (decoder->block == TRUEHD_BLOCK_RENDERED) {
+        return truehd_objects_channel_pointer(decoder->objects, channel);
+    }
     if (decoder->planes == NULL || channel >= (uint32_t) decoder->frame->ch_layout.nb_channels) {
         return NULL;
     }
@@ -282,6 +409,9 @@ float *audio_decoder_channel_pointer(TrueHDDecoder *decoder, uint32_t channel) {
 
 EMSCRIPTEN_KEEPALIVE
 double audio_decoder_timestamp(TrueHDDecoder *decoder) {
+    if (decoder->block == TRUEHD_BLOCK_RENDERED) {
+        return decoder->rendered_timestamp;
+    }
     return decoder->frame->pts == AV_NOPTS_VALUE ? AUDIO_DECODER_NO_TIMESTAMP : (double) decoder->frame->pts;
 }
 
@@ -293,9 +423,12 @@ double audio_decoder_attribute(TrueHDDecoder *decoder, uint32_t key) {
         case TRUEHD_ATTRIBUTE_PROFILE:
             return (double) decoder->codec_context->profile;
         case TRUEHD_ATTRIBUTE_PCM_FINGERPRINT:
-            return decoder->computes_pcm_fingerprint ? (double) decoder->pcm_fingerprint : AUDIO_DECODER_NO_ATTRIBUTE;
+            return decoder->computes_pcm_fingerprint && decoder->block == TRUEHD_BLOCK_STOCK ?
+                (double) decoder->pcm_fingerprint : AUDIO_DECODER_NO_ATTRIBUTE;
         case TRUEHD_ATTRIBUTE_LIBRARY_VERSION:
             return (double) avcodec_version();
+        case TRUEHD_ATTRIBUTE_OBJECT_COUNT:
+            return decoder->block == TRUEHD_BLOCK_RENDERED ? (double) truehd_objects_dynamic_count(decoder->objects) : 0.0;
         default:
             return AUDIO_DECODER_NO_ATTRIBUTE;
     }
@@ -306,6 +439,12 @@ void audio_decoder_clear(TrueHDDecoder *decoder) {
     av_packet_unref(decoder->packet);
     av_frame_unref(decoder->frame);
     avcodec_flush_buffers(decoder->codec_context);
+    if (decoder->objects != NULL) {
+        truehd_objects_reset(decoder->objects);
+    }
+    decoder->renders_objects = 0;
+    decoder->rendered_pending = 0;
+    decoder->block = TRUEHD_BLOCK_STOCK;
 }
 
 EMSCRIPTEN_KEEPALIVE

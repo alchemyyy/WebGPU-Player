@@ -1,6 +1,7 @@
 // The contracts between the sandbox's layers: the state the session and library publish, and the commands the panels send.
 // Panels read state and send commands only; they never call the engine themselves.
 import type { Microseconds } from 'webgpu-player/MediaTime';
+import type { CustomAudioSpeakerLayout } from 'webgpu-player/audio/NativeMultichannelAudioOutput';
 import type { CustomPlaybackTelemetry } from 'webgpu-player/pipeline/CustomPlaybackControllerTypes';
 import type {
     CustomDecodeAudioOutputMode,
@@ -150,6 +151,12 @@ export type RouteOverride = Readonly<{
     transport: FrameTransportOverride
 }>;
 
+/** Where decoded audio plays, as a host's settings give it: the speaker layout setting, and binaural headphone rendering of object audio on a stereo output. */
+export type AudioOutputSettings = Readonly<{
+    binauralHeadphones: boolean
+    speakerLayout: CustomAudioSpeakerLayout
+}>;
+
 /** The route the session plays: the engine's play options, and why they were chosen. */
 export type ActiveRoute = Readonly<{
     audioOutputMode: CustomDecodeAudioOutputMode | null
@@ -295,6 +302,7 @@ export type SandboxFailure = Readonly<{
 // State
 
 export type SandboxState = Readonly<{
+    audioOutput: AudioOutputSettings
     capabilityProbes: CapabilityProbeState
     decoders: DecoderPackagesState
     /** Newest last, bounded */
@@ -318,6 +326,7 @@ export const MAXIMUM_SANDBOX_FAILURE_COUNT = 50;
 // The values the state starts with, which the panels' default buttons return to
 export const DEFAULT_VOLUME = 1;
 export const DEFAULT_ROUTE_OVERRIDE: RouteOverride = Object.freeze({ decoder: 'auto', transport: 'auto' });
+export const DEFAULT_AUDIO_OUTPUT_SETTINGS: AudioOutputSettings = Object.freeze({ binauralHeadphones: false, speakerLayout: 'auto' });
 // A file opens with subtitles off
 export const DEFAULT_SUBTITLE_SELECTION: SubtitleSelection | null = null;
 
@@ -346,6 +355,7 @@ export function appendSandboxFailure(failures: readonly SandboxFailure[], failur
 
 export function createInitialSandboxState(): SandboxState {
     return {
+        audioOutput: DEFAULT_AUDIO_OUTPUT_SETTINGS,
         capabilityProbes: { negotiationMilliseconds: null },
         decoders: { packages: [] },
         failures: [],
@@ -413,6 +423,8 @@ export type SandboxSessionCommands = {
     /** Restarts the media on the track, at the current time */
     selectAudioTrack: (trackIndex: number | null) => Promise<void>
     selectSubtitle: (selection: SubtitleSelection | null) => Promise<void>
+    /** Restarts the media with the speaker layout and binaural setting, at the current time, so the route is chosen for them */
+    setAudioOutputSettings: (settings: AudioOutputSettings) => Promise<void>
     /** Selects how interlaced frames present: a frame per field, a frame per frame, or woven as decoded */
     setDeinterlaceMode: (mode: DeinterlaceMode) => Promise<void>
     setHDROutputEnabled: (enabled: boolean) => Promise<void>

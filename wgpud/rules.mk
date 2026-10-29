@@ -103,6 +103,13 @@ FFMPEG_AUDIO_CFLAGS := -DNDEBUG -O3 -flto -msimd128
 FFMPEG_AUDIO_LDFLAGS := -O3 -flto
 FFMPEG_AUDIO_LINK_TAIL := -msimd128 -flto -O3 -Wl,--no-entry
 
+# The object audio sources in wgpud/atmos/ (the OAMD parser, the speaker and binaural renderers, and the HRIR table),
+# which the eac3 and truehd modules compile with their own sources: pass $(ATMOS_MODULE_SOURCES) as link_ffmpeg_audio_module's
+# third argument and include atmos.h
+ATMOS_DIRECTORY := $(DECODERS)/atmos
+ATMOS_SOURCES := $(addprefix $(ATMOS_DIRECTORY)/,atmos_oamd.c atmos_renderer.c atmos_binaural.c atmos_hrir.c)
+ATMOS_MODULE_SOURCES := $(ATMOS_SOURCES) -I$(ATMOS_DIRECTORY)
+
 # Machine paths map to fixed names, so a build embeds no checkout path
 native_path = $(shell cygpath -m '$(1)' 2>/dev/null || printf '%s' '$(1)')
 CARGO_HOME_DIRECTORY := $(or $(CARGO_HOME),$(HOME)/.cargo)
@@ -163,12 +170,13 @@ define build_ffmpeg
 endef
 
 # Links an FFmpeg audio module from its bridge and the FFmpeg libraries into $(MODULE)
-# $(1): the bridge source in the project's folder
+# $(1): the project's sources in its folder, the bridge first, $(2): the optional exports of the interface it adds, such as _audio_decoder_drain,
+# $(3): further sources and their include flags, such as $(ATMOS_MODULE_SOURCES)
 define link_ffmpeg_audio_module
-	$(EMCC) $(PROJECT_DIRECTORY)/$(1) \
+	$(EMCC) $(addprefix $(PROJECT_DIRECTORY)/,$(1)) $(3) \
 		$(FFMPEG_TREE)/libavcodec/libavcodec.a $(FFMPEG_TREE)/libavutil/libavutil.a \
 		-I$(FFMPEG_TREE) $(AUDIO_MODULE_INCLUDES) $(call prefix_maps,$(FFMPEG_TREE)) \
-		$(AUDIO_MODULE_LINK_FLAGS) -sEXPORTED_FUNCTIONS=$(call comma_list,$(AUDIO_MODULE_EXPORTS)) \
+		$(AUDIO_MODULE_LINK_FLAGS) -sEXPORTED_FUNCTIONS=$(call comma_list,$(AUDIO_MODULE_EXPORTS) $(2)) \
 		$(FFMPEG_AUDIO_LINK_TAIL) -o $(MODULE)
 endef
 

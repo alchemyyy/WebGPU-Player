@@ -12,6 +12,7 @@ import {
     isAudioDecodeWorkerRequest,
     isAudioDecodeWorkerResponse,
     MAXIMUM_AUDIO_DECODE_WORKER_BATCH_INPUT_COUNT,
+    MAXIMUM_AUDIO_DECODE_WORKER_CODEC_PRIVATE_BYTE_LENGTH,
     MAXIMUM_AUDIO_DECODE_WORKER_FAILURE_MESSAGE_LENGTH,
     type AudioDecodeWorkerOpenAttemptRequest,
     type AudioDecodeWorkerPacketBatch,
@@ -61,6 +62,9 @@ const PACKAGE_UNLISTED_CODEC = 'dts';
 // FFmpeg's 5.1 with back surrounds, which the output stage lays out, and quadraphonic, which it does not
 const FIVE_POINT_ONE_BACK_CHANNEL_MASK = 0x3F;
 const QUAD_CHANNEL_MASK = 0x33;
+// A package's codec private data, such as a WMA track's 18-byte WAVEFORMATEX and its extradata, and data past the bound
+const PACKAGE_CODEC_PRIVATE = new Uint8Array(28);
+const OVERSIZED_PACKAGE_CODEC_PRIVATE = new Uint8Array(MAXIMUM_AUDIO_DECODE_WORKER_CODEC_PRIVATE_BYTE_LENGTH + 1);
 
 // A stub E-AC-3 package, as a host offers its audio decoder packages
 const DECODER_PACKAGE = createAudioDecoderPackageForTest('E-AC-3', [ 'eac3', PACKAGE_CODEC ]);
@@ -117,8 +121,10 @@ function createOpenRequest(overrides: Record<string, unknown> = {}): AudioDecode
         audioOutput: null,
         channelMask: null,
         decoderBackend: 'pcm',
-        outputChannelCount: STEREO_CHANNEL_COUNT,
+        outputLayout: 'stereo',
+        packageCodecPrivate: null,
         packageDecoder: null,
+        renderBinaural: false,
         routeCodec: ROUTE_CODEC,
         sourceSampleRate: SAMPLE_RATE,
         startTimeMicroseconds: START_TIME_MICROSECONDS,
@@ -151,6 +157,8 @@ describe('audio decode worker requests', () => {
                 generation: GENERATION,
                 type: 'update-downmix-settings'
             })).toBe(true);
+            expect(isAudioDecodeWorkerRequest({ binauralHeadphones: true, generation: GENERATION, type: 'update-binaural' })).toBe(true);
+            expect(isAudioDecodeWorkerRequest({ binauralHeadphones: 'on', generation: GENERATION, type: 'update-binaural' })).toBe(false);
         } finally {
             channel.port1.close();
             channel.port2.close();
@@ -164,7 +172,12 @@ describe('audio decode worker requests', () => {
             expect(isAudioDecodeWorkerRequest(createOpenRequest({ decoderBackend })), decoderBackend).toBe(false);
         }
         expect(isAudioDecodeWorkerRequest(createOpenRequest({ routeCodec: EMPTY_ROUTE_CODEC }))).toBe(false);
-        expect(isAudioDecodeWorkerRequest(createOpenRequest({ outputChannelCount: QUAD_OUTPUT_CHANNEL_COUNT }))).toBe(false);
+        expect(isAudioDecodeWorkerRequest(createOpenRequest({ outputLayout: QUAD_OUTPUT_CHANNEL_COUNT }))).toBe(false);
+        expect(isAudioDecodeWorkerRequest(createOpenRequest({ outputLayout: '7.1.4' }))).toBe(true);
+        // Binaural rendering only renders stereo
+        expect(isAudioDecodeWorkerRequest(createOpenRequest({ renderBinaural: true }))).toBe(true);
+        expect(isAudioDecodeWorkerRequest(createOpenRequest({ outputLayout: '5.1', renderBinaural: true }))).toBe(false);
+        expect(isAudioDecodeWorkerRequest(createOpenRequest({ renderBinaural: 1 }))).toBe(false);
         expect(isAudioDecodeWorkerRequest(createOpenRequest({ timeResolution: INVALID_TIME_RESOLUTION }))).toBe(false);
         expect(isAudioDecodeWorkerRequest({ ...ATTEMPT_KEY, type: UNKNOWN_REQUEST_TYPE })).toBe(false);
     });
@@ -179,12 +192,23 @@ describe('audio decode worker requests', () => {
         expect(isAudioDecodeWorkerRequest(requestWithoutMask)).toBe(false);
     });
 
-    it('accepts a package attempt with the package that decodes it', () => {
-        expect(isAudioDecodeWorkerRequest(createOpenRequest({
-            decoderBackend: PACKAGE_BACKEND,
-            packageDecoder: packageSelection,
-            routeCodec: PACKAGE_CODEC
-        }))).toBe(true);
+    it('accepts a package attempt with the package that decodes it, with or without codec private data', () => {
+        const packageAttempt = { decoderBackend: PACKAGE_BACKEND, packageDecoder: packageSelection, routeCodec: PACKAGE_CODEC };
+
+        expect(isAudioDecodeWorkerRequest(createOpenRequest(packageAttempt))).toBe(true);
+        expect(isAudioDecodeWorkerRequest(createOpenRequest({ ...packageAttempt, packageCodecPrivate: PACKAGE_CODEC_PRIVATE }))).toBe(true);
+    });
+
+    it('rejects codec private data that is empty, past its bound, or on an attempt without a package', () => {
+        const packageAttempt = { decoderBackend: PACKAGE_BACKEND, packageDecoder: packageSelection, routeCodec: PACKAGE_CODEC };
+        const requestWithoutCodecPrivateField: Record<string, unknown> = { ...createOpenRequest(packageAttempt) };
+        delete requestWithoutCodecPrivateField.packageCodecPrivate;
+
+        expect(isAudioDecodeWorkerRequest(createOpenRequest({ ...packageAttempt, packageCodecPrivate: new Uint8Array() }))).toBe(false);
+        expect(isAudioDecodeWorkerRequest(createOpenRequest({ ...packageAttempt, packageCodecPrivate: OVERSIZED_PACKAGE_CODEC_PRIVATE }))).toBe(false);
+        expect(isAudioDecodeWorkerRequest(createOpenRequest({ ...packageAttempt, packageCodecPrivate: PACKAGE_CODEC_PRIVATE.buffer }))).toBe(false);
+        expect(isAudioDecodeWorkerRequest(createOpenRequest({ packageCodecPrivate: PACKAGE_CODEC_PRIVATE }))).toBe(false);
+        expect(isAudioDecodeWorkerRequest(requestWithoutCodecPrivateField)).toBe(false);
     });
 
     it('rejects a package attempt without a valid package, and any other attempt that carries one', () => {
@@ -265,6 +289,8 @@ describe('audio decode worker responses', () => {
             sampleRate: SAMPLE_RATE,
             type: 'source-format'
         })).toBe(true);
+        expect(isAudioDecodeWorkerResponse({ ...ATTEMPT_KEY, objectCount: 12, type: 'object-count' })).toBe(true);
+        expect(isAudioDecodeWorkerResponse({ ...ATTEMPT_KEY, objectCount: -1, type: 'object-count' })).toBe(false);
         expect(isAudioDecodeWorkerResponse({ ...ATTEMPT_KEY, type: 'attempt-finished' })).toBe(true);
         expect(isAudioDecodeWorkerResponse({
             ...ATTEMPT_KEY,

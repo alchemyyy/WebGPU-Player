@@ -7,7 +7,7 @@ import type { DecodedPresentationFrame } from '../presentation/WebGPUPresenter';
 import AudioWorkletController from '../audio/output/AudioWorkletController';
 import type { AudioWorkletTelemetry } from '../audio/output/AudioWorkletProtocol';
 import { assertSupportedCustomAudioOutputLayout } from '../audio/CustomAudioOutputPolicy';
-import { selectCustomAudioOutputChannelCountForMaximum } from '../audio/NativeMultichannelAudioOutput';
+import { selectCustomAudioOutputLayout } from '../audio/NativeMultichannelAudioOutput';
 import type { AudioDecoderPackageSelection } from '../decode/audio/AudioDecoderPackageInstance';
 import {
     assertValidAudioDownmixSettings,
@@ -20,7 +20,8 @@ import {
 } from '../audio/processing/CustomAudioDownmixAlgorithm';
 import {
     CUSTOM_STEREO_OUTPUT_CHANNEL_COUNT,
-    type CustomAudioOutputChannelCount
+    isCustomAudioOutputLayout,
+    type CustomAudioOutputLayout
 } from '../audio/processing/CustomAudioChannelLayout';
 import CustomDecodeAudioBridge from '../audio/output/CustomDecodeAudioBridge';
 import CustomDecodeSession, {
@@ -200,6 +201,24 @@ function validateAudioDownmixSettings(
     assertValidAudioDownmixSettings(options.audioDownmixSettings);
 }
 
+/** Validates the decoded PCM output options: the layout, binaural headphones, and object rendering, each only with decoded PCM audio. */
+function validateDecodedAudioOutputOptions(options: CustomPlaybackPlayOptions, audioOutputMode: CustomDecodeAudioOutputMode): void {
+    const decodedAudioOutputLayout = options.decodedAudioOutputLayout;
+    if (decodedAudioOutputLayout !== undefined && !isCustomAudioOutputLayout(decodedAudioOutputLayout)) {
+        throw new RangeError('Decoded audio output layout must be stereo, 5.1, 7.1, 5.1.2, 5.1.4, 7.1.2, or 7.1.4');
+    }
+    if (decodedAudioOutputLayout !== undefined && (options.audioTrackIndex === null || audioOutputMode !== 'decoded-pcm')) {
+        throw new TypeError('Decoded audio output channels require decoded PCM audio');
+    }
+    const decodedPCMAudio = options.audioTrackIndex !== null && audioOutputMode === 'decoded-pcm';
+    if (options.binauralHeadphones !== undefined && (typeof options.binauralHeadphones !== 'boolean' || !decodedPCMAudio)) {
+        throw new TypeError('Binaural headphone rendering requires decoded PCM audio');
+    }
+    if (options.audioRendersObjects !== undefined && (typeof options.audioRendersObjects !== 'boolean' || !decodedPCMAudio)) {
+        throw new TypeError('Object audio rendering requires decoded PCM audio');
+    }
+}
+
 function validateAudioPlayOptions(options: CustomPlaybackPlayOptions): void {
     if (options.audioTrackIndex !== null) {
         validateTrackIndex(options.audioTrackIndex, 'Audio track index');
@@ -217,16 +236,7 @@ function validateAudioPlayOptions(options: CustomPlaybackPlayOptions): void {
     if (options.audioDownmixAlgorithm !== undefined && options.audioTrackIndex === null) {
         throw new TypeError('Custom playback cannot select a downmix algorithm without audio');
     }
-    const decodedAudioOutputChannelCount = options.decodedAudioOutputChannelCount;
-    if (decodedAudioOutputChannelCount !== undefined
-        && decodedAudioOutputChannelCount !== 2
-        && decodedAudioOutputChannelCount !== 6
-        && decodedAudioOutputChannelCount !== 8) {
-        throw new RangeError('Decoded audio output channel count must be 2, 6, or 8');
-    }
-    if (decodedAudioOutputChannelCount !== undefined && (options.audioTrackIndex === null || audioOutputMode !== 'decoded-pcm')) {
-        throw new TypeError('Decoded audio output channels require decoded PCM audio');
-    }
+    validateDecodedAudioOutputOptions(options, audioOutputMode);
     validateAudioDownmixSettings(options, audioOutputMode);
 }
 
@@ -236,32 +246,36 @@ function getAudioDownmixAlgorithm(options: CustomPlaybackPlayOptions): CustomAud
 }
 
 /**
- * Applies a live switch's channel ceiling to the decoded source layout, which outranks the declared one that can under-declare E-AC-3 7.1.
+ * Applies a live switch's layout to the decoded source layout, which outranks the declared one that can under-declare E-AC-3 7.1:
+ * a source the package renders as objects takes the whole layout, and any other plays within its floor.
  * Before any PCM decodes, the request already reflects the server's channel count.
  */
-function selectLiveAudioOutputChannelCount(
-    requestedChannelCount: CustomAudioOutputChannelCount,
-    decodedSourceChannelCount: number | null
-): CustomAudioOutputChannelCount {
+function selectLiveAudioOutputLayout(
+    requestedLayout: CustomAudioOutputLayout,
+    decodedSourceChannelCount: number | null,
+    rendersObjects: boolean
+): CustomAudioOutputLayout {
     if (decodedSourceChannelCount === null) {
-        return requestedChannelCount;
+        return requestedLayout;
     }
-    return selectCustomAudioOutputChannelCountForMaximum(requestedChannelCount, decodedSourceChannelCount);
+    return selectCustomAudioOutputLayout(requestedLayout, decodedSourceChannelCount, rendersObjects);
 }
 
 /** Reports whether a source that may be multichannel mixes down to a stereo output. */
 function isStereoDownmix(
-    outputChannelCount: CustomAudioOutputChannelCount,
+    outputLayout: CustomAudioOutputLayout,
     decodedSourceChannelCount: number | null
 ): boolean {
-    return outputChannelCount === CUSTOM_STEREO_OUTPUT_CHANNEL_COUNT
+    return outputLayout === 'stereo'
         && (decodedSourceChannelCount === null || decodedSourceChannelCount > CUSTOM_STEREO_OUTPUT_CHANNEL_COUNT);
 }
 
 function validateAudioOutputOptions(options: CustomPlaybackAudioOutputOptions): void {
-    const outputChannelCount = options.decodedAudioOutputChannelCount;
-    if (outputChannelCount !== 2 && outputChannelCount !== 6 && outputChannelCount !== 8) {
-        throw new RangeError('Decoded audio output channel count must be 2, 6, or 8');
+    if (!isCustomAudioOutputLayout(options.decodedAudioOutputLayout)) {
+        throw new RangeError('Decoded audio output layout must be stereo, 5.1, 7.1, 5.1.2, 5.1.4, 7.1.2, or 7.1.4');
+    }
+    if (options.binauralHeadphones !== undefined && typeof options.binauralHeadphones !== 'boolean') {
+        throw new TypeError('Binaural headphone rendering must be a boolean');
     }
     if (options.audioDownmixAlgorithm !== undefined && !isCustomAudioDownmixAlgorithm(options.audioDownmixAlgorithm)) {
         throw new TypeError('Custom playback audio downmix algorithm is invalid');
@@ -383,8 +397,10 @@ function copyPlayOptions(options: CustomPlaybackPlayOptions): CustomPlaybackPlay
         audioDownmixAlgorithm: options.audioDownmixAlgorithm,
         audioDownmixSettings: options.audioDownmixSettings ? { ...options.audioDownmixSettings } : undefined,
         audioOutputMode: options.audioOutputMode,
+        audioRendersObjects: options.audioRendersObjects,
         audioTrackIndex: options.audioTrackIndex,
-        decodedAudioOutputChannelCount: options.decodedAudioOutputChannelCount,
+        binauralHeadphones: options.binauralHeadphones,
+        decodedAudioOutputLayout: options.decodedAudioOutputLayout,
         durationMicroseconds: options.durationMicroseconds,
         dolbyVisionProfile: options.dolbyVisionProfile,
         ...(options.gpuVideoDecoder ? { gpuVideoDecoder: { ...options.gpuVideoDecoder } } : {}),
@@ -748,7 +764,7 @@ export default class CustomPlaybackController {
         if (!currentSource
             || (currentSource.audioOutputMode ?? 'decoded-pcm') !== 'decoded-pcm'
             || currentSource.audioTrackIndex === null
-            || (currentSource.decodedAudioOutputChannelCount ?? 2) !== 2) {
+            || (currentSource.decodedAudioOutputLayout ?? 'stereo') !== 'stereo') {
             return false;
         }
 
@@ -789,10 +805,12 @@ export default class CustomPlaybackController {
         audioStreamIndex: number,
         audioOutputMode: CustomDecodeAudioOutputMode =
         this.currentSource?.audioOutputMode ?? 'decoded-pcm',
-        decodedAudioOutputChannelCount = this.currentSource?.decodedAudioOutputChannelCount,
+        decodedAudioOutputLayout = this.currentSource?.decodedAudioOutputLayout,
         audioDownmixSettings: AudioDownmixSettings | undefined =
         this.currentSource?.audioDownmixSettings,
-        audioDecoder: AudioDecoderPackageSelection | undefined = undefined
+        audioDecoder: AudioDecoderPackageSelection | undefined = undefined,
+        audioRendersObjects = false,
+        binauralHeadphones: boolean | undefined = this.currentSource?.binauralHeadphones
     ): Promise<CustomPlaybackStartResult> {
         this.requireUsable();
         validateTrackIndex(audioStreamIndex, 'Audio stream index');
@@ -817,13 +835,42 @@ export default class CustomPlaybackController {
                 audioDownmixSettings :
                 undefined,
             audioOutputMode,
+            audioRendersObjects: audioOutputMode === 'decoded-pcm' ? audioRendersObjects : undefined,
             audioTrackIndex: audioStreamIndex,
-            decodedAudioOutputChannelCount: audioOutputMode === 'decoded-pcm' ?
-                decodedAudioOutputChannelCount :
+            binauralHeadphones: audioOutputMode === 'decoded-pcm' ? binauralHeadphones : undefined,
+            decodedAudioOutputLayout: audioOutputMode === 'decoded-pcm' ?
+                decodedAudioOutputLayout :
                 undefined,
             startTimeMicroseconds: switchTimeMicroseconds
         };
         return this.beginPlayback(switchOptions, desiredPlaying, 'seeking');
+    }
+
+    /**
+     * Returns the source layout's channel count a live switch applies its rule to: the decoded one, which outranks the declaration,
+     * except while a package renders objects, whose blocks carry the output layout or binaural stereo rather than the source's, where the declared one stands.
+     */
+    private getLiveAudioSourceChannelCount(configuration: DecodeWorkerAudioConfiguration): number | null {
+        const telemetry = this.videoDecodeSession.getTelemetry();
+        if ((telemetry.decodedAudioObjectCount ?? 0) > 0) {
+            return configuration.sourceChannelCount ?? null;
+        }
+        return telemetry.decodedAudioSourceChannelCount;
+    }
+
+    /** Takes a request that keeps the output layout: it records the source, and applies new gains and a binaural switch live, between packets. */
+    private applyAudioOutputLive(
+        requestedSource: CustomPlaybackPlayOptions,
+        previousSource: CustomPlaybackPlayOptions,
+        audioDownmixSettings: AudioDownmixSettings | undefined
+    ): void {
+        this.currentSource = requestedSource;
+        if (audioDownmixSettings) {
+            this.updateAudioDownmixSettings(audioDownmixSettings);
+        }
+        if ((requestedSource.binauralHeadphones ?? false) !== (previousSource.binauralHeadphones ?? false)) {
+            this.videoDecodeSession.updateAudioBinaural?.(requestedSource.binauralHeadphones === true);
+        }
     }
 
     /** Returns how many channels the active decoded output's device accepts. */
@@ -860,10 +907,11 @@ export default class CustomPlaybackController {
             return false;
         }
 
-        const decodedSourceChannelCount = this.videoDecodeSession.getTelemetry().decodedAudioSourceChannelCount;
-        const outputChannelCount = selectLiveAudioOutputChannelCount(
-            options.decodedAudioOutputChannelCount,
-            decodedSourceChannelCount
+        const decodedSourceChannelCount = this.getLiveAudioSourceChannelCount(binding.configuration);
+        const outputLayout = selectLiveAudioOutputLayout(
+            options.decodedAudioOutputLayout,
+            decodedSourceChannelCount,
+            previousSource.audioRendersObjects === true
         );
         // Later seeks and track switches start with the newest requested downmix
         const requestedSource: CustomPlaybackPlayOptions = {
@@ -872,19 +920,16 @@ export default class CustomPlaybackController {
                 ?? previousSource.audioDownmixAlgorithm,
             audioDownmixSettings: options.audioDownmixSettings ?
                 { ...options.audioDownmixSettings } :
-                previousSource.audioDownmixSettings
+                previousSource.audioDownmixSettings,
+            binauralHeadphones: options.binauralHeadphones ?? previousSource.binauralHeadphones
         };
         // A pending switch already moved the source to the layout it is filling
-        const currentOutputChannelCount = previousSource.decodedAudioOutputChannelCount
-            ?? CUSTOM_STEREO_OUTPUT_CHANNEL_COUNT;
+        const currentOutputLayout = previousSource.decodedAudioOutputLayout ?? 'stereo';
         // The algorithm only matters when the source is mixed down to stereo
-        const algorithmChanged = isStereoDownmix(outputChannelCount, decodedSourceChannelCount)
+        const algorithmChanged = isStereoDownmix(outputLayout, decodedSourceChannelCount)
             && getAudioDownmixAlgorithm(requestedSource) !== getAudioDownmixAlgorithm(previousSource);
-        if (outputChannelCount === currentOutputChannelCount && !algorithmChanged) {
-            this.currentSource = requestedSource;
-            if (options.audioDownmixSettings) {
-                this.updateAudioDownmixSettings(options.audioDownmixSettings);
-            }
+        if (outputLayout === currentOutputLayout && !algorithmChanged) {
+            this.applyAudioOutputLive(requestedSource, previousSource, options.audioDownmixSettings);
             return true;
         }
 
@@ -907,7 +952,7 @@ export default class CustomPlaybackController {
         };
         const switchedSource: CustomPlaybackPlayOptions = {
             ...requestedSource,
-            decodedAudioOutputChannelCount: outputChannelCount
+            decodedAudioOutputLayout: outputLayout
         };
         this.currentSource = switchedSource;
 
@@ -922,6 +967,7 @@ export default class CustomPlaybackController {
             const audioEpoch = await resyncAudio.call(this.videoDecodeSession, {
                 audioDownmixAlgorithm: switchedSource.audioDownmixAlgorithm,
                 audioDownmixSettings: switchedSource.audioDownmixSettings,
+                binauralHeadphones: switchedSource.binauralHeadphones,
                 createAudioBridge: async (
                     configuration: DecodeWorkerAudioConfiguration
                 ): Promise<CustomDecodeAudioBridge> => {
@@ -941,7 +987,7 @@ export default class CustomPlaybackController {
                     }
                     return bridge;
                 },
-                decodedAudioOutputChannelCount: outputChannelCount,
+                decodedAudioOutputLayout: outputLayout,
                 targetTimeMicroseconds
             });
             if (!this.isAudioOutputSwitchCurrent(revision)) {
@@ -1519,8 +1565,8 @@ export default class CustomPlaybackController {
                 audioDownmixSettings: activeOptions.audioDownmixSettings,
                 audioOutputMode: activeOptions.audioOutputMode,
                 audioTrackIndex: activeOptions.audioTrackIndex,
-                decodedAudioOutputChannelCount:
-                    activeOptions.decodedAudioOutputChannelCount,
+                binauralHeadphones: activeOptions.binauralHeadphones,
+                decodedAudioOutputLayout: activeOptions.decodedAudioOutputLayout,
                 durationMicroseconds: activeOptions.durationMicroseconds,
                 dolbyVisionProfile: activeOptions.dolbyVisionProfile,
                 generation,

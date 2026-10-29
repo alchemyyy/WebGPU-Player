@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest';
 
 import {
     CUSTOM_FIVE_POINT_ONE_CHANNEL_LAYOUT,
-    CUSTOM_STEREO_OUTPUT_CHANNEL_COUNT,
     prepareCustomAudioOutputChannelData
 } from 'webgpu-player/audio/processing/CustomAudioChannelLayout';
 import {
@@ -143,7 +142,7 @@ describe('StreamingAudioDownmixSettings', () => {
         const output = prepareCustomAudioOutputChannelData(
             inputChannelData,
             CUSTOM_FIVE_POINT_ONE_CHANNEL_LAYOUT,
-            CUSTOM_STEREO_OUTPUT_CHANNEL_COUNT,
+            'stereo',
             undefined,
             settingsBlock.settings,
             settingsBlock.ramp

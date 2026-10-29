@@ -12,6 +12,7 @@ import {
     type EngineWorkerPath
 } from 'webgpu-player/EngineAssets';
 import { AV1_RAW_FORMAT_VARIANTS } from 'webgpu-player/capability/AV1RawFormatCapabilities';
+import { H264_RAW_FORMAT_VARIANTS } from 'webgpu-player/capability/H264RawFormatCapabilities';
 import { HEVC_RANGE_EXTENSION_VARIANTS } from 'webgpu-player/capability/HEVCRangeExtensionCapabilities';
 
 import { loadLibraryAssets } from './helpers/libraryAssets';
@@ -63,6 +64,12 @@ describe('engine asset manifest', () => {
     it('covers every AV1 raw-format qualification stream', () => {
         for (const variant of AV1_RAW_FORMAT_VARIANTS) {
             expect(ENGINE_LIBRARY_PATHS).toContain(`webgpu-player/av1-raw/${variant}.bin`);
+        }
+    });
+
+    it('covers every H.264 raw-format qualification stream', () => {
+        for (const variant of H264_RAW_FORMAT_VARIANTS) {
+            expect(ENGINE_LIBRARY_PATHS).toContain(`webgpu-player/h264-raw/${variant}.bin`);
         }
     });
 

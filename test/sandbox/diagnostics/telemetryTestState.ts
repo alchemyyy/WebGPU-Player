@@ -58,6 +58,8 @@ export function createDecodeSessionTelemetry(overrides: Partial<CustomDecodeSess
         audioSampleRate: null,
         audioSourceChannelCount: null,
         audioSourceSampleRate: null,
+        decodedAudioObjectCount: null,
+        decodedAudioOutputLayout: null,
         decodedAudioSourceChannelCount: null,
         droppedFrameCount: 0,
         failureKind: null,

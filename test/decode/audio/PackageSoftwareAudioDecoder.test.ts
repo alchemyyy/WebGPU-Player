@@ -56,6 +56,20 @@ function createBlock(overrides: Partial<AudioDecoderPackageBlock> = {}): AudioDe
 }
 
 describe('createPackageAudioOutput', () => {
+    it('keeps a block\'s object count within the bound the page\'s messages take, and fails the block past it', () => {
+        const objectCounts = [ 0, 10, 1_024 ];
+        for (const objectCount of objectCounts) {
+            const block = createBlock({ attributes: new Map([ [ 'objectCount', objectCount ] ]) });
+            expect(createPackageAudioOutput(block, PACKET_TIME_MICROSECONDS, 0, SUBJECT).objectCount).toBe(objectCount);
+        }
+        expect(createPackageAudioOutput(createBlock(), PACKET_TIME_MICROSECONDS, 0, SUBJECT).objectCount).toBeNull();
+        for (const objectCount of [ 1_025, 2_000, -1, 1.5 ]) {
+            const block = createBlock({ attributes: new Map([ [ 'objectCount', objectCount ] ]) });
+            expect(() => createPackageAudioOutput(block, PACKET_TIME_MICROSECONDS, 0, SUBJECT), String(objectCount))
+                .toThrow(`${SUBJECT} object count ${objectCount} is invalid`);
+        }
+    });
+
     it('keeps a block\'s planes and its own timestamp, in the layout its mask qualifies', () => {
         const block = createBlock({ timestampMicroseconds: BLOCK_TIME_MICROSECONDS });
 
