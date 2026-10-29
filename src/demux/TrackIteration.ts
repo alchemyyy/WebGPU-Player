@@ -158,7 +158,10 @@ function iterateSampleCursor<Sample>(cursor: SampleCursor<Sample>, startSeconds:
 }
 
 /**
- * Decodes a video track's samples from the one presented at startSeconds, as Mediabunny 1's VideoSampleSink.samples() did.
+ * Decodes a video track's samples from the one presented at startSeconds, as Mediabunny 1's VideoSampleSink.samples() did, except before the track's first key packet:
+ * v1 then fell back to the first key packet, while v2's cursor started its decode on no packet and failed an assertion.
+ * The fork's cursor starts at the first key packet decoding can start at, or rejects with `The track has no key packet that decoding can start at.`,
+ * which the worker reports as a source no route can play.
  * Every sample is the caller's to close; return() closes the cursor and its decoder.
  */
 export function iterateVideoSamples(

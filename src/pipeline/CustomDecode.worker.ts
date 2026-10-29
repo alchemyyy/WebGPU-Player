@@ -841,11 +841,15 @@ function getSafeErrorMessage(error: unknown): string {
         .slice(0, 512);
 }
 
+// The fork's sample cursor rejects a start when the track has no key packet decoding can start at, before or after the start, with a plain Error of this message
+const NO_STARTING_KEY_PACKET_MESSAGE = 'The track has no key packet that decoding can start at.';
+
 function classifyFailure(error: unknown): CustomDecodeFailureKind {
     if (error instanceof UnsupportedRangeResponseError) {
         return 'range-unsupported';
     }
-    if (error instanceof UnsupportedCustomDecodeSourceError) {
+    // A track no decoder can start on is the source's fault, so renegotiation reports it as one
+    if (error instanceof UnsupportedCustomDecodeSourceError || (error instanceof Error && error.message === NO_STARTING_KEY_PACKET_MESSAGE)) {
         return 'source-unsupported';
     }
     if (error instanceof AudioDecodeWorkerAttemptError) {
