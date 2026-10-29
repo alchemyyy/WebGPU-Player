@@ -939,13 +939,18 @@ These were settled on Firefox 157 on Windows.
 - Mono and three-channel sources play (10-07).
   The mixer duplicates mono, but the route tables rejected it, so the server transcoded every mono or three-channel track.
   Every decoded PCM route admits mono.
-  Decoders without a speaker mask (AAC, FLAC, Opus, Vorbis, and PCM) deliver three channels as 3.0, so their three-channel routes need Jellyfin's 3.0 layout.
+  Decoders without a speaker mask (AAC, FLAC, Opus, Vorbis, and PCM) deliver three channels as 3.0, so their three-channel routes need Jellyfin's 3.0 layout, except a 2.1 FLAC (revised 10-29, next entry).
   Jellyfin keeps only the part of FFmpeg's layout name before `(` (`ProbeResultNormalizer.ParseChannelLayout`), so 3.0(back) arrives as 3.0 and 7.1(wide) as 7.1.
   AC-3 2/1 and 3/0 are therefore indistinguishable, and the AC-3 decoder of 10-07 reported no mask, so three-channel AC-3 is neither advertised nor admitted and transcodes.
   An AC-3 package reports its mask (10-13), but no evidence covers either bed yet.
   AC-3 mono plays.
-  A profile condition cannot express ChannelLayout, so any other three-channel layout, a 2.1 FLAC or WAV for example, is negotiated, fails eligibility when playback starts, and plays through the HTML player or renegotiates to a transcode.
+  A profile condition cannot express ChannelLayout, so any other three-channel layout, a 2.1 AAC or Matroska PCM track for example, is negotiated, fails eligibility when playback starts, and plays through the HTML player or renegotiates to a transcode.
   E-AC-3 and TrueHD admit mono only.
+- A 2.1 FLAC plays as FL, FR, and LFE (10-29).
+  A FLAC stream's channels follow its `WAVEFORMATEXTENSIBLE_CHANNEL_MASK` Vorbis comment, which a Matroska track carries in its CodecPrivate and FFmpeg's Matroska demuxer, and so Jellyfin, reports as the layout; FFmpeg's encoder writes `0xb` for a 2.1 input.
+  FFmpeg's 2.1 encodes with one tone per channel decode with the LFE tone in the third plane for FLAC, and the decoder ignores the comment, so a decoder without a mask delivers those planes as 3.0 and puts the LFE in the center.
+  So eligibility admits three-channel FLAC whose Jellyfin layout is 2.1, with `audioSourceChannelMask` `0xb`, which the host passes in `audioMetadataLayout` and the worker lays the channels out by when the container declares no mask.
+  The other codecs stay as they were: libopus refuses a 2.1 layout and Opus mapping family 1 and Vorbis fix three channels as L C R, which FFmpeg reports as 3.0; FFmpeg's AAC encoder writes 2.1 through a program config element, which no browser evidence covers; and FFmpeg reports Matroska PCM's three channels without a layout.
 - 5.0 beds play (10-29).
   Five channels had no layout, so a true 5.0 AC-3 or DTS track transcoded, and a Matroska AC-3 track whose header declared its first frame's five channels, a 3/2 bed that gains its LFE a second in, failed at preparation as `source-unsupported`.
   Five channels without a speaker mask now lay out as FFmpeg's 5.0(side), FL FR FC SL SR (`0x607`), as six lay out as its 5.1(side), and a mask also qualifies 5.0(back) (`0x37`).

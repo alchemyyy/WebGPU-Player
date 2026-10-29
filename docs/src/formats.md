@@ -93,7 +93,7 @@ The JPEG 2000 package converts X'Y'Z' (`xyz12le`) to R'G'B' as FFmpeg's converte
 | Codec | Plays | Decoder | Does not play |
 | --- | --- | --- | --- |
 | AAC | Mono, stereo, 3.0, 5.1, and 7.1, each surround layout once the browser's decoder passes its probe; FFmpeg's channelConfiguration 7 decodes as 7.1 with back and side pairs | WebCodecs | 6.1, and more than 8 channels |
-| Opus, FLAC, Vorbis | Mono, stereo, 3.0, 5.1, and 7.1, each surround layout once the browser's decoder passes its probe | WebCodecs | 6.1, and more than 8 channels |
+| Opus, FLAC, Vorbis | Mono, stereo, 3.0, 5.1, and 7.1, each surround layout once the browser's decoder passes its probe; FLAC also 2.1, by the mask its metadata names | WebCodecs | 6.1, and more than 8 channels |
 | MP3 | Mono and stereo | WebCodecs | |
 | AC-3 | Mono, stereo, 4.1, 5.0, and 5.1; a 5.0 track may gain its LFE mid-stream | The browser's own decoder through MSE when it has one (stereo and 5.1), or an audio decoder package | Three channels; 2/2 with an LFE, whose speaker mask has no layout |
 | E-AC-3 | Mono, stereo, 5.1, and 7.1; Dolby Atmos with joint object coding renders its objects into a layout with a speaker its core lacks, heights included, or into binaural stereo, through the `eac3` package, and otherwise plays its core | The browser's own decoder through MSE when it has one, or an audio decoder package | Atmos objects in a stream whose OAMD the parser refuses, which plays its core |

@@ -25,6 +25,7 @@ import {
     isSupportedTrueHDInputRoute
 } from './CustomCompressedAudioRoute';
 import { isSupportedCustomAudioSampleRate } from './CustomAudioSampleRate';
+import { CUSTOM_WAVE_CHANNEL_MASK_TWO_POINT_ONE } from './processing/CustomWaveChannelLayout';
 
 export const CUSTOM_AUDIO_OUTPUT_CHANNEL_COUNT = CUSTOM_STEREO_OUTPUT_CHANNEL_COUNT;
 export const CUSTOM_AUDIO_OUTPUT_SAMPLE_RATE = 48_000;
@@ -114,6 +115,7 @@ const CUSTOM_WMA_PRO_INPUT_CHANNEL_COUNTS: readonly number[] = Object.freeze([
 ]);
 const CUSTOM_PCM_INPUT_CHANNEL_COUNTS: readonly number[] = CUSTOM_SURROUND_INPUT_CHANNEL_COUNTS;
 const CUSTOM_THREE_CHANNEL_METADATA_LAYOUTS: readonly string[] = Object.freeze([ '3.0' ]);
+const CUSTOM_TWO_POINT_ONE_METADATA_LAYOUTS: readonly string[] = Object.freeze([ '2.1' ]);
 const CUSTOM_MEDIABUNNY_PCM_AUDIO_CODEC_SET = new Set<string>(CUSTOM_MEDIABUNNY_PCM_AUDIO_CODECS);
 const MEDIABUNNY_PCM_DECODER_CODEC_SET = new Set<string>(MEDIABUNNY_PCM_DECODER_CODECS);
 
@@ -206,7 +208,22 @@ export function isSupportedCustomAudioInputLayout(
 }
 
 /**
- * Adds Jellyfin ChannelLayout qualification for decoders that report no speaker mask: a three-channel source must be 3.0, the order they decode to.
+ * Returns the WAVE speaker mask Jellyfin's ChannelLayout gives a track whose decoder reports none, where the layout is not the one its count implies.
+ * A FLAC stream's channels follow its WAVEFORMATEXTENSIBLE_CHANNEL_MASK comment, which FFmpeg, and so Jellyfin, reports as the layout: a three-channel
+ * FLAC Jellyfin calls 2.1 carries FL, FR, and LFE, while the decoder's planes lay out as 3.0 without the mask.
+ * AAC, Opus, and Vorbis keep 3.0, the order their three channels decode to, and Matroska PCM declares no layout to report.
+ */
+export function getCustomAudioMetadataChannelMask(codec: string, channelCount: unknown, channelLayout: unknown): number | undefined {
+    return codec === 'flac'
+        && channelCount === CUSTOM_THREE_CHANNEL_INPUT_CHANNEL_COUNT
+        && hasCustomAudioMetadataLayout(channelLayout, CUSTOM_TWO_POINT_ONE_METADATA_LAYOUTS) ?
+        CUSTOM_WAVE_CHANNEL_MASK_TWO_POINT_ONE :
+        undefined;
+}
+
+/**
+ * Adds Jellyfin ChannelLayout qualification for decoders that report no speaker mask: a three-channel source must be 3.0, the order they decode to,
+ * or a layout whose mask the metadata gives (`getCustomAudioMetadataChannelMask`).
  */
 export function isSupportedCustomAudioInputMetadataLayout(
     codec: string,
@@ -216,7 +233,8 @@ export function isSupportedCustomAudioInputMetadataLayout(
 ): boolean {
     return isSupportedCustomAudioInputLayout(codec, channelCount, sampleRate)
         && (channelCount !== CUSTOM_THREE_CHANNEL_INPUT_CHANNEL_COUNT
-            || hasCustomAudioMetadataLayout(channelLayout, CUSTOM_THREE_CHANNEL_METADATA_LAYOUTS));
+            || hasCustomAudioMetadataLayout(channelLayout, CUSTOM_THREE_CHANNEL_METADATA_LAYOUTS)
+            || getCustomAudioMetadataChannelMask(codec, channelCount, channelLayout) !== undefined);
 }
 
 /**

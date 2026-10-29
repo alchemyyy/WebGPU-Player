@@ -42,6 +42,7 @@ import {
     type CustomPlaybackRuntimeRequirements
 } from './CustomPlaybackRuntime';
 import {
+    getCustomAudioMetadataChannelMask,
     isCustomMediabunnyPCMAudioCodec,
     isSupportedCustomAudioInputLayout,
     isSupportedCustomAudioInputMetadataLayout
@@ -321,6 +322,7 @@ type PlaybackAudioSelection =
         audioOutputMode: CustomDecodeAudioOutputMode | null
         audioRendersObjects?: true
         audioSourceChannelCount: number | null
+        audioSourceChannelMask?: number
         audioTrackIndex: number | null
         status: 'selected'
     }
@@ -342,6 +344,12 @@ function getGPUVideoDecoderResult(
     videoOutput: Extract<VideoOutputSelection, { status: 'selected' }>
 ): Pick<EligibleCustomPlayback, 'gpuVideoDecoder'> {
     return videoOutput.gpuVideoDecoder ? { gpuVideoDecoder: videoOutput.gpuVideoDecoder } : {};
+}
+
+function getAudioSourceChannelMaskResult(
+    audioSelection: Extract<PlaybackAudioSelection, { status: 'selected' }>
+): Pick<EligibleCustomPlayback, 'audioSourceChannelMask'> {
+    return audioSelection.audioSourceChannelMask === undefined ? {} : { audioSourceChannelMask: audioSelection.audioSourceChannelMask };
 }
 
 export type CustomPlaybackIneligibilityReason =
@@ -419,6 +427,8 @@ export type EligibleCustomPlayback = {
     /** The package renders the track's Dolby Atmos objects, so the track plays to the whole speaker layout instead of its floor; set only when true */
     audioRendersObjects?: true
     audioSourceChannelCount: number | null
+    /** The WAVE speaker mask Jellyfin's layout gives the track where its decoder reports none and its count implies another layout: a 2.1 FLAC */
+    audioSourceChannelMask?: number
     /** Zero-based ordinal within container audio tracks, not MediaStream.Index. */
     audioTrackIndex: number | null
     /** Null when the server has no runtime for the source */
@@ -2189,6 +2199,12 @@ function selectVideoStream(options: unknown, streams: readonly MediaStream[]): V
     };
 }
 
+/** Returns the selected track's metadata speaker mask field, which only a codec whose decoder reports no mask and whose layout Jellyfin names takes. */
+function getAudioSourceChannelMaskField(codec: CustomAudioCodec, stream: MediaStream): { audioSourceChannelMask?: number } {
+    const channelMask = getCustomAudioMetadataChannelMask(codec, stream.Channels, stream.ChannelLayout);
+    return channelMask === undefined ? {} : { audioSourceChannelMask: channelMask };
+}
+
 function selectPlaybackAudio(
     mediaSource: MediaSource,
     streams: readonly MediaStream[],
@@ -2233,6 +2249,7 @@ function selectPlaybackAudio(
         audioOutputMode: audioOutput.outputMode,
         ...(audioOutput.audioRendersObjects ? { audioRendersObjects: true } : {}),
         audioSourceChannelCount: Number(selectedAudio.stream.Channels),
+        ...getAudioSourceChannelMaskField(audioCodec, selectedAudio.stream),
         audioTrackIndex: selectedAudio.trackOrdinal,
         status: 'selected'
     };
@@ -2581,7 +2598,7 @@ export function getAudioMetadataLayout(eligibility: EligibleCustomPlayback): Cus
     if (eligibility.audioTrackIndex === null || channelCount === null || !Number.isSafeInteger(channelCount) || channelCount <= 0) {
         return undefined;
     }
-    return { channelCount };
+    return eligibility.audioSourceChannelMask === undefined ? { channelCount } : { channelCount, channelMask: eligibility.audioSourceChannelMask };
 }
 
 /**
@@ -2733,6 +2750,7 @@ export function getCustomPlaybackEligibility(
         audioOutputMode,
         ...(audioSelection.audioRendersObjects ? { audioRendersObjects: true } : {}),
         audioSourceChannelCount,
+        ...getAudioSourceChannelMaskResult(audioSelection),
         audioTrackIndex,
         durationMicroseconds: parsedSource.durationMicroseconds,
         dolbyVisionProfile: videoOutput.dolbyVisionProfile ?? null,

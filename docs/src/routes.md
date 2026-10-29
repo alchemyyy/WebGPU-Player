@@ -257,7 +257,7 @@ MPEG-1, H.263, MS-MPEG4, VP8, VP9, and AV1 have no interlaced coding.
   | Codec | Channels |
   | --- | --- |
   | PCM | 1, 2, 3, 6 (3 needs a `3.0` layout) |
-  | aac, flac, opus, vorbis | 1, 2, 3, 6, 8 (3 needs a `3.0` layout; 6 needs the codec's 5.1 verdict and 8 its 7.1 verdict) |
+  | aac, flac, opus, vorbis | 1, 2, 3, 6, 8 (3 needs a `3.0` layout, or `2.1` for FLAC, laid out by its mask; 6 needs the codec's 5.1 verdict and 8 its 7.1 verdict) |
   | ac3 | 1, 2, 5, 6 (2/1 and 3/0 both arrive as `3.0`, and no evidence covers either; 5 is 3/2, `5.0(side)`) |
   | eac3 | 1, 2, 6, 8 |
   | mp3 | 1, 2 |

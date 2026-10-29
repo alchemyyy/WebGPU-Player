@@ -4556,6 +4556,11 @@ describe('CustomPlaybackEligibility', () => {
         [ 'dts', 'DTS-HD MA', undefined, true ],
         [ 'dts', 'DTS', '3.0', true ],
         [ 'flac', undefined, '3.0', true ],
+        // A FLAC's channels follow its mask comment, which Jellyfin reports as 2.1
+        [ 'flac', undefined, '2.1', true ],
+        [ 'vorbis', undefined, '2.1', false ],
+        [ 'opus', undefined, '2.1', false ],
+        [ 'pcm_s16le', undefined, '2.1', false ],
         [ 'aac', undefined, '3.0', true ],
         [ 'opus', undefined, '3.0', true ],
         [ 'vorbis', undefined, '3.0', true ],
@@ -4590,6 +4595,30 @@ describe('CustomPlaybackEligibility', () => {
                 { eligible: false, reason: 'audio-layout-unsupported' });
         }
     );
+
+    it.each([
+        { channelLayout: '2.1', codec: 'flac', expected: { channelCount: 3, channelMask: 0x0B } },
+        { channelLayout: ' 2.1 ', codec: 'flac', expected: { channelCount: 3, channelMask: 0x0B } },
+        // 3.0 is the order the decoder delivers anyway, and a package reports its own mask
+        { channelLayout: '3.0', codec: 'flac', expected: { channelCount: 3 } },
+        { channelLayout: '2.1', codec: 'dts', expected: { channelCount: 3 } }
+    ])('hands playback the $codec $channelLayout track\'s metadata layout $expected', ({ channelLayout, codec, expected }) => {
+        const options = createOptions();
+        const mediaSource = options.mediaSource as {
+            Container: string
+            MediaStreams: Array<Record<string, unknown>>
+        };
+        mediaSource.Container = 'mkv';
+        mediaSource.MediaStreams[1] = { ...mediaSource.MediaStreams[1], ChannelLayout: channelLayout, Channels: 3, Codec: codec, Profile: undefined };
+
+        const eligibility = getCustomPlaybackEligibility(
+            options,
+            createCapabilities(),
+            { allowRawHDR: false, audioDecoders: AUDIO_PACKAGES, runtimeAvailability: AVAILABLE_RUNTIME }
+        );
+
+        expect(eligibility.eligible && getAudioMetadataLayout(eligibility)).toEqual(expected);
+    });
 
     it.each([ 'm2ts', 'mts', 'ts' ] as const)(
         'does not advertise TrueHD in the unsupported Mediabunny %s demux route',

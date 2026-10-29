@@ -6,6 +6,7 @@ import {
     CUSTOM_SURROUND_INPUT_CHANNEL_COUNT,
     CUSTOM_AUDIO_OUTPUT_CHANNEL_COUNT,
     CUSTOM_AUDIO_OUTPUT_SAMPLE_RATE,
+    getCustomAudioMetadataChannelMask,
     getSupportedCustomAudioInputChannelCounts,
     isCustomMediabunnyPCMAudioCodec,
     isMediabunnyPCMDecoderCodec,
@@ -168,6 +169,14 @@ describe('CustomAudioOutputPolicy', () => {
             .toBe(true);
         expect(isSupportedCustomAudioInputMetadataLayout('vorbis', 3, 44_100, '3.0')).toBe(true);
         expect(isSupportedCustomAudioInputMetadataLayout('aac', 3, 48_000, '2.1')).toBe(false);
+        // A FLAC's channels follow its mask comment, so its 2.1 lays out as FL, FR, and LFE; AAC, Opus, Vorbis, and PCM keep 3.0
+        expect(isSupportedCustomAudioInputMetadataLayout('flac', 3, 48_000, '2.1')).toBe(true);
+        expect(getCustomAudioMetadataChannelMask('flac', 3, '2.1')).toBe(0x0B);
+        expect(getCustomAudioMetadataChannelMask('flac', 3, '3.0')).toBeUndefined();
+        expect(getCustomAudioMetadataChannelMask('flac', 6, '2.1')).toBeUndefined();
+        for (const codec of [ 'aac', 'opus', 'vorbis', 'pcm_s16le' ]) {
+            expect(getCustomAudioMetadataChannelMask(codec, 3, '2.1')).toBeUndefined();
+        }
         // AC-3 3.0(back) also arrives as 3.0, and three-channel AC-3 has no route
         expect(isSupportedCustomAudioInputMetadataLayout('ac3', 3, 48_000, '3.0')).toBe(false);
         expect(isSupportedCustomAudioInputMetadataLayout('opus', 3, 48_000, undefined))
