@@ -1053,15 +1053,13 @@ describe('CustomPlaybackEligibility', () => {
         [ 'missing profile', { AverageFrameRate: 24, Profile: null }, 'mkv', true, true ],
         // Its decoder weaves field pictures into frames, which the deinterlacing pass presents
         [ 'interlaced frames', { AverageFrameRate: 24, IsInterlaced: true }, 'mkv', true, true ],
-        // The fork's demuxer reads MPEG-2 in MPEG-TS and M2TS; the mpegts alias names no rule
+        // The fork's demuxer reads MPEG-2 in MPEG-TS and M2TS; the mpegts and mpegps aliases name no rule, and program streams carry no AAC
         [ 'MPEG-TS container', { AverageFrameRate: 24 }, 'ts', true, true ],
         [ 'MPEG-TS alias container', { AverageFrameRate: 24 }, 'mpegts', true, false ],
         [ 'MTS container', { AverageFrameRate: 24 }, 'mts', true, true ],
         [ 'M2TS container', { AverageFrameRate: 24 }, 'm2ts', true, true ],
-        [ 'MPEG-PS container', { AverageFrameRate: 24 }, 'mpegps', true, false ],
-        [ 'MPEG container', { AverageFrameRate: 24 }, 'mpeg', true, false ],
-        [ 'MPG container', { AverageFrameRate: 24 }, 'mpg', true, false ],
-        [ 'VOB container', { AverageFrameRate: 24 }, 'vob', true, false ],
+        [ 'MPEG-PS alias container', { AverageFrameRate: 24 }, 'mpegps', true, false ],
+        [ 'program stream container with AAC', { AverageFrameRate: 24 }, 'mpeg', true, false ],
         [ 'MOV container', { AverageFrameRate: 24 }, 'mov', true, false ],
         [ 'MP4 container', { AverageFrameRate: 24 }, 'mp4', true, false ],
         [ 'other container', { AverageFrameRate: 24 }, 'webm', true, false ]
@@ -1098,6 +1096,50 @@ describe('CustomPlaybackEligibility', () => {
             ).eligible).toBe(expectedEligible);
         }
     );
+
+    // Jellyfin names a program stream, an MPG or VOB file, mpeg; the fork's demuxer reads its MPEG audio and DVD-Video's AC-3 and DTS
+    it.each([
+        [ 'mpeg', 'ac3', true ],
+        [ 'mpeg', 'dts', true ],
+        [ 'mpeg', 'mp3', true ],
+        [ 'vob', 'ac3', true ],
+        [ 'mpg', 'mp3', true ],
+        // MPEG audio Layer II and DVD-Video's LPCM have no route
+        [ 'mpeg', 'mp2', false ],
+        [ 'mpeg', 'pcm_dvd', false ],
+        [ 'mpeg', 'eac3', false ]
+    ] as const)('handles MPEG-2 in a %s program stream with %s audio', (container, audioCodec, expectedEligible) => {
+        const options = createOptions();
+        const mediaSource = options.mediaSource as {
+            Container: string
+            MediaStreams: Array<Record<string, unknown>>
+        };
+        mediaSource.Container = container;
+        mediaSource.MediaStreams[0] = {
+            AverageFrameRate: 29.97,
+            BitDepth: 8,
+            Codec: 'MPEG2VIDEO',
+            Height: 480,
+            Index: 0,
+            IsInterlaced: false,
+            Profile: 'Main',
+            Type: 'Video',
+            VideoRangeType: 'SDR',
+            Width: 720
+        };
+        mediaSource.MediaStreams[1].Codec = audioCodec;
+
+        expect(getCustomPlaybackEligibility(
+            options,
+            createCapabilities(),
+            {
+                allowRawHDR: false,
+                audioDecoders: AUDIO_PACKAGES,
+                gpuVideoDecoders: createVideoDecoderOffers(MPEG2_VIDEO_PACKAGE),
+                runtimeAvailability: AVAILABLE_RUNTIME
+            }
+        ).eligible).toBe(expectedEligible);
+    });
 
     // The pixel format names the chroma subsampling a package must write
     it.each([

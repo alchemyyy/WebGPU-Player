@@ -36,7 +36,7 @@ describe('CustomContainerCodecSupport', () => {
     });
 
     it('lists every profile container that can carry an audio codec', () => {
-        expect(getCustomAudioCodecProfileContainers('dts')).toEqual([ 'mp4', 'm4v', 'mov', 'mkv', 'ts', 'm2ts', 'mts' ]);
+        expect(getCustomAudioCodecProfileContainers('dts')).toEqual([ 'mp4', 'm4v', 'mov', 'mkv', 'ts', 'm2ts', 'mts', 'mpeg' ]);
         expect(getCustomAudioCodecProfileContainers('truehd')).toEqual([ 'mp4', 'm4v', 'mov', 'mkv' ]);
         expect(getCustomAudioCodecProfileContainers('mlp')).toEqual([ 'mkv' ]);
     });
@@ -90,6 +90,17 @@ describe('CustomContainerCodecSupport', () => {
     });
 
     it.each([
+        [ 'mpeg', 'mpeg1video', 'mp3' ],
+        [ 'mpeg', 'mpeg2video', 'ac3' ],
+        [ 'mpeg', 'mpeg2video', 'dts' ],
+        [ 'vob', 'mpeg2video', 'ac3' ],
+        [ 'mpg', 'mpeg1video', 'mp3' ]
+    ] as const)('carries %s %s with %s, which the fork\'s program stream demuxer reads', (container, videoCodec, audioCodec) => {
+        expect(supportsCustomContainerCodecCombination([ container ], videoCodec, audioCodec)).toBe(true);
+        expect(isCustomPlaybackContainer(container)).toBe(true);
+    });
+
+    it.each([
 
         [ 'avi', 'h264', 'eac3' ],
         [ 'avi', 'mpeg2video', 'mp3' ],
@@ -102,7 +113,11 @@ describe('CustomContainerCodecSupport', () => {
         [ 'mp4', 'msmpeg4v3', 'aac' ],
         [ 'mov', 'msmpeg4v1', 'pcm_s16le' ],
         [ 'webm', 'mpeg4', 'opus' ],
-        [ 'ts', 'mpeg4', 'mp3' ]
+        [ 'ts', 'mpeg4', 'mp3' ],
+        // The fork reads neither H.264 nor E-AC-3 from a program stream, and no route takes LPCM, which Jellyfin names pcm_dvd
+        [ 'mpeg', 'h264', 'ac3' ],
+        [ 'mpeg', 'mpeg2video', 'eac3' ],
+        [ 'mpeg', 'mpeg2video', 'pcm_s16be' ]
     ] as const)(
         'rejects the undeclared %s/%s/%s container combination',
         (container, videoCodec, audioCodec) => {

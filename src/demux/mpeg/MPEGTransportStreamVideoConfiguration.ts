@@ -8,7 +8,7 @@ export type TransportStreamVideoDescriptionResult =
     | Readonly<{ description: Uint8Array, status: 'read' }>
     | Readonly<{ failure: string, status: 'failed' }>;
 
-// Mediabunny's codecs of MPEG-TS and M2TS tracks, with the engine's name of each
+// Mediabunny's codecs of MPEG-TS, M2TS, and MPEG program stream tracks, with the engine's name of each
 const TRANSPORT_STREAM_VIDEO_CODECS: ReadonlyMap<VideoCodec, TransportStreamVideoCodec> = new Map<VideoCodec, TransportStreamVideoCodec>([
     [ 'mpeg1', 'mpeg1video' ],
     [ 'mpeg2', 'mpeg2video' ],
@@ -58,7 +58,8 @@ export function findTransportStreamExtradataByteLength(codec: TransportStreamVid
 }
 
 /**
- * Returns the codec private data an MPEG-1, MPEG-2, or VC-1 GPU decoder receives for an MPEG-TS or M2TS track, which has no codec private data of its own:
+ * Returns the codec private data an MPEG-1, MPEG-2, or VC-1 GPU decoder receives for an MPEG-TS, M2TS, or MPEG program stream track, which has no codec
+ * private data of its own:
  * the extradata of its first packet that carries a sequence header, as FFmpeg extracts it.
  * MPEG-1 and MPEG-2 take the sequence header and its extensions, and VC-1 the sequence header and entry point.
  */
