@@ -3660,16 +3660,17 @@ function getAudioDecodeWorkerDecoderBackend(preparedAudioTrack: PreparedAudioTra
 }
 
 /**
- * Returns where a decoder's packets start for the codec it decodes: a lead before the start for DTS and TrueHD to synchronize, or the start.
+ * Returns where a decoder's packets start for the codec it decodes, in container time: a lead before the start for DTS and TrueHD to synchronize,
+ * never before the run's timeline origin, or the start.
  * A package decoder takes the lead of its codec.
  */
-function getAudioPacketLookupTimeMicroseconds(codec: string, startTimeMicroseconds: Microseconds): Microseconds {
+function getAudioPacketLookupTimeMicroseconds(run: DecodeRun, codec: string, startTimeMicroseconds: Microseconds): Microseconds {
     switch (codec) {
         case 'dts':
-            return getAudioPrerollTimeMicroseconds(startTimeMicroseconds, DTS_SEEK_PREROLL_MICROSECONDS);
+            return getAudioPrerollTimeMicroseconds(startTimeMicroseconds, DTS_SEEK_PREROLL_MICROSECONDS, run.timelineOriginMicroseconds);
         case 'mlp':
         case 'truehd':
-            return getAudioPrerollTimeMicroseconds(startTimeMicroseconds, TRUEHD_MAJOR_SYNC_PREROLL_MICROSECONDS);
+            return getAudioPrerollTimeMicroseconds(startTimeMicroseconds, TRUEHD_MAJOR_SYNC_PREROLL_MICROSECONDS, run.timelineOriginMicroseconds);
         default:
             return startTimeMicroseconds;
     }
@@ -3733,7 +3734,7 @@ async function forwardAudioPackets(
     lookupTimeMicroseconds: Microseconds
 ): Promise<boolean> {
     const packetReader = new PacketReader(preparedAudioTrack.audioTrack);
-    const startPacket = await getAudioStartPacket(packetReader, lookupTimeMicroseconds);
+    const startPacket = await getAudioStartPacket(packetReader, lookupTimeMicroseconds, run.timelineOriginMicroseconds);
     const iterator = iterateTrackPackets(packetReader, startPacket, null, {});
     run.audioIterator = iterator;
     const batchBuilder = new AudioDecodeWorkerPacketBatchBuilder();
@@ -3815,7 +3816,7 @@ async function streamDecodedAudio(
             run,
             attempt,
             preparedAudioTrack,
-            getAudioPacketLookupTimeMicroseconds(preparedAudioTrack.routeCodec, request.startTimeMicroseconds)
+            getAudioPacketLookupTimeMicroseconds(run, preparedAudioTrack.routeCodec, request.startTimeMicroseconds)
         );
     if (!trackEnded) {
         return;
@@ -3883,7 +3884,7 @@ async function streamNativeAudioPackets(
         throw new UnsupportedCustomDecodeSourceError('Native audio decoder configuration is unavailable');
     }
     const packetReader = new PacketReader(preparedAudioTrack.audioTrack);
-    const startPacket = await getAudioStartPacket(packetReader, request.startTimeMicroseconds);
+    const startPacket = await getAudioStartPacket(packetReader, request.startTimeMicroseconds, run.timelineOriginMicroseconds);
     const iterator = iterateTrackPackets(packetReader, startPacket, null, {});
     run.audioIterator = iterator;
     const remuxer = new NativeMediaAudioFMP4Remuxer({
