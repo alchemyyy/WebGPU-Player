@@ -1593,6 +1593,28 @@ describe('CustomPlaybackController', () => {
         }) ]);
     });
 
+    it('holds video without starving across a 15 s gap after a presented frame, as a still or slideshow stream holds its frame', async () => {
+        const harness = createControllerHarness(false);
+        await startReadyPlayback(harness, false);
+        const presentedFrame = createDecodedFrame(secondsToMicroseconds(5));
+        harness.videoDecodeSession.queueFrame(presentedFrame);
+        expect(harness.controller.takeCurrentFrame()).toBe(presentedFrame);
+        expect(harness.controller.notifyFramePresented(presentedFrame)).toBe(true);
+        // The stream's next frames come 15 s later, and hold every frame credit until the clock reaches them
+        for (let frameIndex = 0; frameIndex < MAX_DECODED_FRAME_CREDITS; frameIndex += 1) {
+            harness.videoDecodeSession.queueFrame(createDecodedFrame(addMicroseconds(secondsToMicroseconds(20), millisecondsToMicroseconds(40 * frameIndex))));
+        }
+
+        for (const monotonicMilliseconds of [ 10_100, 10_200, 22_000, 24_900 ]) {
+            harness.setMonotonicTime(millisecondsToMicroseconds(monotonicMilliseconds));
+            expect(harness.controller.takeCurrentFrame()).toBeNull();
+        }
+        expect(harness.events.filter(event => event.type === 'waiting' && event.reason === 'video-frame')).toEqual([]);
+        expect(harness.controller.playbackState).toBe('playing');
+        harness.setMonotonicTime(millisecondsToMicroseconds(25_000));
+        expect(harness.controller.takeCurrentFrame()).not.toBeNull();
+    });
+
     it.each([
         // At the first miss the earliest frame is exactly the 2 s bound past the clock, and nearer after
         [ 'within the decode lag bound', secondsToMicroseconds(7.1), MAX_DECODED_FRAME_CREDITS ],
