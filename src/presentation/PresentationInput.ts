@@ -776,13 +776,11 @@ export function parseVideoStreamColorMetadata(stream: unknown): InputColorMetada
     return createVideoStreamColorMetadata(videoStream, transfer);
 }
 
-/** Builds renderer metadata from one stream's explicit color fields under an already resolved transfer. */
+/**
+ * Builds renderer metadata from one stream's explicit color fields under an already resolved transfer.
+ * Jellyfin's HDR10+ flag changes nothing: dynamic HDR10+ metadata only applies on a PQ transfer, where the presenter reads it per frame, and is ignored otherwise.
+ */
 function createVideoStreamColorMetadata(videoStream: MediaStreamMetadata, transfer: ColorTransfer): InputColorMetadata | null {
-    // HDR10+ retains a PQ-compatible static HDR10 base for per-frame metadata
-    if (hasEnabledMetadataFlag(videoStream.Hdr10PlusPresentFlag) && transfer !== 'pq') {
-        return null;
-    }
-
     const defaultBitDepth = transfer === 'sdr' ? DEFAULT_SDR_BIT_DEPTH : DEFAULT_HDR_BIT_DEPTH;
     const bitDepth = parseBitDepth(videoStream.BitDepth, defaultBitDepth);
     if (!bitDepth || (transfer !== 'sdr' && bitDepth < DEFAULT_HDR_BIT_DEPTH)) {
@@ -842,7 +840,8 @@ export function getPresentationInputColorMetadata(options: unknown): InputColorM
 }
 
 function isKnownSDRVideoStream(videoStream: MediaStreamMetadata): boolean {
-    if (hasEnabledMetadataFlag(videoStream.Hdr10PlusPresentFlag) || hasDolbyVisionMetadata(videoStream)) {
+    // HDR10+ metadata only matters on a PQ transfer, so Jellyfin's flag on a stream it calls SDR leaves it SDR
+    if (hasDolbyVisionMetadata(videoStream)) {
         return false;
     }
 
