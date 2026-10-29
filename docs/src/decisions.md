@@ -379,6 +379,10 @@ These were settled on stock Chrome on Windows, with a Chromium 153 source audit.
   Its frames tone-map from the scene peak and average alone, a mode that never reads the targeted display.
   A curve whose targeted display is 0 is neither profile: hdr10plus_tool's validation rejects it, FFmpeg exports it unchecked, and libplacebo clamps the target into the input range before following the curve.
   With no target to adapt the curve from, such a frame is `unsupported` and tone-maps statically.
+- Jellyfin's HDR10+ flag matters only on a PQ transfer (10-29).
+  Until then a stream whose HDR10+ flag was set while its transfer was not PQ got no presentation metadata, so an SDR stream with the flag was declined as `metadata-unsupported`, and the HTML path did not count it as SDR either.
+  HDR10+ dynamic metadata adjusts the tone mapping of a PQ signal, and the presenter applies it only on a PQ route, so on an SDR or HLG stream it would change nothing: such a stream now plays on its own transfer's route, and the metadata its packets carry is parsed and ignored.
+  The parse never fails a frame: a malformed payload only marks the frame's status.
 
 ## GPU decode
 

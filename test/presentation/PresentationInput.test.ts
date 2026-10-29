@@ -745,13 +745,23 @@ describe('getDolbyVisionBaseColorMetadata', () => {
         });
     });
 
+    it('ignores the HDR10+ flag of an HLG-compatible base, as HDR10+ applies to PQ alone', () => {
+        expect(getDolbyVisionBaseColorMetadata(createOptions({
+            BitDepth: 10,
+            DvBlSignalCompatibilityId: 4,
+            DvProfile: 8,
+            Hdr10PlusPresentFlag: true
+        }))).toEqual(getDolbyVisionBaseColorMetadata(createOptions({ BitDepth: 10, DvBlSignalCompatibilityId: 4, DvProfile: 8 })));
+        expect(getDolbyVisionBaseColorMetadata(createOptions({ BitDepth: 10, DvBlSignalCompatibilityId: 4, DvProfile: 8 })))
+            .toMatchObject({ transfer: 'hlg' });
+    });
+
     it.each([
         { BitDepth: 10, ColorTransfer: 'smpte2084', DvBlSignalCompatibilityId: 2, DvProfile: 8 },
         { BitDepth: 10, ColorTransfer: 'arib-std-b67', DvBlSignalCompatibilityId: 1, DvProfile: 8 },
         { BitDepth: 8, DvBlSignalCompatibilityId: 1, DvProfile: 8 },
         { BitDepth: 10, DvBlSignalCompatibilityId: 0, DvProfile: 8 },
         { BitDepth: 10, DvBlSignalCompatibilityId: 1, DvProfile: 5 },
-        { BitDepth: 10, DvBlSignalCompatibilityId: 4, DvProfile: 8, Hdr10PlusPresentFlag: true },
         // AV1 10.0 has an IPT base, and a stream without an ID declares none even when its transfer is PQ
         { BitDepth: 10, Codec: 'av1', DvBlSignalCompatibilityId: 0, DvProfile: 10 },
         { BitDepth: 10, Codec: 'av1', ColorTransfer: 'smpte2084', DvProfile: 10 },
@@ -823,8 +833,6 @@ describe('isKnownSDRPresentationInput', () => {
         { VideoRangeType: 'HDR10', VideoRange: 'SDR' },
         { VideoRangeType: 'SDR', ColorTransfer: 'SMPTE2084' },
         { VideoRange: 'SDR', ColorTransfer: 'ARIB-STD-B67' },
-        { VideoRangeType: 'SDR', Hdr10PlusPresentFlag: true },
-        { VideoRangeType: 'SDR', Hdr10PlusPresentFlag: 1 },
         { VideoRangeType: 'SDR', DvProfile: 8 },
         { VideoRangeType: 'SDR', DvVersionMajor: 1 },
         { VideoRangeType: 'SDR', DvVersionMinor: 0 },
@@ -840,6 +848,14 @@ describe('isKnownSDRPresentationInput', () => {
                 MediaStreams: [{ Type: 'Video', ...videoMetadata }]
             }
         })).toBe(false);
+    });
+
+    it.each([ true, 1 ])('keeps a stream Jellyfin calls SDR known SDR whatever its HDR10+ flag says: %o', hdr10PlusPresentFlag => {
+        expect(isKnownSDRPresentationInput({
+            mediaSource: {
+                MediaStreams: [{ Hdr10PlusPresentFlag: hdr10PlusPresentFlag, Type: 'Video', VideoRange: 'SDR', VideoRangeType: 'SDR' }]
+            }
+        })).toBe(true);
     });
 
     it('does not substitute a later SDR track for the first HDR track', () => {
@@ -922,6 +938,15 @@ describe('parseVideoStreamColorMetadata', () => {
         });
     });
 
+    it('ignores the HDR10+ flag of a stream whose transfer is not PQ, as dynamic HDR10+ metadata applies to PQ alone', () => {
+        expect(parseVideoStreamColorMetadata({ BitDepth: 10, Hdr10PlusPresentFlag: true, Type: 'Video', VideoRange: 'SDR', VideoRangeType: 'SDR' }))
+            .toEqual(parseVideoStreamColorMetadata({ BitDepth: 10, Type: 'Video', VideoRange: 'SDR', VideoRangeType: 'SDR' }));
+        expect(parseVideoStreamColorMetadata({ BitDepth: 10, Hdr10PlusPresentFlag: true, Type: 'Video', VideoRangeType: 'SDR' }))
+            .toMatchObject({ bitDepth: 10, matrix: 'bt709', primaries: 'bt709', transfer: 'sdr' });
+        expect(parseVideoStreamColorMetadata({ Hdr10PlusPresentFlag: true, Type: 'Video', VideoRangeType: 'HLG' }))
+            .toEqual(parseVideoStreamColorMetadata({ Type: 'Video', VideoRangeType: 'HLG' }));
+    });
+
     it.each([
         { Type: 'Video' },
         { Type: 'Video', VideoRange: 'HDR' },
@@ -935,8 +960,7 @@ describe('parseVideoStreamColorMetadata', () => {
         { ColorSpace: 'smpte240m', Type: 'Video', VideoRangeType: 'SDR' },
         { ColorPrimaries: 'display-p3', Type: 'Video', VideoRangeType: 'SDR' },
         { ColorRange: 'studio', Type: 'Video', VideoRangeType: 'SDR' },
-        { ColorTransfer: 'bt470bg', Type: 'Video', VideoRangeType: 'SDR' },
-        { Hdr10PlusPresentFlag: true, Type: 'Video', VideoRangeType: 'SDR' }
+        { ColorTransfer: 'bt470bg', Type: 'Video', VideoRangeType: 'SDR' }
     ])('rejects unknown, Dolby Vision, or contradictory metadata: %o', stream => {
         expect(parseVideoStreamColorMetadata(stream)).toBeNull();
     });

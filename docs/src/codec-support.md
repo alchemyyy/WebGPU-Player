@@ -30,6 +30,7 @@ A Dolby Vision row with an RPU route also falls back to GPU-DV, RPU reconstructi
 The SDR rows cover every transfer the engine reads as SDR: BT.709, SMPTE 170M, sRGB, and the BT.2020 10 and 12-bit transfers, which use the BT.709 curve.
 They take BT.709, BT.601 (SMPTE 170M, SMPTE 240M, or BT.470 BG), or BT.2020 primaries and matrix.
 The VF-SDR routes leave the color conversion to Chrome, while the raw SDR routes convert a gamut other than BT.709 themselves, through the raw SDR key of the stream's matrix, primaries, and range, which authorizes on first use outside BT.709.
+Jellyfin's HDR10+ flag does not change these rows: HDR10+ metadata applies only on a PQ transfer, so an SDR or HLG stream that Jellyfin flags as carrying it takes its SDR or HLG row, and its metadata is ignored.
 
 The HLG row includes HLG-compatible streams, whose VUI signals the BT.2020 10-bit transfer and whose alternative transfer characteristics SEI names HLG (see [Evidence](#evidence)).
 

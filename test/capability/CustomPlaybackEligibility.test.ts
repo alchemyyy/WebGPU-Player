@@ -5959,6 +5959,20 @@ describe('10-bit raw SDR route', () => {
         });
     });
 
+    it('plays HEVC Main 10 SDR that Jellyfin flags as carrying HDR10+ as SDR, since HDR10+ only applies to PQ', () => {
+        expect(getCustomPlaybackEligibility(
+            createSDROptions({ Codec: 'hevc', Hdr10PlusPresentFlag: true, Profile: 'Main 10' }),
+            createCapabilities(),
+            RAW_SDR_AUTHORIZATION
+        )).toMatchObject({
+            eligible: true,
+            hdr: false,
+            neutralizeHDRColorMetadata: false,
+            videoDecoderBackend: 'native',
+            videoOutputMode: 'video-frame'
+        });
+    });
+
     it('presents the declared 10-bit SDR base of HEVC Profile 8.2 through raw I420P10 without native HEVC', () => {
         expect(getCustomPlaybackEligibility(
             createSDROptions({
