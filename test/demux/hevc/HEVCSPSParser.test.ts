@@ -48,6 +48,13 @@ const MAIN10_BT2020_CONSTANT_LUMINANCE_HLG_SPS = createBytesFromHex(
 const MAIN10_SPS_WITHOUT_VUI = createBytesFromHex(
     '42010102200000030090000003000003003fa005020171f2b6595952930b20'
 );
+// MAIN10_HLG_SPS with a PQ transfer, as limited range, and with video_full_range_flag, the last bit of NAL byte 31, set
+const MAIN10_LIMITED_RANGE_PQ_SPS = createBytesFromHex(
+    '42010102200000030090000003000003003fa005020171f2b6595952930bc05a848804820000030002000003003010'
+);
+const MAIN10_FULL_RANGE_PQ_SPS = createBytesFromHex(
+    '42010102200000030090000003000003003fa005020171f2b6595952930bc05b848804820000030002000003003010'
+);
 // An old x265 build's Main 10 SPS whose VUI omits default_display_window_flag: 69 bits remain before the stop bit at the flag's RBSP bit 214,
 // and its timing info follows; FFmpeg's hevc/ps.c detects it and decodes its frames as with the flag inserted as 0
 const X265_MISSING_DEFAULT_DISPLAY_WINDOW_SPS = createBytesFromHex(
@@ -379,12 +386,12 @@ describe('rewriteHEVCSPSColorDescriptionToBT709', () => {
             MAIN10_BT2020_10_SPS,
             'hlg',
             pqPreferredTransfer
-        )).toThrow('expected limited-range BT.2020 HDR route');
+        )).toThrow('expected BT.2020 HDR route');
         expect(() => rewriteHEVCSPSColorDescriptionToBT709(
             MAIN10_HLG_SPS,
             'hlg',
             pqPreferredTransfer
-        )).toThrow('expected limited-range BT.2020 HDR route');
+        )).toThrow('expected BT.2020 HDR route');
     });
 
     it('keeps a PQ VUI on the PQ route whatever the alternative transfer SEI says', () => {
@@ -394,17 +401,29 @@ describe('rewriteHEVCSPSColorDescriptionToBT709', () => {
         ).colorSpace).toEqual(NEUTRAL_COLOR_SPACE);
     });
 
-    it('requires an exact PQ transfer and strict BT.2020 limited-range color for HDR routes', () => {
+    it('requires an exact PQ transfer, BT.2020 primaries, and the non-constant-luminance matrix for HDR routes', () => {
         expect(() => rewriteHEVCSPSColorDescriptionToBT709(MAIN10_BT2020_10_SPS, 'pq'))
-            .toThrow('expected limited-range BT.2020 HDR route');
+            .toThrow('expected BT.2020 HDR route');
         for (const sequenceParameterSet of [
             MAIN10_SMPTE170M_SPS,
             MAIN10_BT2020_CONSTANT_LUMINANCE_HLG_SPS,
             MAIN10_UNSPECIFIED_COLOR_SPS
         ]) {
             expect(() => rewriteHEVCSPSColorDescriptionToBT709(sequenceParameterSet, 'hlg'))
-                .toThrow('expected limited-range BT.2020 HDR route');
+                .toThrow('expected BT.2020 HDR route');
         }
+    });
+
+    it('keeps a full-range SPS full range, on an HDR route too, so the decoder converts at the stream\'s range', () => {
+        expect(parseHEVCSPS(MAIN10_FULL_RANGE_PQ_SPS).colorSpace).toEqual({ fullRange: true, matrix: 'bt2020-ncl', primaries: 'bt2020', transfer: 'pq' });
+        const rewrittenSPS = rewriteHEVCSPSColorDescriptionToBT709(MAIN10_FULL_RANGE_PQ_SPS, 'pq');
+        expect(parseHEVCSPS(rewrittenSPS).colorSpace).toEqual({ ...NEUTRAL_COLOR_SPACE, fullRange: true });
+        // Only the color description differs from the limited-range SPS's rewrite
+        expect(parseHEVCSPS(rewrittenSPS)).toEqual({
+            ...parseHEVCSPS(rewriteHEVCSPSColorDescriptionToBT709(MAIN10_LIMITED_RANGE_PQ_SPS, 'pq')),
+            colorSpace: { ...NEUTRAL_COLOR_SPACE, fullRange: true }
+        });
+        expect(() => rewriteHEVCSPSColorDescriptionToBT709(MAIN10_FULL_RANGE_PQ_SPS, 'hlg')).toThrow('expected BT.2020 HDR route');
     });
 
     it('neutralizes any color description when no HDR route is expected', () => {

@@ -1,4 +1,5 @@
 import {
+    parseHEVCSPS,
     repairHEVCSPSDefaultDisplayWindow,
     rewriteHEVCSPSColorDescriptionToBT709,
     type HEVCHDRTransfer
@@ -163,30 +164,37 @@ export function repairHEVCDecoderConfigDefaultDisplayWindow(configuration: Video
  * An SPS-free HVCC remains usable when the first key packet carries the required in-band SPS.
  * A known alternative transfer characteristics SEI value overrides the VUI transfer in the SPS check.
  * An SPS without default_display_window_flag is repaired first.
+ * The neutral colorSpace keeps the stream's range: a full-range `hvcC` SPS's, else the configuration's own.
  */
 export function neutralizeNativeHDRHEVCDecoderConfigWithValidation(
     configuration: VideoDecoderConfig,
     expectedHDRTransfer: HEVCHDRTransfer,
     preferredTransferCharacteristics: number | null = null
 ): NeutralizedNativeHDRHEVCDecoderConfig {
+    let fullRangeSPS = false;
     const rewrittenDescription = configuration.description === undefined ?
         null :
-        rewriteHEVCDecoderDescriptionSPS(configuration.description, (nalUnit: Uint8Array): Uint8Array => rewriteHEVCSPSColorDescriptionToBT709(
-            repairHEVCSPSDefaultDisplayWindow(nalUnit) ?? nalUnit,
-            expectedHDRTransfer,
-            preferredTransferCharacteristics
-        ));
+        rewriteHEVCDecoderDescriptionSPS(configuration.description, (nalUnit: Uint8Array): Uint8Array => {
+            const rewrittenNALUnit = rewriteHEVCSPSColorDescriptionToBT709(
+                repairHEVCSPSDefaultDisplayWindow(nalUnit) ?? nalUnit,
+                expectedHDRTransfer,
+                preferredTransferCharacteristics
+            );
+            fullRangeSPS ||= parseHEVCSPS(rewrittenNALUnit).colorSpace?.fullRange === true;
+            return rewrittenNALUnit;
+        });
+    const decoderDescriptionValidated = (rewrittenDescription?.baseLayerSPSCount ?? 0) > 0;
     return {
         configuration: {
             ...configuration,
             colorSpace: {
-                fullRange: false,
+                fullRange: decoderDescriptionValidated ? fullRangeSPS : configuration.colorSpace?.fullRange === true,
                 matrix: 'bt709',
                 primaries: 'bt709',
                 transfer: 'bt709'
             },
             ...(rewrittenDescription === null ? {} : { description: rewrittenDescription.description })
         },
-        decoderDescriptionValidated: (rewrittenDescription?.baseLayerSPSCount ?? 0) > 0
+        decoderDescriptionValidated
     };
 }

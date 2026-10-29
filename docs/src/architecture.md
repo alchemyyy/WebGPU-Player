@@ -325,8 +325,8 @@ Every stale callback is dropped by a generation or revision check:
 
 - External textures of high-bit-depth frames are 8 bits per channel in Chromium (see [Decisions](decisions.md)).
   Authorization tolerances follow: external HDR 10/255, external Dolby Vision 8/255, raw 3/255.
-- The native external HDR route rewrites the color of the `hvcC` SPS and of every in-band SPS, in delta packets too, to limited BT.709, and the shader recovers the 10-bit codes (`Y*876+64`, `C*896+512`).
-  A frame with a colorSpace that is not neutral latches `decoded-frame-color-mismatch`.
+- The native external HDR route rewrites the color of the `hvcC` SPS and of every in-band SPS, in delta packets too, to BT.709 at the stream's own range, and the shader recovers the 10-bit codes (`Y*876+64`, `C*896+512`), a full-range code as its limited-range equivalent.
+  A frame with a colorSpace that is not neutral, BT.709 at either range, latches `decoded-frame-color-mismatch`.
 - The raw route checks each frame's colorSpace against the metadata, and a null member is unspecified, so it never contradicts.
   SDR also matches a `smpte170m` transfer, and HLG a `bt709` transfer on BT.2020 primaries.
 - WebGPU presentation on the HTML path is SDR only: a `<video>` external texture is browser-converted sRGB.

@@ -164,7 +164,7 @@ A host may start the probes before its first negotiation with `warmCustomDecodeC
    Then, for 10-bit 4:2:0 SDR that neither decodes (AV1 Main, VP9 Profile 2, or HEVC Main 10 without native decode), raw I420P10 through the raw SDR key of its matrix, primaries, and range.
    JPEG 2000, MPEG-1, MPEG-2, VC-1, WMV3, MPEG-4 Part 2, H.263, and MS-MPEG4 have no native route (`CUSTOM_PACKAGE_VIDEO_CODECS`).
 5. PQ or HLG: native external first, through the stream's codec's key (`external-hevc-main10-bt709-limited:<pq|hlg>-v1` for HEVC Main 10, `external-av1-main10-bt709-limited:<pq|hlg>-v1` for AV1 Main at 10 bits), then raw (`<I420P10|I420P12>:bt2020-ncl:bt2020:limited:<pq|hlg>`).
-   The worker rewrites the HEVC SPS VUI, or every AV1 sequence header, the codecs string, and an `av1C` description, to limited BT.709, so Chrome converts the hardware frame without tone mapping; each rewritten header must declare limited BT.2020 with the non-constant-luminance matrix and the route's transfer, or the attempt fails.
+   The worker rewrites the HEVC SPS VUI to BT.709 at the stream's own range, or every AV1 sequence header, the codecs string, and an `av1C` description to limited BT.709, so Chrome converts the hardware frame without tone mapping; each rewritten HEVC SPS must declare BT.2020 with the non-constant-luminance matrix and the route's transfer, at either range, and each AV1 header limited BT.2020 with them, or the attempt fails.
 6. When steps 3 to 5 chose no route, a GPU decoder package the host offers takes the stream, if one does; otherwise the source is ineligible with the reason those steps gave.
 
 ## GPU decoders

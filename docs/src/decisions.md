@@ -312,11 +312,18 @@ These were settled on stock Chrome on Windows, with a Chromium 153 source audit.
   - a zero-copy P010 external texture;
   - raw R16 and RG16 plane import, the only route to bit-exact P010 and exact P7 FEL.
 - Native HDR neutralization.
-  The native external HDR route rewrites the color description to limited BT.709 so Chrome does not tone-map, and the shader recovers the YUV codes.
+  The native external HDR route rewrites the color description to BT.709 so Chrome does not tone-map, and the shader recovers the YUV codes.
   An `hvcC` without an SPS defers validation to the first access unit with an SPS (08-05).
   Every access unit with a base-layer SPS is rewritten, not only key packets (10-29).
   An ISO BMFF sync-sample table may list only the IDR pictures, so each CRA, which repeats the VPS, SPS, and PPS, is a delta packet; Chrome then read the unrewritten PQ SPS of the first such CRA and decoded PQ frames, which the presenter's color check refused.
   A check of the framing and NAL unit headers alone, without parsing a payload, finds the SPS, so every packet affords it; each SPS found must still prove the route's transfer, so a mismatching SPS mid-stream fails the decode.
+- Full-range PQ and HLG HEVC is presented as full range on the native HDR route (10-29).
+  Until then the SPS check required limited range and refused an SPS with `video_full_range_flag` set only once decoding had started, so such a stream failed as `decode-failed` and fell back to a transcode.
+  FFmpeg, mpv, and Chrome honor the flag, so the engine does too, even where the pixels look limited: Jellyfin stores no color range, so the bitstream's flag is the only declaration there is.
+  The HEVC rewrite now keeps the range flag and rewrites only the primaries, transfer, and matrix, and the decoder's neutral colorSpace takes the `hvcC` SPS's range, or the configuration's own when the record has no SPS.
+  Chrome then converts a full-range frame at full range and reports it as full-range BT.709, which the presenter's frame check accepts on the external HDR route; the Dolby Vision external route still requires limited.
+  The shader's recovery, written for limited BT.709, then yields each full-range code's limited-range equivalent, `Y*876/1023+64` for luma and `(C-512)*896/1023+512` for chroma, which the route's limited-range metadata normalizes to exactly the full-range value, so neither the presentation metadata nor the authorization key changes.
+  The authorization vector is limited range; the full-range conversion is Chrome's, unverified by a key.
 - An HEVC SPS without `default_display_window_flag` is repaired before Chromium reads it (10-29).
   Some old x265 builds wrote the VUI without the flag, so Chromium's SPS parser reads the timing info that follows as a display window, fails its crop check, and the decoder reports a decoding error on the first packet.
   FFmpeg detects the pattern (`hevc/ps.c`): at the flag, at least 68 bits before the stop bit, and the next 21 bits a set `vui_timing_info_present_flag` then 20 zero bits, which a set flag would read as an implausible left offset; it then reads on as if the flag were 0.

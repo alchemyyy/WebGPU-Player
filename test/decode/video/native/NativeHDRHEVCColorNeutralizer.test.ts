@@ -21,6 +21,10 @@ const MAIN10_PQ_SPS = createBytesFromHex(
 const MAIN10_BT2020_10_SPS = createBytesFromHex(
     '42010102200000030090000003000003003fa005020171f2b6595952930bc05a848704820000030002000003003010'
 );
+// A Main10 PQ SPS that sets video_full_range_flag
+const MAIN10_FULL_RANGE_PQ_SPS = createBytesFromHex(
+    '42010102200000030090000003000003003fa005020171f2b6595952930bc05b848804820000030002000003003010'
+);
 // MAIN10_PQ_SPS with its default_display_window_flag, a 0 after frame_field_info_present_flag, removed, as old x265 builds wrote the VUI
 const MAIN10_PQ_SPS_WITHOUT_DEFAULT_DISPLAY_WINDOW_FLAG = createBytesFromHex(
     '4201010220000003009000000300000300ffa005020169365959a4932bc05a848804840000030004000003000420'
@@ -181,11 +185,32 @@ describe('NativeHDRHEVCColorNeutralizer', () => {
         expect(() => neutralizeNativeHDRHEVCDecoderConfigWithValidation(
             createDecoderConfig(rewritten),
             'pq'
-        )).toThrow('expected limited-range BT.2020 HDR route');
+        )).toThrow('expected BT.2020 HDR route');
         expect(() => neutralizeNativeHDRHEVCDecoderConfigWithValidation(
             createDecoderConfig(description),
             'hlg'
-        )).toThrow('expected limited-range BT.2020 HDR route');
+        )).toThrow('expected BT.2020 HDR route');
+    });
+
+    it('keeps a full-range stream\'s range in the rewritten SPS and the neutral colorSpace', () => {
+        const neutralized = neutralizeNativeHDRHEVCDecoderConfigWithValidation(
+            createDecoderConfig(createHVCCDescriptionWithSPS([ MAIN10_FULL_RANGE_PQ_SPS ])),
+            'pq'
+        );
+        expect(neutralized.decoderDescriptionValidated).toBe(true);
+        expect(neutralized.configuration.colorSpace).toEqual({ ...NEUTRAL_COLOR_SPACE, fullRange: true });
+        const [ rewrittenSPS ] = parseHEVCDecoderConfiguration(neutralized.configuration.description as Uint8Array).sequenceParameterSets;
+        expect(parseHEVCSPS(rewrittenSPS).colorSpace).toEqual({ ...NEUTRAL_COLOR_SPACE, fullRange: true });
+
+        // Without an SPS in the record, the configuration's own range stands until the first in-band SPS
+        const SPSFreeConfiguration: VideoDecoderConfig = {
+            ...createDecoderConfig(createHVCCDescription(false)),
+            colorSpace: { fullRange: true }
+        };
+        expect(neutralizeNativeHDRHEVCDecoderConfigWithValidation(SPSFreeConfiguration, 'pq').configuration.colorSpace)
+            .toEqual({ ...NEUTRAL_COLOR_SPACE, fullRange: true });
+        expect(neutralizeNativeHDRHEVCDecoderConfigWithValidation(createDecoderConfig(createHVCCDescription(false)), 'pq').configuration.colorSpace)
+            .toEqual(NEUTRAL_COLOR_SPACE);
     });
 
     it('neutralizes config color metadata and an owned decoder description', () => {
@@ -321,9 +346,9 @@ describe('NativeHDRHEVCColorNeutralizer', () => {
             configuration,
             'hlg',
             PQ_PREFERRED_TRANSFER_CHARACTERISTICS
-        )).toThrow('expected limited-range BT.2020 HDR route');
+        )).toThrow('expected BT.2020 HDR route');
         expect(() => neutralizeNativeHDRHEVCDecoderConfigWithValidation(configuration, 'pq'))
-            .toThrow('expected limited-range BT.2020 HDR route');
+            .toThrow('expected BT.2020 HDR route');
         expect(neutralizeNativeHDRHEVCDecoderConfigWithValidation(
             configuration,
             'pq',
@@ -350,7 +375,7 @@ describe('NativeHDRHEVCColorNeutralizer', () => {
             format,
             'hlg',
             PQ_PREFERRED_TRANSFER_CHARACTERISTICS
-        )).toThrow('expected limited-range BT.2020 HDR route');
+        )).toThrow('expected BT.2020 HDR route');
     });
 
     it('reports absent SPS records and access units without rewriting unrelated data', () => {

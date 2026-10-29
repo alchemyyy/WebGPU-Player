@@ -1534,6 +1534,56 @@ describe('WebGPUPresenter', () => {
         expect(fallbackHandler).not.toHaveBeenCalled();
     });
 
+    it('presents a full-range neutralized frame on the external HDR route, and refuses a frame Chrome did not neutralize', async () => {
+        webSettingsMockState.hdrToneMappingEnabled = true;
+        const gpuHarness = createGPUHarness();
+        installGPU(gpuHarness.gpu);
+        installCanvasContext(createCanvasContextHarness().context);
+        const surfaceHarness = createSurfaceHarness();
+        const fallbackHandler = vi.fn();
+        const presenter = new WebGPUPresenter(fallbackHandler);
+        const metadata = createPQColorMetadata();
+
+        presenter.startSession(1);
+        presenter.setDecodedFramePushMode(true, 1);
+        presenter.attach(surfaceHarness.surface, 1);
+        await vi.waitFor(() => expect(
+            surfaceHarness.surface.container.querySelector('.webgpuPlayerCanvas')
+        ).toBeInstanceOf(HTMLCanvasElement));
+        await expect(presenter.configureColorPipeline({
+            codec: 'hevc',
+            inputMode: 'external-hdr',
+            metadata,
+            settings: createHDRToSDRRenderSettings({
+                toneMapping: { inputPeakNits: metadata.nominalPeakNits }
+            })
+        }, 1)).resolves.toBe(true);
+
+        // Neutralized HEVC keeps a full-range stream's range, so Chrome converts it at full range
+        const fullRangeFrame = { ...createNeutralBT709VideoFrame(vi.fn()), colorSpace: { fullRange: true, matrix: 'bt709', primaries: 'bt709', transfer: 'bt709' } } as unknown as VideoFrame;
+        expect(presenter.presentDecodedFrame({
+            durationMicroseconds: secondsToMicroseconds(1 / 24),
+            frame: fullRangeFrame,
+            mediaTimeMicroseconds: secondsToMicroseconds(2),
+            outputMode: 'video-frame'
+        }, 1)).toBe(true);
+        await vi.waitFor(() => expect(presenter.getTelemetry().presentedFrameCount).toBe(1));
+        expect(fallbackHandler).not.toHaveBeenCalled();
+
+        const tonedFrame = { ...createNeutralBT709VideoFrame(vi.fn()), colorSpace: { fullRange: false, matrix: 'bt2020-ncl', primaries: 'bt2020', transfer: 'pq' } } as unknown as VideoFrame;
+        presenter.presentDecodedFrame({
+            durationMicroseconds: secondsToMicroseconds(1 / 24),
+            frame: tonedFrame,
+            mediaTimeMicroseconds: secondsToMicroseconds(3),
+            outputMode: 'video-frame'
+        }, 1);
+        await vi.waitFor(() => expect(fallbackHandler).toHaveBeenCalledWith(
+            1,
+            'decoded-frame-color-mismatch',
+            'color: pq:bt2020:bt2020-ncl:limited, expected bt709:bt709:bt709:limited or bt709:bt709:bt709:full'
+        ));
+    });
+
     it('requests one generation-safe pushed-frame refresh after device recovery', async () => {
         const gpuHarness = createGPUHarness(2);
         const contextHarness = createCanvasContextHarness();
