@@ -61,6 +61,10 @@ const NAL_UNIT_LENGTH_SIZE_MINUS_ONE_MASK = 0x03;
 const AVC_SPS_COUNT_OFFSET = 5;
 const AVC_SPS_COUNT_MASK = 0x1F;
 const AVC_LENGTH_FIELD_BYTE_LENGTH = 2;
+// avcC's High profile extension: chroma_format, bit_depth_luma_minus8, and bit_depth_chroma_minus8 behind their reserved bits, then numOfSequenceParameterSetExt
+const AVC_RECORD_EXTENSION_BYTE_LENGTH = 4;
+const AVC_CHROMA_FORMAT_RESERVED_BITS = 0xFC;
+const AVC_BIT_DEPTH_RESERVED_BITS = 0xF8;
 // The profiles below High code no chroma_format_idc, which then is 4:2:0, as High's own default is
 const AVC_HIGH_PROFILE = 100;
 const AVC_CHROMA_FORMAT_PROFILES: ReadonlySet<number> = new Set<number>([ 100, 110, 122, 144, 244, 44, 83, 86, 118, 128, 138, 139, 134, 135 ]);
@@ -373,11 +377,28 @@ function parseAVCRecord(record: Uint8Array): AVCRecord | null {
         offset += AVC_LENGTH_FIELD_BYTE_LENGTH + ((record[offset] << 8) | record[offset + 1]);
     }
     return {
-        chromaFormat: record.at(offset),
+        chromaFormat: readAVCRecordExtensionChromaFormat(record, offset),
         firstSequenceParameterSet,
         lengthSize: (record[AVC_LENGTH_SIZE_OFFSET] & NAL_UNIT_LENGTH_SIZE_MINUS_ONE_MASK) + 1 as NALUnitLengthSize,
         profile: record[AVC_PROFILE_OFFSET]
     };
+}
+
+/**
+ * Returns the chroma_format of a High profile avcC's extension at an offset, or undefined where the record carries none.
+ * The four bytes up to numOfSequenceParameterSetExt count as the extension only when they all exist and their reserved bits are set,
+ * since some muxers end a record with other bytes, whose low bits would otherwise read as a chroma format; the SPS then declares it.
+ */
+function readAVCRecordExtensionChromaFormat(record: Uint8Array, offset: number): number | undefined {
+    if (
+        offset + AVC_RECORD_EXTENSION_BYTE_LENGTH > record.byteLength
+        || (record[offset] & AVC_CHROMA_FORMAT_RESERVED_BITS) !== AVC_CHROMA_FORMAT_RESERVED_BITS
+        || (record[offset + 1] & AVC_BIT_DEPTH_RESERVED_BITS) !== AVC_BIT_DEPTH_RESERVED_BITS
+        || (record[offset + 2] & AVC_BIT_DEPTH_RESERVED_BITS) !== AVC_BIT_DEPTH_RESERVED_BITS
+    ) {
+        return undefined;
+    }
+    return record[offset] & CHROMA_FORMAT_MASK;
 }
 
 /**

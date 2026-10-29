@@ -1140,6 +1140,7 @@ These were settled on Firefox 157 on Windows.
   The Dolby Vision routes offer no planes, since reconstruction maps each pixel's base-layer codes, so they leave plane passes out as `planes-unavailable`.
 - An external route's chroma takes the stream's subsampling from its decoder configuration (10-16).
   The decode worker reads it from the track's avcC (its closing chroma format, else its first SPS), hvcC, or av1C, the SPS in its first key packet where it has no record or its record no SPS, or the AV1, VP9, or VP8 codecs string, and every frame carries it, so the presenter plans with it without a host fact.
+  The avcC's closing bytes count as the High profile extension only when all four are present and the reserved bits of its chroma format and both bit depths are set (10-29); some Matroska muxers end the record with four other bytes, whose low bits could read as 4:4:4, so such a record takes its SPS's chroma format.
   Derived chroma is read at each chroma sample's site, as the stream's location places it, so a chroma upscaler runs on the external routes too.
 - Chroma is read where the stream declares it lies (10-16), revising the engine's fixed siting, which read every planar format's subsampled chroma left and NV12's at its texel centers.
   4:2:0 chroma takes the location of H.273's six types that an H.264 or HEVC SPS's VUI declares, or an av1C's or AV1 codecs string's chroma_sample_position, and the left siting H.264 and HEVC default to where none is declared; UHD HDR encodes declare top-left, which the fixed siting read half a luma row off.

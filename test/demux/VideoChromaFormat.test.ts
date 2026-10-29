@@ -146,6 +146,26 @@ describe('readVideoChromaFormat', () => {
         expect(readVideoChromaFormat({ codec: 'avc1.640028' })).toEqual({ location: null, subsampling: null });
     });
 
+    it('reads an avcC\'s closing bytes as chroma_format only with their reserved bits set and all four present, and the SPS otherwise', () => {
+        const withTail = (sequenceParameterSet: ArrayLike<number>, tail: readonly number[]): Uint8Array => Uint8Array.from([
+            ...createAVCRecord(AVC_HIGH_PROFILE, sequenceParameterSet),
+            ...tail
+        ]);
+        // Bytes some muxers leave after the PPS: their low bits would read as 4:2:0 and 4:4:4
+        for (const junkTail of [ [ 0x69, 0x73, 0x61, 0x74 ], [ 0x73, 0x74, 0x61, 0x67 ] ]) {
+            expect(readVideoChromaFormat({ codec: 'avc1.6e0028', description: withTail(HIGH_420_SPS_WITH_EMULATION_PREVENTION, junkTail) }).subsampling)
+                .toBe('4:2:0');
+            expect(readVideoChromaFormat({ codec: 'avc1.6e0028', description: withTail(HIGH_444_SPS, junkTail) }).subsampling).toBe('4:4:4');
+        }
+        expect(readVideoChromaFormat({ codec: 'avc1.6e0028', description: withTail(HIGH_420_SPS_WITH_EMULATION_PREVENTION, [ 0xFD, 0xFA, 0xFA, 0 ]) }).subsampling)
+            .toBe('4:2:0');
+        expect(readVideoChromaFormat({ codec: 'avc1.6e0028', description: withTail(HIGH_420_SPS_WITH_EMULATION_PREVENTION, [ 0xFE, 0xFA, 0xFA, 0 ]) }).subsampling)
+            .toBe('4:2:2');
+        // Valid reserved bits, but the record ends before numOfSequenceParameterSetExt
+        expect(readVideoChromaFormat({ codec: 'avc1.6e0028', description: withTail(HIGH_420_SPS_WITH_EMULATION_PREVENTION, [ 0xFE, 0xFA, 0xFA ]) }).subsampling)
+            .toBe('4:2:0');
+    });
+
     it('reads H.264 4:2:0 chroma\'s location from its first SPS\'s VUI, through every field before it', () => {
         expect(readVideoChromaFormat({ codec: 'avc1.64000a', description: createAVCRecord(AVC_HIGH_PROFILE, X264_HIGH_TOP_LEFT_SPS) }))
             .toEqual({ location: 'top-left', subsampling: '4:2:0' });
