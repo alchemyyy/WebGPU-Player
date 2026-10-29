@@ -927,7 +927,7 @@ These were settled on Firefox 157 on Windows.
   A decoded layout that differs from the output layout is mapped, not rejected, because the decoded layout can differ from the declared one the output was sized for (E-AC-3 7.1 declared as 5.1, for example).
   Mono goes to the center speaker, or to both channels of a stereo output, and stereo to the front pair.
   5.1 to 7.1 fills its sides or backs and leaves the other pair silent, and 7.1 to 5.1 folds each surround as sqrt(1/2) times side plus back.
-  A 6.1 or 3.0(back) back center splits across the surround or back pair at sqrt(1/2).
+  A 6.1, 4.1, or 3.0(back) back center splits across the surround or back pair at sqrt(1/2).
   2.1, 3.0, and 3.0(back) mix to stereo through three-channel matrices taken from each algorithm's 5.1 weights, where a back center enters through both surrounds at sqrt(1/2).
   Peak-normalized Lo/Ro and RFC 7845 renormalize those weights to sum to one, because the six-channel normalization left a full-scale 3.0 bed 3 dB and 0.88 dB low; RFC 7845 3.0 then equals opusfile's matrix.
   Every fold-down runs the limiter: a stereo downmix, an output speaker that sums channels, and a block a package rendered from objects, which it sums without a limiter of its own (revised 10-28; before, a source with more channels than the output, which missed 5.1.2 on 7.1).
@@ -951,7 +951,7 @@ These were settled on Firefox 157 on Windows.
   Five channels without a speaker mask now lay out as FFmpeg's 5.0(side), FL FR FC SL SR (`0x607`), as six lay out as its 5.1(side), and a mask also qualifies 5.0(back) (`0x37`).
   A 5.0 bed maps by name into a 5.1 output with a silent LFE, and mixes to stereo as that 5.1 through the selected algorithm, as a height layout mixes through its floor.
   FFmpeg's AC-3 encode of five syncframes of 3/2 and then five of 3/2 with LFE, one tone per channel, decodes through the `eac3` package to `0x607` and then `0x60F` blocks with every tone in its WAVE place (`src/capability/vectors/test/ac3/`), and the output stage rebinds from five channels to six on one timeline.
-  AC-3 therefore admits five channels; a 3/1 or 2/2 bed with an LFE also has five, reports a mask with no layout, and fails its attempt as `decode-failed`.
+  AC-3 therefore admits five channels; 3/1 with an LFE, FFmpeg's 4.1, plays as the 4.1 layout added for DTS (10-29), while 2/2 with an LFE reports a mask with no layout and fails its attempt as `decode-failed`.
 - Jellyfin's channel count screens a track whose container's count has no layout (10-29).
   Mediabunny copies a Matroska track's header `Channels`, which a muxer can write from the first frames (an AC-3 3/2 stretch before 5.1) or wrongly (DTS 5.1 declared as four channels), while Jellyfin's count comes from FFmpeg's probe of the frames.
   Without a container mask, a count with no layout refused the track at preparation as `source-unsupported`, and playback renegotiated to a transcode.
@@ -960,12 +960,18 @@ These were settled on Firefox 157 on Windows.
   The native media route plays a track whose declared count it does not qualify at the metadata's count when that is stereo or 5.1, since the browser's decoder reads each syncframe's bed; a true five-channel AC-3 track has no native route at eligibility and takes the package.
 - E-AC-3 7.1 needs the layout, not only the channel count: the decoder must report the decoded channel layout (`9ca70e11ad`).
   Eligibility also required a declared `7.1` layout until E-AC-3 became a package codec (10-13); a package reports every block's mask, which now decides alone.
-- The DTS envelope, until 10-13.
+- The DTS envelope, until 10-13, and its routes since (revised 10-29).
   DTS-HD HRA was valid at 48 and 96 kHz only.
   Above 96 kHz only 5.1 MA (or MA with a DTS:X bed) was admitted.
   Stereo DTS-HD MA was admitted up to 96 kHz.
   Mono was admitted for every direct-play profile, and three channels for MA and MA with DTS:X when Jellyfin reports a 2.1 or 3.0 layout, because libdcadec reports their speaker masks (0x4, 0xB, 0x7, and 0x103 for 3.0(back), which Jellyfin also reports as 3.0).
-  Since DTS decodes through a package (10-13), eligibility checks only the channel count, which still excludes DTS-ES's seven channels, and the package's speaker mask decides the layout at runtime.
+  Since DTS decodes through a package (10-13), eligibility checks only the channel count, and the package's speaker mask decides the layout at runtime.
+  The route tables still drew the device profile's DTS conditions from those vectors, so stereo DTS other than MA, five channels, and DTS-ES's seven, which the tables excluded as a profile, transcoded.
+  Since 10-29 the evidence policy is: a route is a capability vector where an encoder this project can run makes one, and composed from the masks libdcadec reports where only DTS's own tools could encode it.
+  FFmpeg's `dca` encoder writes DTS core: its stereo and 5.0(side) encodes, one tone per channel, decode through the `dts` package to `0x3` and `0x607` with every tone in its WAVE place, and the dcadec XCh sample decodes to `0x70F`, the WAVE 6.1 the engine lays out, its back center apart from the side pair (`wgpud/dts/test/DTSPackage.test.ts`).
+  DTS-HD MA, HRA, and DTS-ES encoders are DTS's own, so their stereo, 5-channel, and 7-channel routes are composed: libdcadec reports a lossless or XCh bed's mask as it reports a core's, and FFmpeg's DCA decoder, a port of libdcadec, decodes the field's DTS 2.1 core, MA 4.1, MA 5.0, DTS-ES 6.1, and MA 6.1 tracks to `2.1`, `4.1` (`0x10F`), `5.0(side)`, and `6.1`, each a layout the output stage places.
+  The engine gained 4.1 for that: its back center splits across the surround pair, as 6.1's does; 4.0 (`0x107`), a back center without an LFE, has no layout, so four-channel DTS transcodes.
+  Every DTS profile is a direct-play profile; DTS-ES, which always extends a 5.1 core, takes no stereo or five-channel route.
 - Decoded format is authoritative (10-07).
   The declared format only screens a track at preparation.
   The output stage binds to the first decoded rate and layout and rebinds on a later change: the old resampler's tail goes through the still-running limiter, and a new resampler continues its output timeline and input expectation.

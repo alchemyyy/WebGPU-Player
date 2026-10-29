@@ -4233,23 +4233,34 @@ describe('CustomPlaybackEligibility', () => {
         }
     );
 
-    it('rejects DTS-ES, whose reported 6.1 layout failed runtime geometry validation', () => {
+    it.each([
+        { channelCount: 2, eligible: true, profile: 'DTS' },
+        { channelCount: 2, eligible: true, profile: 'DTS-HD HRA' },
+        { channelCount: 3, eligible: true, profile: 'DTS' },
+        { channelCount: 5, eligible: true, profile: 'DTS-HD MA' },
+        { channelCount: 7, eligible: true, profile: 'DTS-ES' },
+        { channelCount: 7, eligible: true, profile: 'DTS-HD MA' },
+        // A 4.0 bed has no layout
+        { channelCount: 4, eligible: false, profile: 'DTS-HD MA' }
+    ])('decodes $channelCount-channel $profile on the DTS package: $eligible', ({ channelCount, eligible, profile }) => {
         const options = createOptions();
         const mediaSource = options.mediaSource as {
             Container: string
             MediaStreams: Array<Record<string, unknown>>
         };
         mediaSource.Container = 'mkv';
-        mediaSource.MediaStreams[1].Channels = 7;
+        mediaSource.MediaStreams[1].Channels = channelCount;
         mediaSource.MediaStreams[1].Codec = 'dts';
-        mediaSource.MediaStreams[1].Profile = 'DTS-ES';
+        mediaSource.MediaStreams[1].Profile = profile;
         mediaSource.MediaStreams[1].SampleRate = 48_000;
 
         expect(getCustomPlaybackEligibility(
             options,
             createCapabilities(),
             { allowRawHDR: false, audioDecoders: AUDIO_PACKAGES, runtimeAvailability: AVAILABLE_RUNTIME }
-        )).toEqual({ eligible: false, reason: 'audio-layout-unsupported' });
+        )).toMatchObject(eligible ?
+            { audioDecoder: { codec: 'dts' }, audioOutputMode: 'decoded-pcm', audioSourceChannelCount: channelCount, eligible: true } :
+            { eligible: false, reason: 'audio-layout-unsupported' });
     });
 
     it('accepts the Matroska DCA alias through the same DTS package', () => {

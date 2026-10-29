@@ -16,3 +16,15 @@ The recorded remux command is:
 
 Current FFmpeg builds write slightly different container bytes, so the
 committed file is the reference.
+
+dts-core-stereo.mka and dts-core-5.0.mka are FFmpeg's experimental DTS core
+encoder's output (dca), one sine per source channel at amplitude 0.25 (FL 400,
+FR 600, FC 800, SL 1000, SR 1200 Hz), in Matroska. They show which speaker mask
+the dts package reports for a stereo and a 5.0(side) core and which plane
+carries which channel. The recorded commands are:
+
+  ffmpeg -fflags +bitexact -f lavfi -i "aevalsrc=0.25*sin(2*PI*400*t)|0.25*sin(2*PI*600*t):s=48000:c=stereo:d=0.16" -c:a dca -strict -2 -b:a 768k -flags +bitexact -f matroska dts-core-stereo.mka
+  ffmpeg -fflags +bitexact -f lavfi -i "aevalsrc=0.25*sin(2*PI*400*t)|0.25*sin(2*PI*600*t)|0.25*sin(2*PI*800*t)|0.25*sin(2*PI*1000*t)|0.25*sin(2*PI*1200*t):s=48000:c=5.0(side):d=0.16" -c:a dca -strict -2 -b:a 768k -flags +bitexact -f matroska dts-core-5.0.mka
+
+Other FFmpeg builds write slightly different bytes, so the committed files are
+the references.

@@ -22,7 +22,6 @@ import {
     EAC3_SUPPORTED_INPUT_ROUTES,
     TRUEHD_SUPPORTED_INPUT_ROUTES,
     hasCustomAudioMetadataLayout,
-    isDTSDirectPlayProfileToken,
     isSupportedTrueHDInputRoute
 } from './CustomCompressedAudioRoute';
 import { isSupportedCustomAudioSampleRate } from './CustomAudioSampleRate';
@@ -82,8 +81,8 @@ const CUSTOM_WEBCODECS_SURROUND_INPUT_CHANNEL_COUNTS: readonly number[] = Object
     CUSTOM_SEVEN_POINT_ONE_INPUT_CHANNEL_COUNT
 ]);
 // Three-channel AC-3 transcodes: 2/1 and 3/0 both reach Jellyfin as "3.0", which drops the "(back)" suffix, and no evidence covers either bed.
-// Five channels play as 3/2, which the package reports as 5.0(side) and which may gain its LFE mid-stream, as the output stage rebinds to; a 3/1 or 2/2 bed
-// with an LFE reports a mask no layout has and fails its attempt.
+// Five channels play as 3/2, which the package reports as 5.0(side) and which may gain its LFE mid-stream, as the output stage rebinds to, or as 3/1 with
+// an LFE, FFmpeg's 4.1; a 2/2 bed with an LFE reports a mask no layout has and fails its attempt.
 const CUSTOM_AC3_INPUT_CHANNEL_COUNTS: readonly number[] = [
     CUSTOM_MONO_INPUT_CHANNEL_COUNT,
     CUSTOM_STEREO_INPUT_CHANNEL_COUNT,
@@ -91,12 +90,7 @@ const CUSTOM_AC3_INPUT_CHANNEL_COUNTS: readonly number[] = [
     CUSTOM_SURROUND_INPUT_CHANNEL_COUNT
 ];
 const CUSTOM_EAC3_INPUT_CHANNEL_COUNTS = getSortedChannelCounts(EAC3_SUPPORTED_INPUT_ROUTES.map(route => route.channelCount));
-// DTS-ES holds the only 6.1 route, whose reported geometry failed validation, so seven channels have no presentation path
-const CUSTOM_DTS_INPUT_CHANNEL_COUNTS = getSortedChannelCounts(
-    DTS_SUPPORTED_INPUT_ROUTES
-        .filter(route => route.profileTokens.some(isDTSDirectPlayProfileToken))
-        .map(route => route.channelCount)
-);
+const CUSTOM_DTS_INPUT_CHANNEL_COUNTS = getSortedChannelCounts(DTS_SUPPORTED_INPUT_ROUTES.map(route => route.channelCount));
 const CUSTOM_TRUEHD_INPUT_CHANNEL_COUNTS = getSortedChannelCounts(
     TRUEHD_SUPPORTED_INPUT_ROUTES
         .filter(route => route.codec === 'truehd')

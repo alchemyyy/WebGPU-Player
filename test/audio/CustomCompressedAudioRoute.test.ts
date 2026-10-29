@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+    DTS_PROFILE_TOKENS,
     DTS_SUPPORTED_INPUT_ROUTES,
     hasCustomAudioMetadataLayout,
-    isSupportedTrueHDInputRoute
+    isSupportedTrueHDInputRoute,
+    type DTSProfileToken
 } from 'webgpu-player/audio/CustomCompressedAudioRoute';
 
 const MONO_CHANNEL_COUNT = 1;
@@ -20,11 +22,26 @@ describe('CustomCompressedAudioRoute', () => {
         expect(DTS_SUPPORTED_INPUT_ROUTES).toContainEqual({
             channelCount: THREE_CHANNEL_COUNT,
             metadataLayouts: [ '2.1', '3.0' ],
-            profileTokens: [ 'DTSHDMA', 'DTSHDMADTSX' ],
+            profileTokens: [ 'DTS', 'DTS9624', 'DTSHDHRA', 'DTSHDMA', 'DTSHDMADTSX' ],
             sampleRate: TRUEHD_SEVEN_POINT_ONE_SAMPLE_RATE
         });
         expect(DTS_SUPPORTED_INPUT_ROUTES.filter(route => route.channelCount === MONO_CHANNEL_COUNT))
             .toHaveLength(1);
+    });
+
+    it.each([
+        // Stereo and 5.0: every profile with such a core or lossless bed; DTS-ES extends a 5.1 core
+        { channelCount: 2, profiles: [ 'DTS', 'DTS9624', 'DTSHDHRA', 'DTSHDMA', 'DTSHDMADTSX' ] },
+        { channelCount: 5, profiles: [ 'DTS', 'DTS9624', 'DTSHDHRA', 'DTSHDMA', 'DTSHDMADTSX' ] },
+        { channelCount: 6, profiles: [ 'DTS', 'DTS9624', 'DTSES', 'DTSHDHRA', 'DTSHDMA', 'DTSHDMADTSX' ] },
+        // Seven channels: DTS-ES's XCh and the lossless 6.1 beds, never a core alone
+        { channelCount: 7, profiles: [ 'DTSES', 'DTSHDHRA', 'DTSHDMA', 'DTSHDMADTSX' ] }
+    ])('routes $channelCount-channel DTS of exactly the profiles that carry such a bed', ({ channelCount, profiles }) => {
+        const routedProfiles = new Set<DTSProfileToken>(DTS_SUPPORTED_INPUT_ROUTES
+            .filter(route => route.channelCount === channelCount)
+            .flatMap(route => route.profileTokens));
+
+        expect(DTS_PROFILE_TOKENS.filter(profile => routedProfiles.has(profile))).toEqual(profiles);
     });
 
     it('matches Jellyfin channel-layout metadata case- and space-insensitively', () => {

@@ -276,7 +276,7 @@ The package file that both halves share (see [Decoder packages](decoder-packages
 
 - `CustomAudioCodec.ts`: the WebCodecs, Mediabunny PCM, and package codec lists; the package codecs are those the engine has no decoder of.
 - `CustomAudioSampleRate.ts`: the sample rate contract, any positive integer.
-- `CustomCompressedAudioRoute.ts`: the E-AC-3, DTS, and TrueHD route tables that the input channel counts derive from, the DTS direct-play profiles, and the TrueHD rate rule.
+- `CustomCompressedAudioRoute.ts`: the E-AC-3, DTS, and TrueHD route tables that the input channel counts derive from, the DTS profiles, and the TrueHD rate rule.
 - `CustomAudioOutputPolicy.ts`: input channels per codec, the 3.0 layout requirement for decoders without a speaker mask, and the 48 kHz 2, 6, and 8-channel output contract with its 2 s ring.
 - `NativeMultichannelAudioOutput.ts`: the speaker layout setting (`selectCustomAudioSpeakerLayout`) and the output layout rule (`selectCustomAudioOutputLayout`: objects take the whole layout; otherwise three channels, 5.0, and 5.1 to 5.1, 6.1 and 7.1 to 7.1 or 5.1, else stereo).
 - `AudioNormalization.ts`: TrackGain and AlbumGain decibels to linear gain.

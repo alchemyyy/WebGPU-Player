@@ -261,7 +261,7 @@ MPEG-1, H.263, MS-MPEG4, VP8, VP9, and AV1 have no interlaced coding.
   | ac3 | 1, 2, 5, 6 (2/1 and 3/0 both arrive as `3.0`, and no evidence covers either; 5 is 3/2, `5.0(side)`) |
   | eac3 | 1, 2, 6, 8 |
   | mp3 | 1, 2 |
-  | dts | 1, 2, 3, 6, 8 |
+  | dts | 1, 2, 3, 5, 6, 7, 8 (4.1 and 5.0 arrive with 5, 6.1 with 7) |
   | truehd | 1, 2, 6, 8 (8 only at 48 kHz) |
   | mlp | 1, 2 |
   | wmav1, wmav2 | 1, 2 |
@@ -270,8 +270,8 @@ MPEG-1, H.263, MS-MPEG4, VP8, VP9, and AV1 have no interlaced coding.
 
   Jellyfin keeps only the part of FFmpeg's layout name before `(`, so `3.0(back)` arrives as `3.0` and `7.1(wide)` as `7.1`.
   A package reports each block's speaker mask, so the mask, not the declared layout, tells them apart at runtime: a DTS 3.0(back) plays with its back center on the surrounds, and a mask with no output layout fails the attempt as `decode-failed`, which renegotiates.
-  DTS-ES carries the only 6.1 bed, whose reported geometry failed validation, so seven channels have no route.
-  For the same reason seven-channel WMA Pro and WMA Lossless have none.
+  DTS-ES's XCh and a lossless 6.1 bed decode to the WAVE 6.1 mask, which plays with its back center split across the surround or back pair; a DTS 4.1 plays the same way, and a mask with no layout, such as 4.0, fails the attempt.
+  Seven-channel WMA Pro and WMA Lossless still have no route, since their input table leaves 6.1 out.
   An 8-channel AAC, Opus, FLAC, or Vorbis track declares no mask, so it lays out by its count as WAVE 7.1 (`CUSTOM_SEVEN_POINT_ONE_CHANNEL_LAYOUT`), the order its 7.1 probe proved.
   FFmpeg's encoder writes 7.1 AAC as AudioSpecificConfig channelConfiguration 7, which FFmpeg's decoder, and so Chrome's, reads as 7.1 with back and side pairs, not the specification's 7.1(wide); either reaches the engine as `7.1`.
 - DTS and TrueHD play from Matroska and from MP4, M4V, and MOV (the `DTS `, `dtsc`, `dtsh`, `dtsl`, and `mlpa` sample entries); MLP plays only from Matroska.

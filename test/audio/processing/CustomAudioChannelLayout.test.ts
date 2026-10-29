@@ -10,6 +10,7 @@ import {
     CUSTOM_FIVE_POINT_ONE_SIDE_POINT_TWO_CHANNEL_LAYOUT,
     CUSTOM_FIVE_POINT_ZERO_BACK_CHANNEL_LAYOUT,
     CUSTOM_FIVE_POINT_ZERO_CHANNEL_LAYOUT,
+    CUSTOM_FOUR_POINT_ONE_CHANNEL_LAYOUT,
     CUSTOM_MONO_CHANNEL_LAYOUT,
     CUSTOM_SIX_POINT_ONE_CHANNEL_LAYOUT,
     CUSTOM_SEVEN_POINT_ONE_CHANNEL_LAYOUT,
@@ -150,6 +151,19 @@ describe('CustomAudioChannelLayout', () => {
         }
     );
 
+    it('mixes 4.1 to stereo as the 5.1 its back center splits into, through each algorithm', () => {
+        const channels = createNumberedChannels(5);
+        const backCenter = 5 * FOLDED_GAIN;
+        const fivePointOne = [ ...channels.slice(0, 4), new Float32Array([ backCenter ]), new Float32Array([ backCenter ]) ];
+
+        for (const algorithm of Object.values(CUSTOM_AUDIO_DOWNMIX_ALGORITHMS)) {
+            const output = getFirstFrames(mixCustomAudioToStereo(channels, CUSTOM_FOUR_POINT_ONE_CHANNEL_LAYOUT, algorithm));
+            const expected = getFirstFrames(mixCustomAudioToStereo(fivePointOne, CUSTOM_FIVE_POINT_ONE_CHANNEL_LAYOUT, algorithm));
+            expect(output[0]).toBeCloseTo(expected[0], 6);
+            expect(output[1]).toBeCloseTo(expected[1], 6);
+        }
+    });
+
     it('applies the selected matrix only when stereo conversion is required', () => {
         const channels = [ 1, 2, 3, 4, 5, 6 ].map(value => (
             new Float32Array([ value ])
@@ -262,6 +276,17 @@ describe('CustomAudioChannelLayout', () => {
             expectedFrames: [ 1, 2, 0, 3, 0, 0 ],
             layout: CUSTOM_TWO_POINT_ONE_CHANNEL_LAYOUT,
             outputLayout: '5.1'
+        },
+        // 4.1's back center splits across the 5.1 surround pair or the 7.1 back pair
+        {
+            expectedFrames: [ 1, 2, 3, 4, 5 * FOLDED_GAIN, 5 * FOLDED_GAIN ],
+            layout: CUSTOM_FOUR_POINT_ONE_CHANNEL_LAYOUT,
+            outputLayout: '5.1'
+        },
+        {
+            expectedFrames: [ 1, 2, 3, 4, 5 * FOLDED_GAIN, 5 * FOLDED_GAIN, 0, 0 ],
+            layout: CUSTOM_FOUR_POINT_ONE_CHANNEL_LAYOUT,
+            outputLayout: '7.1'
         },
         // 5.0 fills 5.1 without its LFE, and 7.1 by the names of its sides or backs
         {

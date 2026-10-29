@@ -115,28 +115,23 @@ describe('CustomAudioOutputPolicy', () => {
     });
 
     it('accepts measured and composed DTS channel beds at every sample rate', () => {
-        expect(getSupportedCustomAudioInputChannelCounts('dts')).toEqual([
-            1,
-            2,
-            3,
-            6,
-            8
-        ]);
+        expect(getSupportedCustomAudioInputChannelCounts('dts')).toEqual([ 1, 2, 3, 5, 6, 7, 8 ]);
         for (const [ channelCount, sampleRate ] of [
             [ 1, 48_000 ],
             [ 2, 48_000 ],
             [ 3, 48_000 ],
+            [ 5, 48_000 ],
             [ 6, 48_000 ],
             [ 6, 12_345 ],
+            [ 7, 48_000 ],
             [ 8, 96_000 ],
             [ 8, 192_000 ]
         ] as const) {
             expect(isSupportedCustomAudioInputLayout('dts', channelCount, sampleRate))
                 .toBe(true);
         }
+        // 4.0, a back center without an LFE, has no layout
         expect(isSupportedCustomAudioInputLayout('dts', 4, 48_000)).toBe(false);
-        // DTS-ES holds the only 6.1 route, whose reported geometry failed validation
-        expect(isSupportedCustomAudioInputLayout('dts', 7, 48_000)).toBe(false);
         expect(isSupportedCustomAudioInputLayout('dts', 8, ZERO_SAMPLE_RATE)).toBe(false);
         expect(isSupportedCustomAudioInputLayout('dts', 8, FRACTIONAL_SAMPLE_RATE)).toBe(false);
     });
