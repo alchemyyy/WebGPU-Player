@@ -1306,6 +1306,10 @@ async function prepareVideoTrack(
     if (run.cancelled) {
         throw new UnsupportedCustomDecodeSourceError('Custom decode was cancelled');
     }
+    // A container whose metadata names no video track Mediabunny reads, such as an unfinalized Matroska file's, fails the run once its metadata is read
+    if (videoTracks.length === 0) {
+        throw new UnsupportedCustomDecodeSourceError('The container has no video track');
+    }
 
     const videoTrack = getTrackByOrdinal(videoTracks, request.videoTrackIndex);
     if (!videoTrack) {

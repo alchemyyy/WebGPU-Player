@@ -898,6 +898,9 @@ These were settled on Firefox 157 on Windows.
   The worker now computes each run's origin once its tracks are prepared, the first timestamp of the tracks it plays, truncated to whole microseconds as Mediabunny truncates packet times, and works in container time inside and playback time at its boundary.
   The tracks a run plays, rather than all of a file's, set the origin, so a stream the run never reads, which may start late or hold no packets, costs no read; a run without its audio track may start the timeline a few milliseconds later than FFprobe's `start_time`.
   `hasProgramClockTimestamps` names the containers that take an origin, MPEG-TS and M2TS; every other container's tracks start where the host's positions start, and keep their times.
+- A container without a video track fails as soon as its metadata is read (10-29).
+  An unfinalized Matroska file, whose Segment size mkvmerge left at 0, gave Mediabunny no tracks after a read of every cluster, and the worker then reported a missing track ordinal.
+  The worker now fails a container whose metadata names no video track as `source-unsupported` with its own message, so renegotiation names the cause; how long the metadata read takes is the demuxer's.
 
 ## Audio
 
