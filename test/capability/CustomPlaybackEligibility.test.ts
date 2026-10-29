@@ -21,6 +21,7 @@ import {
 import {
     getCustomPlaybackEligibility,
     getDolbyVisionReconstructionRawFrameFormat,
+    getAudioMetadataLayout,
     getGPUVideoDecodeTarget,
     getPlaybackAudioCodec,
     playbackAudioNeedsObjectRendering,
@@ -1837,6 +1838,27 @@ describe('CustomPlaybackEligibility', () => {
             createCapabilities(),
             { allowRawHDR: false, audioDecoders: AUDIO_PACKAGES, runtimeAvailability: AVAILABLE_RUNTIME }
         )).toMatchObject(expected);
+    });
+
+    it('hands playback Jellyfin\'s channel count of the selected track as its metadata layout, and none without audio', () => {
+        const options = createOptions();
+        const mediaSource = options.mediaSource as {
+            DefaultAudioStreamIndex?: number | null
+            MediaStreams: Array<Record<string, unknown>>
+        };
+        mediaSource.MediaStreams[1] = { ...mediaSource.MediaStreams[1], Channels: 6, Codec: 'ac3', SampleRate: 48_000 };
+        const eligibility = getCustomPlaybackEligibility(
+            options,
+            createCapabilities(),
+            { allowRawHDR: false, audioDecoders: AUDIO_PACKAGES, runtimeAvailability: AVAILABLE_RUNTIME }
+        );
+        mediaSource.DefaultAudioStreamIndex = null;
+        mediaSource.MediaStreams.splice(1, 1);
+        const silentEligibility = getCustomPlaybackEligibility(options, createCapabilities(), { allowRawHDR: false, runtimeAvailability: AVAILABLE_RUNTIME });
+
+        expect(eligibility.eligible && getAudioMetadataLayout(eligibility)).toEqual({ channelCount: 6 });
+        expect(silentEligibility).toMatchObject({ audioTrackIndex: null, eligible: true });
+        expect(silentEligibility.eligible && getAudioMetadataLayout(silentEligibility)).toBeUndefined();
     });
 
     it.each([ 8, 16, 20, 24, 32 ])(

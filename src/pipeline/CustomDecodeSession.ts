@@ -52,6 +52,7 @@ import {
     MAX_DECODED_FRAME_CREDITS,
     MAX_DECODED_RAW_FRAME_CREDITS,
     type CustomDecodeFailureKind,
+    type CustomDecodeAudioMetadataLayout,
     type CustomDecodeAudioOutputMode,
     type CustomDecodeDolbyVisionProfile,
     type CustomDecodeNativeHDRTransfer,
@@ -105,6 +106,8 @@ const UNEXPECTED_FRAME_OUTPUT_MODE_FAILURE = 'The custom decode worker returned 
 export type CustomDecodeSessionStartOptions = {
     audioDownmixAlgorithm?: CustomAudioDownmixAlgorithm
     audioDownmixSettings?: AudioDownmixSettings
+    /** The selected audio track's layout as the host's media metadata declares it; audio only */
+    audioMetadataLayout?: CustomDecodeAudioMetadataLayout
     audioOutputMode?: CustomDecodeAudioOutputMode
     audioTrackIndex?: number | null
     /** Binaural headphone rendering by an audio decoder package that declares `renderBinaural`, when the output is stereo */
@@ -517,6 +520,15 @@ function validateGPUVideoDecodeStartOptions(options: CustomDecodeSessionStartOpt
     if (framePool && options.neutralizeHDRColorMetadata) {
         throw new TypeError('Frame-pool custom decode presents planes without native color handling');
     }
+}
+
+/** Returns the start request's metadata layout field, which only a start with an audio track carries. */
+function getAudioMetadataLayoutStartField(
+    options: CustomDecodeSessionStartOptions
+): { audioMetadataLayout?: CustomDecodeAudioMetadataLayout } {
+    return options.audioTrackIndex != null && options.audioMetadataLayout !== undefined ?
+        { audioMetadataLayout: options.audioMetadataLayout } :
+        {};
 }
 
 /** Returns the start request's parser field for a decoder package with a parser, which the decode worker runs on its parser coordinator worker. */
@@ -1246,6 +1258,7 @@ export default class CustomDecodeSession {
     private createStartRequest(options: CustomDecodeSessionStartOptions): DecodeWorkerStartRequest {
         const audioOutputMode = options.audioOutputMode ?? 'decoded-pcm';
         const startRequest: DecodeWorkerStartRequest = {
+            ...getAudioMetadataLayoutStartField(options),
             audioSampleCredits: 0,
             audioTrackIndex: options.audioTrackIndex ?? null,
             dolbyVisionProfile: options.dolbyVisionProfile,

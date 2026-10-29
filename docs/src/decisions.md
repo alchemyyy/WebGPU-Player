@@ -952,6 +952,12 @@ These were settled on Firefox 157 on Windows.
   A 5.0 bed maps by name into a 5.1 output with a silent LFE, and mixes to stereo as that 5.1 through the selected algorithm, as a height layout mixes through its floor.
   FFmpeg's AC-3 encode of five syncframes of 3/2 and then five of 3/2 with LFE, one tone per channel, decodes through the `eac3` package to `0x607` and then `0x60F` blocks with every tone in its WAVE place (`src/capability/vectors/test/ac3/`), and the output stage rebinds from five channels to six on one timeline.
   AC-3 therefore admits five channels; a 3/1 or 2/2 bed with an LFE also has five, reports a mask with no layout, and fails its attempt as `decode-failed`.
+- Jellyfin's channel count screens a track whose container's count has no layout (10-29).
+  Mediabunny copies a Matroska track's header `Channels`, which a muxer can write from the first frames (an AC-3 3/2 stretch before 5.1) or wrongly (DTS 5.1 declared as four channels), while Jellyfin's count comes from FFmpeg's probe of the frames.
+  Without a container mask, a count with no layout refused the track at preparation as `source-unsupported`, and playback renegotiated to a transcode.
+  The host now passes the selected track's metadata layout (`audioMetadataLayout`: Jellyfin's count, and a speaker mask where the metadata names a layout no count implies) with each start and track switch, and `resolveDeclaredAudioChannelLayout` screens with it: a container mask decides, then a metadata mask of the container's count, then the container's count, and only when that has no layout the metadata's count.
+  The decoded layout stays authoritative at runtime, as for E-AC-3 7.1 declared as six or seven channels.
+  The native media route plays a track whose declared count it does not qualify at the metadata's count when that is stereo or 5.1, since the browser's decoder reads each syncframe's bed; a true five-channel AC-3 track has no native route at eligibility and takes the package.
 - E-AC-3 7.1 needs the layout, not only the channel count: the decoder must report the decoded channel layout (`9ca70e11ad`).
   Eligibility also required a declared `7.1` layout until E-AC-3 became a package codec (10-13); a package reports every block's mask, which now decides alone.
 - The DTS envelope, until 10-13.

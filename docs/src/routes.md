@@ -54,6 +54,7 @@ AVI audio takes the same routes as any container's: Mediabunny reads a WAVE_FORM
 A track whose container declares a WAVE channel mask, which Mediabunny's `getChannelMask` reports for WAVE_FORMAT_EXTENSIBLE, is laid out by that mask: the worker takes its layout from `CustomWaveChannelLayout.ts` and passes the mask to the audio decode worker's attempt, whose output stage binds Mediabunny's decoded samples to it.
 So a three-channel 2.1 track feeds its third channel to the LFE, and 3.0(back) splits it across the surround pair, as FFmpeg's decode does, where three channels without a mask are 3.0.
 A mask of 0, or none, lays channels out by their count; a mask the output stage has no layout for, or one naming more or fewer speakers than the track has channels, is refused as `The selected audio channel mask is unqualified`.
+Without a container mask, the host's `audioMetadataLayout` (Jellyfin's count and, where the metadata names a layout no count implies, its mask) screens the track: a metadata mask lays out the channels when it names the container's count, and Jellyfin's count replaces a container count that has no layout (`demux/CustomAudioTrackMetadata.ts`); a track neither lays out is refused as `The selected audio channel layout is unavailable`.
 
 ## Probes and caching
 

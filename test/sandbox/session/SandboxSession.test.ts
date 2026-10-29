@@ -111,6 +111,7 @@ vi.mock('webgpu-player/capability/CustomPlaybackRuntime', () => ({
     getCustomPlaybackRuntimeAvailability: vi.fn(() => ({}))
 }));
 vi.mock('webgpu-player/capability/CustomPlaybackEligibility', () => ({
+    getAudioMetadataLayout: vi.fn(() => undefined),
     getCustomPlaybackEligibility: vi.fn((options: { source: unknown }) => {
         engineMocks.eligibilityCalls.push(options);
         return engineMocks.eligibility === null ? null : { source: options.source, ...engineMocks.eligibility };

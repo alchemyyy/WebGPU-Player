@@ -2,6 +2,9 @@ import type { AudioCodec } from 'mediabunny';
 
 import { MICROSECONDS_PER_SECOND } from '../MediaTime';
 import { isSupportedCustomAudioSampleRate } from '../audio/CustomAudioSampleRate';
+import { getCustomAudioChannelLayout, type CustomAudioChannelLayout } from '../audio/processing/CustomAudioChannelLayout';
+import { getQualifiedCustomWaveChannelLayout } from '../audio/processing/CustomWaveChannelLayout';
+import type { CustomDecodeAudioMetadataLayout } from '../pipeline/DecodeWorkerProtocol';
 
 // ISO BMFF audio sample entries store their rate as 16.16 fixed point
 const ISO_BASE_MEDIA_SAMPLE_RATE_SCALE = 0x1_0000;
@@ -68,6 +71,63 @@ export function getDeclaredAudioSampleRate(internalCodecID: unknown, sampleRate:
         return DTS_CORE_SAMPLE_RATE;
     }
     return sampleRate;
+}
+
+/** The channel count a track is screened with, the WAVE mask that lays its channels out or null to lay them out by count, and their layout. */
+export type DeclaredAudioChannelLayout = Readonly<{
+    channelCount: number
+    channelMask: number | null
+    layout: CustomAudioChannelLayout
+}>;
+
+/**
+ * Resolves the layout a track is screened with from its container's channel count and mask and the host's media metadata.
+ * A mask the container declares decides, and must name as many speakers as the track has channels, else the track is refused rather than played in the wrong
+ * speakers.
+ * Without one, the metadata's mask lays the channels out when it names the container's count: a decoder without a mask cannot tell a 2.1 FLAC from 3.0.
+ * Otherwise the container's count lays them out, or the metadata's count when the container's has no layout, as a Matroska header that declares its first
+ * frame's channels can; the decoded layout stays authoritative at runtime.
+ */
+export function resolveDeclaredAudioChannelLayout(
+    channelCount: number,
+    containerChannelMask: number | null,
+    metadataLayout: CustomDecodeAudioMetadataLayout | null
+): Readonly<{ status: 'failed', failure: string }> | (DeclaredAudioChannelLayout & Readonly<{ status: 'resolved' }>) {
+    // A zero mask declares no speaker positions
+    if (containerChannelMask !== null && containerChannelMask !== 0) {
+        const qualifiedLayout = getQualifiedCustomWaveChannelLayout(containerChannelMask);
+        return qualifiedLayout?.channelCount === channelCount ?
+            { channelCount, channelMask: containerChannelMask, layout: qualifiedLayout.layout, status: 'resolved' } :
+            { failure: `The selected audio channel mask is unqualified: 0x${containerChannelMask.toString(16)}`, status: 'failed' };
+    }
+    const metadataMask = metadataLayout?.channelMask;
+    const metadataMaskLayout = metadataMask === undefined ? null : getQualifiedCustomWaveChannelLayout(metadataMask);
+    if (metadataMask !== undefined && metadataMaskLayout?.channelCount === channelCount) {
+        return { channelCount, channelMask: metadataMask, layout: metadataMaskLayout.layout, status: 'resolved' };
+    }
+    const countLayout = getCustomAudioChannelLayout(channelCount);
+    if (countLayout) {
+        return { channelCount, channelMask: null, layout: countLayout, status: 'resolved' };
+    }
+    const metadataCountLayout = metadataLayout ? getCustomAudioChannelLayout(metadataLayout.channelCount) : null;
+    return metadataLayout && metadataCountLayout ?
+        { channelCount: metadataLayout.channelCount, channelMask: null, layout: metadataCountLayout, status: 'resolved' } :
+        { failure: 'The selected audio channel layout is unavailable', status: 'failed' };
+}
+
+// The beds the native media route's probes qualify: stereo and 5.1
+const NATIVE_MEDIA_AUDIO_CHANNEL_COUNTS: ReadonlySet<number> = new Set([ 2, 6 ]);
+
+/**
+ * Returns the bed the native media route plays an AC-3 or E-AC-3 track at: its declared one when the route's probes qualify it, else the metadata's.
+ * The browser's decoder reads each syncframe's own bed, so a track whose container declares the 3/2 of its first syncframes plays at the 5.1 Jellyfin
+ * probed; null when neither is a qualified bed.
+ */
+export function getNativeMediaAudioChannelCount(declaredChannelCount: number, metadataChannelCount: number | null): number | null {
+    if (NATIVE_MEDIA_AUDIO_CHANNEL_COUNTS.has(declaredChannelCount)) {
+        return declaredChannelCount;
+    }
+    return metadataChannelCount !== null && NATIVE_MEDIA_AUDIO_CHANNEL_COUNTS.has(metadataChannelCount) ? metadataChannelCount : null;
 }
 
 /**

@@ -22,6 +22,7 @@ import type {
 } from './CustomDecodeSession';
 import type {
     CustomDecodeFailureKind,
+    CustomDecodeAudioMetadataLayout,
     CustomDecodeAudioOutputMode,
     CustomDecodeDolbyVisionProfile,
     CustomDecodeNativeHDRTransfer,
@@ -65,6 +66,11 @@ export type CustomPlaybackPlayOptions = {
     audioDecoder?: AudioDecoderPackageSelection
     audioDownmixAlgorithm?: CustomAudioDownmixAlgorithm
     audioDownmixSettings?: AudioDownmixSettings
+    /**
+     * The selected audio track's layout as the host's media metadata declares it, which screens a track whose container declares a count no layout has,
+     * or lays out the channels of a decoder without a speaker mask; decoded or native audio only
+     */
+    audioMetadataLayout?: CustomDecodeAudioMetadataLayout
     audioOutputMode?: CustomDecodeAudioOutputMode
     /**
      * The audio decoder package renders the track's object audio, Dolby Atmos in E-AC-3 or TrueHD, so a live layout switch keeps the whole layout
@@ -92,6 +98,22 @@ export type CustomPlaybackPlayOptions = {
     videoOutputMode: CustomDecodeVideoOutputMode
     videoTrackIndex: number
 };
+
+/**
+ * The route a client-side audio switch plays its new track on.
+ * An omitted output mode, output layout, downmix, or binaural setting keeps the current source's; an omitted decoder package, object rendering,
+ * or metadata layout is none.
+ */
+export type CustomPlaybackAudioSwitch = Pick<
+    CustomPlaybackPlayOptions,
+    | 'audioDecoder'
+    | 'audioDownmixSettings'
+    | 'audioMetadataLayout'
+    | 'audioOutputMode'
+    | 'audioRendersObjects'
+    | 'binauralHeadphones'
+    | 'decodedAudioOutputLayout'
+>;
 
 export type CustomPlaybackStartResult = {
     fallbackReason: CustomPlaybackFallbackReason | null

@@ -72,6 +72,7 @@ import {
     type RawHDRAuthorizationRouteKey
 } from '../validation/RawHDRPresentationAuthorization';
 import type {
+    CustomDecodeAudioMetadataLayout,
     CustomDecodeAudioOutputMode,
     CustomDecodeNativeHDRTransfer,
     CustomDecodeRawVideoFrameFormat,
@@ -2569,6 +2570,18 @@ export function getPlaybackAudioCodec(options: unknown): CustomAudioCodec | null
         return null;
     }
     return AUDIO_CODEC_ALIASES.get(normalizeMetadataValue(selectedAudio.stream.Codec) ?? '') ?? null;
+}
+
+/**
+ * Returns the selected audio track's layout as Jellyfin declares it, which a host passes to playback as `audioMetadataLayout`, or undefined without audio.
+ * The worker screens a track whose container declares a channel count no layout has with it, as a Matroska header that declares its first frame's can.
+ */
+export function getAudioMetadataLayout(eligibility: EligibleCustomPlayback): CustomDecodeAudioMetadataLayout | undefined {
+    const channelCount = eligibility.audioSourceChannelCount;
+    if (eligibility.audioTrackIndex === null || channelCount === null || !Number.isSafeInteger(channelCount) || channelCount <= 0) {
+        return undefined;
+    }
+    return { channelCount };
 }
 
 /**

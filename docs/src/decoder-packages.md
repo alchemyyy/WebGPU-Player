@@ -532,7 +532,7 @@ A block with objects passes through the output stage's peak limiter, since the p
   A 4:0:0 pixel format, `gray`, `gray9`, `gray10`, or `gray12` in either byte order, takes the 4:2:0 format of its depth, and only a decoder whose header declares `monochrome` is offered it.
   A JPEG 2000 stream in `xyz12le` takes I444P12, which a JPEG 2000 decoder writes as limited-range BT.709 Y'CbCr of FFmpeg's conversion of its X'Y'Z' to R'G'B'.
 - The controller takes `gpuVideoDecodeSessionFactory: createGPUVideoDecodeSessionFactory(presenter, { slicing })`, where `slicing` is the host's choice of sliced decode submits, and `play()` takes the eligibility's `gpuVideoDecoder` and `audioDecoder`.
-- An audio track switch passes the new track's `audioDecoder` from its own eligibility to `setAudioStreamIndex`; the previous track's package never carries over.
+- An audio track switch passes the new track's `audioDecoder` from its own eligibility to `setAudioStreamIndex`, with its `audioMetadataLayout` (`getAudioMetadataLayout`); the previous track's package and layout never carry over.
 
 ### Verifying a package
 

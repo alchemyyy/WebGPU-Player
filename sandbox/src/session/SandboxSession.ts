@@ -12,6 +12,7 @@ import { createDefaultAudioDownmixSettings } from 'webgpu-player/audio/processin
 import { DEFAULT_CUSTOM_AUDIO_DOWNMIX_ALGORITHM } from 'webgpu-player/audio/processing/CustomAudioDownmixAlgorithm';
 import { probeCustomDecodeCapabilities } from 'webgpu-player/capability/CustomDecodeCapabilities';
 import {
+    getAudioMetadataLayout,
     getCustomPlaybackEligibility,
     type CustomAudioRenderTarget,
     type EligibleCustomPlayback
@@ -204,6 +205,7 @@ function createPlayOptions(
         ...(eligibility.audioDecoder ? { audioDecoder: eligibility.audioDecoder } : {}),
         audioDownmixAlgorithm: decodedAudio ? DEFAULT_CUSTOM_AUDIO_DOWNMIX_ALGORITHM : undefined,
         audioDownmixSettings: decodedAudio ? createDefaultAudioDownmixSettings() : undefined,
+        audioMetadataLayout: getAudioMetadataLayout(eligibility),
         audioOutputMode: eligibility.audioOutputMode ?? undefined,
         audioRendersObjects: decodedAudio ? eligibility.audioRendersObjects === true : undefined,
         audioTrackIndex: eligibility.audioTrackIndex,
