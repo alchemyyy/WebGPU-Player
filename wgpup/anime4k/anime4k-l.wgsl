@@ -1,4 +1,4 @@
-//! name: Anime4K Upscale Denoise CNN x2 L
+//! name: Anime4K L
 //! shape: compute
 //! hook: PRESCALE
 //! domain: source

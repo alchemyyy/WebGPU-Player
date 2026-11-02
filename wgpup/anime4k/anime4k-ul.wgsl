@@ -1,4 +1,4 @@
-//! name: Anime4K Upscale Denoise CNN x2 UL 1/8
+//! name: Anime4K UL 1/8
 //! shape: compute
 //! hook: PRESCALE
 //! domain: source
@@ -77,7 +77,7 @@ fn compute(id: vec3u) {
     TARGET_store(vec2u(position + vec2i(2 * imageSize.x, 0)), result2);
 }
 
-//! name: Anime4K Upscale Denoise CNN x2 UL 2/8
+//! name: Anime4K UL 2/8
 //! shape: compute
 //! hook: PRESCALE
 //! domain: source
@@ -358,7 +358,7 @@ fn compute(id: vec3u) {
     TARGET_store(vec2u(position + vec2i(2 * imageSize.x, 0)), result2);
 }
 
-//! name: Anime4K Upscale Denoise CNN x2 UL 3/8
+//! name: Anime4K UL 3/8
 //! shape: compute
 //! hook: PRESCALE
 //! domain: source
@@ -639,7 +639,7 @@ fn compute(id: vec3u) {
     TARGET_store(vec2u(position + vec2i(2 * imageSize.x, 0)), result2);
 }
 
-//! name: Anime4K Upscale Denoise CNN x2 UL 4/8
+//! name: Anime4K UL 4/8
 //! shape: compute
 //! hook: PRESCALE
 //! domain: source
@@ -920,7 +920,7 @@ fn compute(id: vec3u) {
     TARGET_store(vec2u(position + vec2i(2 * imageSize.x, 0)), result2);
 }
 
-//! name: Anime4K Upscale Denoise CNN x2 UL 5/8
+//! name: Anime4K UL 5/8
 //! shape: compute
 //! hook: PRESCALE
 //! domain: source
@@ -1201,7 +1201,7 @@ fn compute(id: vec3u) {
     TARGET_store(vec2u(position + vec2i(2 * imageSize.x, 0)), result2);
 }
 
-//! name: Anime4K Upscale Denoise CNN x2 UL 6/8
+//! name: Anime4K UL 6/8
 //! shape: compute
 //! hook: PRESCALE
 //! domain: source
@@ -1482,7 +1482,7 @@ fn compute(id: vec3u) {
     TARGET_store(vec2u(position + vec2i(2 * imageSize.x, 0)), result2);
 }
 
-//! name: Anime4K Upscale Denoise CNN x2 UL 7/8
+//! name: Anime4K UL 7/8
 //! shape: compute
 //! hook: PRESCALE
 //! domain: source
@@ -1763,7 +1763,7 @@ fn compute(id: vec3u) {
     TARGET_store(vec2u(position + vec2i(2 * imageSize.x, 0)), result2);
 }
 
-//! name: Anime4K Upscale Denoise CNN x2 UL 8/8
+//! name: Anime4K UL 8/8
 //! shape: compute
 //! hook: PRESCALE
 //! domain: source

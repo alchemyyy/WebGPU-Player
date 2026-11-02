@@ -302,7 +302,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('input')
     parser.add_argument('output')
-    parser.add_argument('--name', default='Anime4K Upscale Denoise CNN x2 UL')
+    parser.add_argument('--name', default='Anime4K UL')
     arguments = parser.parse_args()
     with open(arguments.input, encoding='ascii') as file:
         glsl = file.read()
