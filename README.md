@@ -1,19 +1,28 @@
-# WebGPU Player
+<h1 align="center">
+  <img src="images/webgpu-player-logo.svg" alt="WebGPU Player logo" width="80" align="absmiddle">WebGPU Player<br>
+  <sub><sup><sup>A WebGPU and WebCodecs media playback engine for the browser.</sup></sup></sub>
+</h1>
 
-<img src="images/webgpu-player-logo.svg" alt="WebGPU Player logo" width="160">
+This is a video streaming player backend built on top of WebGPU. It is therefore unhindered by the limitations of the stock HTML video players that get shipped with web browsers.
 
-A WebGPU and WebCodecs media playback engine for the browser.
-It plays sources that browsers cannot play natively, and presents HDR10, HDR10+, HLG, and Dolby Vision through its own color pipeline.
-Every native route is qualified in the running browser before a host may offer it.
-Codecs no browser decodes play through decoder packages a host loads at runtime: WGSL video decoders that run on the GPU, and WebAssembly audio decoders.
+Benefits of this:
 
-The documentation is a book in [docs/](docs/src/SUMMARY.md), written for [mdBook](https://github.com/rust-lang/mdBook).
-Read the Markdown in place, or build and serve it:
+* HDR tone-mapping
+* Multi-channel audio downmixing
+* Non-native codec support
+* Post-processing effects
+* and a lot more.
 
-```sh
-cargo install mdbook --version 0.5.4 --locked
-mdbook serve docs --open
-```
+Codecs and post-processing effects are supported through dynamically loaded WGSL + WASM modules. This means any codec or post-processing effect can be supported, without the need for clients to manually install additional software. Packs use GPU, CPU, or Hybrid architectures to achieve excellent playback performance, even with ultra-high-bitrate 4K media.
+
+
+
+The documentation is a book in [docs/](docs/src/SUMMARY.md), written with [mdBook](https://github.com/rust-lang/mdBook).
+
+### Sandbox Screenshot
+
+<img src="images/wgput2.png" alt="WebGPU Player logo" width="100%" align="absmiddle">
+
 
 ## Requirements
 
@@ -27,7 +36,7 @@ Required:
 
 Only for specific tasks:
 
-- CMake, Perl, GNU patch, and on Windows long path support, to build the decoder packages from the `wgpud/` submodule instead of installing their pinned release.
+- CMake, Perl, GNU patch, (and on Windows: long path support), to build the decoder packages from the `wgpud/` submodule instead of installing their pinned release.
   - The decoder projects' FFmpeg and cargo trees pass 260 characters in a nested checkout.
   - Enable `LongPathsEnabled` and Git's `core.longpaths`; GNU Make and the MSVC linker that cargo uses must accept long paths too.
 - Python 3.10 or later and the pinned FFmpeg and FFprobe build (`2026-03-01-git-862338fe31-full_build-www.gyan.dev`), to generate or check the codec vectors.
@@ -49,7 +58,7 @@ npm test
 npm run build
 ```
 
-[Set up a checkout](docs/src/setup.md) lists the toolchain, and [Embedding the engine](docs/src/embedding.md) shows how a host uses it.
+The [Set up a checkout](docs/src/setup.md) section in the docs lists the toolchain, and [Embedding the engine](docs/src/embedding.md) demonstrates how a host uses it.
 
 ## Credits
 
