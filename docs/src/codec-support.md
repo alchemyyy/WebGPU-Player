@@ -1,6 +1,6 @@
 # HEVC and Dolby Vision support
 
-This chapter says which HEVC and Dolby Vision sources, AV1 Profile 10 included, the custom pipeline plays, by which route, and on what evidence.
+This chapter says which HEVC and Dolby Vision sources, AV1 Profile 10 included, the custom pipeline plays, by which route, and on what evidence, and which AV1 sources fall back to a decoder package.
 It is the engine's support matrix: what `getCustomPlaybackEligibility` accepts and the route it selects, whatever the host.
 A host may restrict it further; the Jellyfin plugin's book has the matrix of what Jellyfin negotiates for each row.
 It comes from the source and the unit tests, not from playback.
@@ -15,18 +15,22 @@ HEVC is eligible only in the containers that `capability/CustomContainerCodecSup
 Resolution, level, frame rate, and bitrate are never gates.
 The route names are defined in [Routes](#routes), and the probe and authorization names in [Evidence](#evidence).
 
+Every HEVC row also falls back last to GPU, when the host offers a GPU decoder package whose header accepts the stream: the plain and range extension rows, and a Dolby Vision row's declared base.
+A Dolby Vision row with an RPU route also falls back to GPU-DV, RPU reconstruction from the package's frame pool, after its native and raw routes and its declared base's native and raw routes, and before that base's own GPU route; the authorization is the raw RPU route's key of the BL format.
+
 ## Plain HEVC
 
 | Variant | Eligible | Route, then fallback | Evidence |
 | --- | --- | --- | --- |
-| SDR, Main, 8-bit | Yes | VF-SDR native, then VF-SDR bundled | Native: `video.hevc` or `nativeUltraHDVideo.hevc`. Bundled: `bundledHEVC` Main |
+| SDR, Main, 8-bit | Yes | VF-SDR native | `video.hevc` or `nativeUltraHDVideo.hevc` |
 | SDR, Main 10, 10-bit | Yes | VF-SDR native, then RAW I420P10 SDR | VF-SDR: `nativeHDRHEVC`. RAW: `rawHDRVideo.hevc` and `I420P10:bt709:bt709:<limited or full>:sdr` |
 | PQ, with or without HDR10+ metadata, Main 10, 10-bit | Yes | VF-PQ, then RAW I420P10 PQ | VF: `nativeHDRHEVC` and `ext-pq`. RAW: `rawHDRVideo.hevc` and `I420P10:bt2020-ncl:bt2020:limited:pq` |
 | HLG, Main 10, 10-bit | Yes | VF-HLG, then RAW I420P10 HLG | VF: `nativeHDRHEVC` and `ext-hlg`. RAW: `rawHDRVideo.hevc` and `I420P10:bt2020-ncl:bt2020:limited:hlg` |
 
 The SDR rows cover every transfer the engine reads as SDR: BT.709, SMPTE 170M, sRGB, and the BT.2020 10 and 12-bit transfers, which use the BT.709 curve.
 They take BT.709, BT.601 (SMPTE 170M, SMPTE 240M, or BT.470 BG), or BT.2020 primaries and matrix.
-The VF-SDR routes leave the color conversion to Chrome, while the raw SDR keys stay BT.709 only, so Main 10 SDR in BT.601 or BT.2020 color has no raw fallback.
+The VF-SDR routes leave the color conversion to Chrome, while the raw SDR routes convert a gamut other than BT.709 themselves, through the raw SDR key of the stream's matrix, primaries, and range, which authorizes on first use outside BT.709.
+Jellyfin's HDR10+ flag does not change these rows: HDR10+ metadata applies only on a PQ transfer, so an SDR or HLG stream that Jellyfin flags as carrying it takes its SDR or HLG row, and its metadata is ignored.
 
 The HLG row includes HLG-compatible streams, whose VUI signals the BT.2020 10-bit transfer and whose alternative transfer characteristics SEI names HLG (see [Evidence](#evidence)).
 
@@ -34,10 +38,11 @@ The HLG row includes HLG-compatible streams, whose VUI signals the BT.2020 10-bi
 
 | Variant | Eligible | Route | Evidence |
 | --- | --- | --- | --- |
-| SDR, any of the 9 variants | Yes | RAW in the variant's exact format, SDR | `hevcRangeExtensions[variant]` and `<format>:bt709:bt709:<limited or full>:sdr` |
+| SDR, any of the 9 variants | Yes | RAW in the variant's exact format, SDR | `hevcRangeExtensions[variant]` and `<format>:<matrix>:<primaries>:<limited or full>:sdr` |
 | PQ or HLG, the 6 variants of 10 or 12 bits | Yes | RAW in the variant's exact format, PQ or HLG | `hevcRangeExtensions[variant]` and `<format>:bt2020-ncl:bt2020:limited:<pq or hlg>` |
 | BitDepth omitted but PixelFormat present | Yes: the depth is read from PixelFormat | RAW in the variant's exact format | As the matching row |
-| Monochrome (`gray12le`), or a PixelFormat that contradicts BitDepth | No: `codec-unsupported`, or for HDR `hdr-codec-unsupported`, or `hdr-presentation-unavailable` when the raw HDR key is not authorized | None | None |
+| Monochrome (`gray`, `gray10le`, `gray12le`) | Only on GPU | GPU in the 4:2:0 format of its depth, I420, I420P10, or I420P12, whose chroma the decoder writes neutral | A GPU decoder package whose header declares `monochrome`, as the HEVC decoder project's does; no native evidence |
+| A PixelFormat that contradicts BitDepth | No: `codec-unsupported`, or for HDR `hdr-codec-unsupported`, or `hdr-presentation-unavailable` when the raw HDR key is not authorized | None | None |
 
 The PixelFormat must be exact, and an explicit BitDepth must agree with it.
 
@@ -62,36 +67,37 @@ The engine reads the Dolby Vision configuration and the color fields; it ignores
 | Variant | Eligible | Route, then fallback | Evidence |
 | --- | --- | --- | --- |
 | P5, any CCID or none | Yes | VF-DV5, then RAW-DV P5 | VF: `nativeDolbyVisionHEVC` and `dovi-p5`. RAW: `rawHDRVideo.hevc` and `dovi-rpu` |
-| P7, CCID 1 or 6, MEL or FEL, with or without the EL | Yes | DV base PQ, then RAW-DV7, then the declared PQ base through RAW | Base: `nativeHDRHEVC`, `ext-pq`, and exact BT.2020 PQ base metadata. RAW-DV7: `rawHDRVideo.hevc` and `dovi-p7-base`; decoding the EL needs the bundled Main 10 qualification, and the FEL residual also needs `dovi-p7-fel` |
+| P7, CCID 1 or 6, MEL or FEL, with or without the EL | Yes | DV base PQ, then RAW-DV7, then the declared PQ base through RAW | Base: `nativeHDRHEVC`, `ext-pq`, and exact BT.2020 PQ base metadata. RAW-DV7: `rawHDRVideo.hevc` and `dovi-p7-base`; no decoder decodes the EL |
 | P7, any other CCID or none | Yes | RAW-DV7 only; the CCID declares no base | As RAW-DV7 above |
 | P8, CCID 1 or 6, with or without an EL flag | Yes | DV base PQ, then RAW-DV P8, then the declared PQ base through RAW | Base: as for P7. RAW-DV: `rawHDRVideo.hevc` and `dovi-rpu` |
 | P8, CCID 2 | Yes | RAW-DV P8, then the declared SDR base through VF-SDR native | RAW-DV: as P8 with CCID 1. VF-SDR: `nativeHDRHEVC` |
 | P8, CCID 4 | Yes | DV base HLG, then RAW-DV P8, then the declared HLG base through RAW | Base: `nativeHDRHEVC`, `ext-hlg`, and exact limited BT.2020 HLG base metadata. RAW-DV: as P8 with CCID 1 |
 | P8, CCID 0, reserved, or none, or an explicit ColorTransfer that contradicts the CCID | Yes | RAW-DV P8 only | As P8 with CCID 1 |
-| P4, CCID 2, MEL or FEL, with or without the EL | Yes | RAW-DV4, then the declared SDR base through VF-SDR native | RAW-DV4: `rawHDRVideo.hevc` and `dovi-p4-base`; decoding the EL needs the bundled Main 10 qualification, and the FEL residual also needs `dovi-p4-fel`. VF-SDR: `nativeHDRHEVC` |
+| P4, CCID 2, MEL or FEL, with or without the EL | Yes | RAW-DV4, then the declared SDR base through VF-SDR native | RAW-DV4: `rawHDRVideo.hevc` and `dovi-p4-base`; no decoder decodes the EL. VF-SDR: `nativeHDRHEVC` |
 | P20 MV-HEVC, CCID 1, 2, 4, 6, or reserved | Yes | RAW-DV P8 on the base view, then the declared base through the static routes | As P8 with CCID 1 |
 | P20, CCID 0 or none | Yes | VF-DV5 on the base view, then RAW-DV P5 | As P5 |
 | P5, P8, or P20 over Rext or a named alias | Yes | RAW-DV in the variant's exact format, then the declared base through RAW in that format | `hevcRangeExtensions[variant]` and `<format>:dovi-rpu-v1` |
-| P4 or P7 over Rext or a named alias | Yes | RAW-DV4 or RAW-DV7 with the BL in the variant's exact format, then the declared base through RAW in that format | `hevcRangeExtensions[variant]` and `<format>:dovi-profile4-base-v1` or `<format>:dovi-profile7-base-v1`; decoding the EL needs the bundled Main 10 qualification, and the FEL residual also needs the matching FEL key |
-| P5, P8, or P20 over 8-bit Main | Yes | RAW-DV in I420 through `bundled-hevc`, then (CCID 2) the declared SDR base through VF-SDR native, then VF-SDR bundled | RAW-DV: `bundledHEVC` Main and `I420:dovi-rpu-v1`. VF-SDR: as SDR Main |
-| P4 or P7 over 8-bit Main | Yes | RAW-DV4 or RAW-DV7 with an I420 BL, both layers through `bundled-hevc`, then the declared base | `bundledHEVC` Main and the I420 dual-layer keys; decoding the EL needs `bundledHEVC` Main 10 |
+| P4 or P7 over Rext or a named alias | Yes | RAW-DV4 or RAW-DV7 with the BL in the variant's exact format, then the declared base through RAW in that format | `hevcRangeExtensions[variant]` and `<format>:dovi-profile4-base-v1` or `<format>:dovi-profile7-base-v1`; no decoder decodes the EL |
+| P4, P5, P7, P8, or P20 over 8-bit Main | Only on GPU, or with a declared base | GPU-DV in I420, then the declared base through the ordinary routes, VF-SDR native for an SDR base; no native route reads 8-bit Main raw planes | GPU-DV: a package the host offers in I420 and `I420:dovi-rpu-v1` (or the I420 dual-layer base key) |
 
 ## Dolby Vision over AV1
 
-Profile 10 is single-layer: the RPU travels in an ITU-T T.35 metadata OBU of each temporal unit, and the base layer is AV1 Main at 10 bits.
-RAW-DV here decodes through the engine's own AV1 path, natively in software, into I420P10.
+Profile 10 is single-layer: the RPU travels in an ITU-T T.35 metadata OBU of each temporal unit, and the base layer is AV1 in any profile and depth.
+VF-DV5 and VF-DV8 here decode Main at 10 bits in hardware through the engine's own AV1 path, every sequence header neutralized to limited BT.709, and reconstruct from the external frames; RAW-DV decodes natively in software, into I420P10 for Main at 10 bits, or into the exact format of an AV1 raw format variant (see [AV1 outside Main 10](#av1-outside-main-10)).
 Every AV1 track takes that path, whatever its route, so the declared base of a stream with HDR10+ metadata applies its HDR10+ metadata OBUs too (see [Decisions](decisions.md#video-decode-and-dolby-vision)).
 Only an RPU route loads the RPU parser; any other route removes the RPU OBUs without parsing them.
 
 | Variant | Eligible | Route, then fallback | Evidence |
 | --- | --- | --- | --- |
-| P10, CCID 0 (an IPT base) | Yes | RAW-DV P5 only; the CCID declares no base | `rawHDRVideo.av1` and `dovi-rpu` |
-| P10, CCID 1 | Yes | RAW-DV P8, then the declared PQ base through RAW I420P10 PQ | RAW-DV: as P10 with CCID 0. Base: `rawHDRVideo.av1` and `I420P10:bt2020-ncl:bt2020:limited:pq` |
-| P10, CCID 2 | Yes | RAW-DV P8, then the declared SDR base through RAW I420P10 SDR | RAW-DV: as P10 with CCID 0. Base: `rawHDRVideo.av1` and the I420P10 BT.709 SDR keys |
-| P10, CCID 4 | Yes | RAW-DV P8, then the declared HLG base through RAW I420P10 HLG | RAW-DV: as P10 with CCID 0. Base: `rawHDRVideo.av1` and `I420P10:bt2020-ncl:bt2020:limited:hlg` |
-| P10, CCID 6, a reserved CCID, or an explicit ColorTransfer that contradicts the CCID | Yes | RAW-DV P8; CCID 6 then falls back to its PQ base | As P10 with CCID 1 |
-| P10 without a CCID | Yes | RAW-DV P5 only; the stream declares no base | As P10 with CCID 0 |
-| P10 at 8 bits, or outside the Main profile | Only with a declared SDR base | The declared SDR base through native VF-SDR; no RPU route, because raw AV1 qualifies at 10 bits only | As 8-bit AV1 SDR |
+| P10, CCID 0 (an IPT base) | Yes | VF-DV5, then RAW-DV P5; the CCID declares no base | VF: `nativeHDRAV1`, `external-av1-main10-bt709-limited:pq-v1`, and `dovi-p5`. RAW: `rawHDRVideo.av1` and `dovi-rpu` |
+| P10, CCID 1 | Yes | VF-DV8, then RAW-DV P8, then the declared PQ base through VF-PQ where the AV1 PQ key is authorized, else RAW I420P10 PQ | VF-DV8: `nativeHDRAV1`, `external-av1-main10-bt709-limited:pq-v1`, and `dovi-p8`. RAW-DV: as P10 with CCID 0. Base: `nativeHDRAV1` and `external-av1-main10-bt709-limited:pq-v1`, or `rawHDRVideo.av1` and `I420P10:bt2020-ncl:bt2020:limited:pq` |
+| P10, CCID 2 | Yes | VF-DV8, then RAW-DV P8, then the declared SDR base through RAW I420P10 SDR | As P10 with CCID 1; base: `rawHDRVideo.av1` and the I420P10 SDR key of its color |
+| P10, CCID 4 | Yes | VF-DV8, then RAW-DV P8, then the declared HLG base through VF-HLG where the AV1 HLG key is authorized, else RAW I420P10 HLG | As P10 with CCID 1; base: `nativeHDRAV1` and `external-av1-main10-bt709-limited:hlg-v1`, or `rawHDRVideo.av1` and `I420P10:bt2020-ncl:bt2020:limited:hlg` |
+| P10, CCID 6, a reserved CCID, or an explicit ColorTransfer that contradicts the CCID | Yes | VF-DV8, then RAW-DV P8; CCID 6 then falls back to its PQ base | As P10 with CCID 1 |
+| P10 without a CCID | Yes | VF-DV5, then RAW-DV P5; the stream declares no base | As P10 with CCID 0 |
+| P10 at 8 bits, or outside the Main profile | Yes | RAW-DV in the variant's exact format, as P10 at 10 bits; then a declared base through its ordinary routes, native VF-SDR for 8-bit Main | `av1RawFormats[variant]` and `<format>:dovi-rpu-v1`, which authorizes on first use |
+
+The external routes present 8-bit-quantized frames, as every external route does, so their reconstruction differs from RAW-DV by a few code values, more where the RPU's mapping is steep.
 
 The engine maps the MP4 `dav1` sample entry of a 10.0 stream to AV1 itself (see [Decisions](decisions.md#video-decode-and-dolby-vision)).
 
@@ -101,30 +107,90 @@ Dolby Vision outside HEVC and AV1:
   Its declared SDR base plays through the H.264 routes.
 - The retired Profiles 0 to 3 and 6 have no RPU route and present only a declared base.
 
+## AV1 outside Main 10
+
+Native routes decode AV1 Main at 4:2:0: VF-SDR at 8 bits, and at 10 bits VF-PQ and VF-HLG where the AV1 external keys are authorized, RAW I420P10 through the raw SDR keys, and RAW I420P10 PQ or HLG.
+AV1 outside Main 10 takes raw planes in the exact format of its raw format variant, which its Jellyfin Profile and PixelFormat name, through `av1RawFormats[variant]`, a 192x192 key and inter temporal unit decoded with `prefer-software`.
+Every AV1 stream falls back last to GPU, in its own format, when the host offers an AV1 decoder package whose header accepts it.
+The AV1 package takes pictures up to level 6.x, 16384x8704 and 35,651,584 samples, 8K included, on a device whose largest binding holds half its frame store and its packet ring: at 8192x4352 two buffers of 535 MB and a ring of 626 MB at 4:2:0 10-bit, two of 1.07 GB and a ring of 1 GiB at 4:4:4 12-bit (see [WebAssembly build](decoders.md#the-av1-parser)); eligibility skips it with the failed check otherwise.
+
+| Variant | Eligible | Route, then fallback | Evidence |
+| --- | --- | --- | --- |
+| Main at 8 bits (`main420-8`) | Yes | VF-SDR native; I420 only for a Dolby Vision RPU route | `av1RawFormats['main420-8']` for RAW-DV |
+| High: 4:4:4 at 8 or 10 bits (`high444-8`, `high444-10`) | Yes | RAW in I444 or I444P10, then GPU | `av1RawFormats[variant]` and the raw key of the format and color |
+| Professional: 4:2:2 at 8 or 10 bits, or 12 bits (`professional422-8`, `professional422-10`, `professional420-12`, `professional422-12`, `professional444-12`) | Yes | RAW in I422, I422P10, I420P12, I422P12, or I444P12, then GPU | As High |
+| Main at 10 bits without its raw route, such as HDR without the raw HDR key | Only on GPU | GPU in I420P10; HDR needs `allowFramePoolHDR` | The host's GPU decoder package |
+| Main 4:0:0 | Yes | As Main 4:2:0, then GPU in the 4:2:0 format of its depth | As Main 4:2:0; GPU only on a package whose header declares `monochrome` |
+| Professional 4:0:0 at 12 bits | Only on GPU | GPU in I420P12 | A GPU decoder package whose header declares `monochrome` |
+
+Chrome's software AV1 decoder decodes and copies the 8 and 10-bit variants, and refuses 12-bit AV1 at decode, so the 12-bit variants read unsupported there and take GPU.
+`hasPotentialCustomPlaybackVideoRoute` keeps AV1 outside Main 4:2:0 potential for these routes.
+On GPU the decoder receives the track's av1C (see [Codec private data](decoder-packages.md#codec-private-data)).
+
+## H.264 beyond 8-bit 4:2:0
+
+Native H.264 decodes Constrained Baseline, Baseline, Main, and High at 8-bit 4:2:0 to VF-SDR, each profile through its own `h264Profiles` probe.
+A profile beyond High takes raw planes in the exact format of its raw format variant through `h264RawFormats[variant]`: an I, a P, then a B access unit at 192x192, decoded with `prefer-software`, whose B frame must output before the P frame.
+The profile must code the variant's chroma format: High 10 and High 10 Intra code 4:2:0, High 4:2:2 and High 4:2:2 Intra up to 4:2:2, and High 4:4:4 Predictive, High 4:4:4 Intra, the removed High 4:4:4, and CAVLC 4:4:4 up to 4:4:4.
+The PixelFormat names the variant, and FFmpeg's yuvj names of a full-range 8-bit stream count as their yuv formats.
+No GPU decoder package decodes H.264, so a variant without its capability or raw key is refused.
+
+| Variant | Eligible | Route | Evidence |
+| --- | --- | --- | --- |
+| 10-bit 4:2:0 (`high420-10`) | Yes | RAW in I420P10: SDR, and PQ or HLG through the raw HDR keys | `h264RawFormats['high420-10']` and the raw key of the format and color |
+| 4:2:2 at 8 or 10 bits (`high422-8`, `high422-10`) | Yes | RAW in I422 or I422P10; HDR at 10 bits only | `h264RawFormats[variant]` and the raw key of the format and color |
+| 4:4:4 at 8 or 10 bits (`high444-8`, `high444-10`) | Yes | RAW in I444 or I444P10; HDR at 10 bits only | As 4:2:2 |
+| 8-bit 4:2:0 under a profile beyond High, such as x264's lossless High 4:4:4 Predictive | No: `codec-unsupported` | None | No variant |
+| 9, 12, or 14 bits, 4:0:0, or RGB (`gbrp`) | No | None | No variant |
+
+Chrome's software H.264 decoder is FFmpeg's, which outputs the same planes as the reference decode the vectors pin, while `prefer-hardware` reports these profiles unsupported.
+The worker decodes them through Mediabunny's sample path, as native H.264, which orders B frames, reads avcC or Annex B as the container gives it, and takes the presentation times the fork's AVI demuxer gives each picture.
+
+## Interlaced video
+
+The deinterlacing pass presents interlaced frames on every route but Dolby Vision's (see [Architecture](architecture.md#deinterlacing) and [Eligibility and routes](routes.md#interlaced-video)).
+This table covers every codec, beyond this chapter's HEVC and Dolby Vision.
+
+| Codec | Interlaced | Route | Each frame's fields |
+| --- | --- | --- | --- |
+| H.264 (PAFF field pairs and MBAFF) | Yes | VF-SDR native, or RAW for a raw format variant, deinterlaced; the browser upsampled VF-SDR's chroma progressively | The container's scan, else the host's `FieldOrder` and `IsInterlaced` |
+| MPEG-2, field and frame pictures, at 4:2:0, 4:2:2, and 4:4:4 | Yes | GPU, deinterlaced, 4:2:0 chroma read within each field | The decoder's `reportPictureFields`, per picture, from `progressive_frame`, `top_field_first`, and `repeat_first_field` as FFmpeg reads them |
+| VC-1 Advanced, field and frame interlace | Yes | GPU, deinterlaced, 4:2:0 chroma read within each field | The parser's `parser_picture_fields`, per picture, from FCM, TFF, and RFF as FFmpeg reads them |
+| MPEG-4 Part 2 interlaced VOPs | Yes | GPU, deinterlaced, 4:2:0 chroma read within each field | The parser's `parser_picture_fields`, per VOP, from `interlaced` and `top_field_first` as FFmpeg reads them |
+| HEVC | No: `interlaced-video-unsupported` | None; field pictures need a weave the engine lacks | None |
+| JPEG 2000 | No: `interlaced-video-unsupported` | None; a codestream per field needs a weave the engine lacks | None |
+| Any codec on a Dolby Vision route | Only when `IsInterlaced` is false | The Dolby Vision routes never deinterlace; a declared base layer's ordinary route does | None |
+
+A stream whose metadata calls it interlaced but whose frames report progressive presents them untouched, and a frame without any fields takes the stream's scan.
+The decoder's and the parser's reports override the container's: an MPEG-2 or VC-1 stream whose Matroska header calls it progressive still deinterlaces each picture it reports interlaced.
+
 ## Rejected
 
 | Variant | Reason |
 | --- | --- |
 | No color metadata | `metadata-unsupported` |
 | A Dolby Vision descriptor without Dolby Vision configuration fields | `metadata-unsupported` |
-| Dolby Vision over 8-bit Main without a declared SDR base, when the bundled decoder's Main qualification failed | `hdr-codec-unsupported`: only the bundled decoder reads 8-bit Main raw planes |
+| Dolby Vision over 8-bit Main without a declared base or an offered GPU decoder package | `hdr-codec-unsupported`: no native route reads 8-bit Main raw planes |
 | A Dolby Vision configuration without an integer profile, without the base layer flag, or with a CCID that is not a 4-bit integer; several video tracks other than a separate P7 pair | `video-track-unavailable` |
 
 ## Routes
 
-A route is the eligibility output: `videoOutputMode`, `videoDecoderBackend`, `rawVideoFrameFormat`, `dolbyVisionProfile`, and `nativeHDRTransfer`, plus `discardDolbyVisionEnhancementLayer` for a dual-layer route without a qualified EL decoder.
+A route is the eligibility output: `videoOutputMode`, `videoDecoderBackend`, `rawVideoFrameFormat`, `dolbyVisionProfile`, and `nativeHDRTransfer`, plus `gpuVideoDecoder` on GPU.
 The host maps it to a presenter input mode.
 
 | Route | Eligibility output | Input mode | Notes |
 | --- | --- | --- | --- |
-| VF-SDR | `video-frame`; `native`, or `bundled-hevc` (FFmpeg) for Main only | `external-texture`, identity | |
-| VF-PQ, VF-HLG | `video-frame`; `native`; SPS and VUI neutralized to BT.709; transfer `pq` or `hlg` | `external-hdr` | Chrome samples external textures at 8 bits per channel. PQ also applies static mastering metadata |
+| VF-SDR | `video-frame`; `native` | `external-texture`, identity | |
+| VF-PQ, VF-HLG | `video-frame`; `native`; HEVC SPS and VUI, or AV1 sequence header, codecs string, and `av1C`, neutralized to BT.709; transfer `pq` or `hlg` | `external-hdr` | Chrome samples external textures at 8 bits per channel. PQ also applies static mastering metadata. HEVC Main 10 and AV1 Main at 10 bits, each with its own keys |
 | DV base PQ, DV base HLG | As VF-PQ or VF-HLG, with `dolbyVisionProfile` null | `external-hdr` | P7 and P8 only. RPU and EL discarded. Preferred over RAW-DV whenever authorized |
 | Declared base | An ordinary route, with `dolbyVisionProfile` null | As that route | Used only when no RPU route is selected. RPU and EL discarded |
-| VF-DV5 | `video-frame`; `native`; `dolbyVisionProfile` 5 | `external-dolby-vision` | Per-frame Profile 5 RPU, also for a P20 with CCID 0 or none |
-| RAW | `raw-planes` in the exact format; `native` (WebCodecs `copyTo`), or `bundled-hevc` for Main 10 I420P10 only | `raw-yuv` | Also 10-bit SDR, through the BT.709 raw SDR keys. AV1 PQ also applies the static mastering metadata of its MDCV and CLL metadata OBUs |
-| RAW-DV | `raw-planes` in I420P10 for HEVC Main 10 and AV1, I420 for HEVC Main through `bundled-hevc`, or a range-extension variant's exact format; `dolbyVisionProfile` 5 or 8 | `raw-dolby-vision` | RPU reconstruction. A P10 or P20 reports the profile it reconstructs as. A signaled EL is discarded |
-| RAW-DV7, RAW-DV4 | `raw-planes` with the BL in I420P10, in I420 through `bundled-hevc`, or in a range-extension variant's exact format, and an I420P10 EL; `dolbyVisionProfile` 7 or 4 | `raw-dolby-vision`, Profile 7 or 4 | The EL is always decoded by the bundled WASM decoder; without its Main 10 qualification the route discards the EL. MEL reshapes; the FEL residual needs the FEL key and a paired EL frame. Without a paired EL, MEL is still exact and FEL presents its base at the BL's depth: the HDR10 base for P7, and the SDR base exactly for P4 (limited BT.709, no tone mapping or dither) |
+| VF-DV5 | `video-frame`; `native`; `dolbyVisionProfile` 5 | `external-dolby-vision` | Per-frame Profile 5 RPU, also for a P20 with CCID 0 or none, and for an AV1 P10 that reconstructs as P5 |
+| VF-DV8 | `video-frame`; `native`; `dolbyVisionProfile` 8 | `external-dolby-vision`, Profile 8 | AV1 P10 only: per-frame Profile 8 RPU over the neutralized base, whatever base its CCID declares |
+| RAW | `raw-planes` in the exact format; `native` (WebCodecs `copyTo`) | `raw-yuv` | Also 10-bit SDR, through the raw SDR key of its color; SDR outside BT.709 primaries converts its gamut to BT.709 (`builtin.sdr-gamut`). AV1 PQ also applies the static mastering metadata of its MDCV and CLL metadata OBUs |
+| RAW-DV | `raw-planes` in I420P10 for HEVC Main 10 and AV1 Main 10, or a range-extension or AV1 raw format variant's exact format; `dolbyVisionProfile` 5 or 8 | `raw-dolby-vision` | RPU reconstruction. A P10 or P20 reports the profile it reconstructs as. A signaled EL is discarded |
+| RAW-DV7, RAW-DV4 | `raw-planes` with the BL in I420P10 or in a range-extension variant's exact format; `dolbyVisionProfile` 7 or 4 | `raw-dolby-vision`, Profile 7 or 4 | No decoder decodes the EL, so MEL reshapes exactly from the BL and FEL presents its base at the BL's depth: the HDR10 base for P7, and the SDR base exactly for P4 (limited BT.709, no tone mapping or dither). The FEL composition, which needs the FEL key and a paired I420P10 EL frame, waits for an EL decoder |
+| GPU | `frame-pool` in the stream's own format; `gpu`, with `gpuVideoDecoder` naming the package | `frame-pool` | The last fallback, through a GPU decoder package the host offers. No native color handling; static HDR needs the host's `allowFramePoolHDR` |
+| GPU-DV | `frame-pool` in the RPU route's BL format; `gpu`, with `gpuVideoDecoder`; `dolbyVisionProfile` 4, 5, 7, or 8 | `frame-pool-dolby-vision` | RPU reconstruction of the package's BL slots, the raw route's reconstruction over the frame pool's read, gated by the raw route's base key and flags. No frame pool holds an EL, so P4 and P7 reconstruct from their BL as RAW-DV7 and RAW-DV4 do |
 
 [Eligibility and routes](routes.md#video-route-selection) gives the order in which they are tried.
 
@@ -146,11 +212,15 @@ Probes, all in `capability/CustomDecodeCapabilities.ts`:
 | `video.hevc` | 1080p Main decode output |
 | `nativeUltraHDVideo.hevc` | 4K Main decode output |
 | `nativeHDRHEVC` | 4K Main 10 decode output |
+| `nativeHDRAV1` | The raw probe's 4K AV1 Main 10 keyframe decoded with `prefer-hardware` |
 | `nativeDolbyVisionHEVC` | The `hev1.2.4.H150.B0` configuration plus Main 10 decode |
-| `rawHDRVideo.hevc` | An I420P10 `copyTo` fingerprint, or a bundled Main 10 qualification |
+| `rawHDRVideo.hevc` | An I420P10 `copyTo` fingerprint |
 | `rawHDRVideo.av1` | A 4K AV1 Main 10 keyframe decoded with `prefer-software` and its I420P10 `copyTo` fingerprint |
-| `bundledHEVC` | `ffmpeg-hevc` Main and Main 10 qualifications with pinned fingerprints |
 | `hevcRangeExtensions[variant]` | The exact configuration, the two-frame vector, the exact copy format, and pinned fingerprints |
+| `av1RawFormats[variant]` | The exact configuration, the two-temporal-unit vector, the exact copy format, and pinned fingerprints |
+| `h264RawFormats[variant]` | The exact configuration, the three-access-unit vector, the exact copy format, and pinned fingerprints in presentation order |
+
+GPU has no probe: a package's own vectors run only when the host verifies it (see [Decoder packages](decoder-packages.md#self-test-vectors)).
 
 GPU authorizations, all in `validation/`:
 
@@ -158,11 +228,13 @@ GPU authorizations, all in `validation/`:
 | --- | --- | --- |
 | `ext-pq` | `external-hevc-main10-bt709-limited:pq-v1` | `ExternalHDRPresentationAuthorization.ts` |
 | `ext-hlg` | `external-hevc-main10-bt709-limited:hlg-v1` | `ExternalHDRPresentationAuthorization.ts` |
+| `ext-av1-pq`, `ext-av1-hlg` | `external-av1-main10-bt709-limited:<pq\|hlg>-v1`, authorized on first use | `ExternalHDRPresentationAuthorization.ts` |
 | Raw keys | `<format>:...`, as written in [Route keys](routes.md#route-keys) | `RawHDRPresentationAuthorization.ts` |
 | `dovi-rpu` | `<format>:dovi-rpu-v1`, one per raw format from I420 to I444P12 | `DolbyVisionPresentationAuthorization.ts` |
 | `dovi-p4-base`, `dovi-p4-fel` | `<format>:dovi-profile4-base-v1`, `<format>:dovi-profile4-fel-v1`, one pair per BL format from I420 to I444P12 | `DolbyVisionPresentationAuthorization.ts` |
 | `dovi-p7-base`, `dovi-p7-fel` | `<format>:dovi-profile7-base-v1`, `<format>:dovi-profile7-fel-v1`, one pair per BL format from I420 to I444P12 | `DolbyVisionPresentationAuthorization.ts` |
 | `dovi-p5` | `external-I420P10-bt709-limited:dovi-p5-rpu-v1` | `ExternalDolbyVisionPresentationAuthorization.ts` |
+| `dovi-p8` | `external-I420P10-bt709-limited:dovi-p8-rpu-v1`, authorized on first use | `ExternalDolbyVisionPresentationAuthorization.ts` |
 
 `I420P10:dovi-rpu-v1` and the I420P10 Profile 7 keys are part of the default Dolby Vision prewarm.
 The Profile 4 keys in any format, and the Profile 7 and single-layer keys of other formats, authorize on first use, so a host must wait for them before it advertises or starts a stream that needs one.
@@ -181,7 +253,8 @@ Other conditions:
 - A separate-track P7 (a base track and an EL track) selects the same routes.
   `test/capability/CustomPlaybackEligibility.test.ts` covers it.
 - An RPU the parser rejects ends the custom session, which then falls back.
-  The parser follows FFmpeg's `dovi_rpudec.c`: unknown, misplaced, short, or padded display-metadata extension blocks are skipped, and only a block whose coded length runs past the payload rejects the RPU.
+  The parser follows FFmpeg's `dovi_rpudec.c`: a display-metadata extension block that runs past the data or falls short of its level's fields, an L2 `ms_weight` below -1, or more than 7 static or 25 dynamic blocks reject the RPU, an L1 in the CM v4.0 section counts as an L1 of zeros, and unknown, other misplaced, or padded blocks are skipped.
+  Leftover bits before the CRC32, or an AV1 EMDF wrapper whose size or protection bits FFmpeg refuses, also reject it, while a CRC32 mismatch and bytes after the 0x80 terminator do not, as in FFmpeg.
   It also reads what FFmpeg does not: polynomial and MMR pieces mixed within one component, polynomial linear interpolation (see [Decisions](decisions.md#video-decode-and-dolby-vision)), and any mapping color space or chroma format.
 
 ## Not supported
@@ -189,18 +262,17 @@ Other conditions:
 - HDR10, HDR10Plus, or HLG at 8 bits, under any profile.
 - Profile and bit depth contradictions: Main at 10 bits, Main 10 at 8 bits, Main 10 at 12 bits.
 - 14-bit and 16-bit range extensions.
-- Monochrome range extensions.
+- Monochrome range extensions outside GPU.
 - High Throughput 4:4:4 profiles, Screen Content Coding (`Screen-Extended`) profiles, Main Still Picture, and named Intra aliases such as `Main 4:4:4 10 Intra`.
   Generic Rext with an intra constraint is the ordinary variant.
-- Interlaced HEVC of any profile or range.
+- Interlaced HEVC of any profile or range: HEVC codes interlaced video as field pictures, which no decoder weaves into the frames the deinterlacing pass takes (see [Interlaced video](#interlaced-video)).
 - Dolby Vision:
   - the configurations in [Rejected](#rejected);
-  - RPU reconstruction for AVC Profile 9, and for AV1 Profile 10 at 8 bits or outside the Main profile;
-  - RPUs the parser rejects: a linear interpolation piece next to an MMR piece, an RPU format extension, missing sequence information, display metadata compression above method 1, and a header from which no profile is inferred.
+  - RPU reconstruction for AVC Profile 9, and for AV1 Profile 10 in a raw format variant the browser does not qualify, such as 12 bits in Chrome;
+  - RPUs the parser rejects: a linear interpolation piece next to an MMR piece, an RPU format extension, missing sequence information, display metadata compression above method 1, and a header from which no profile is inferred while the container declares none.
 
 ## Known issues
 
-- Firefox on Windows has no WebCodecs HEVC (see [Decisions](decisions.md#firefox)), so HEVC plays there only through a bundled route.
-  Main 8-bit SDR plays through `bundled-hevc`, and Main 10 SDR, HDR10, HLG, and Dolby Vision through RAW, below real time at 4K.
-  The range extensions have no bundled route and are not eligible there.
+- Firefox on Windows has no WebCodecs HEVC (see [Decisions](decisions.md#firefox)), so HEVC plays there only through GPU.
+  Dolby Vision then plays through GPU-DV, Profile 5 included, when the host offers the HEVC package and authorized the RPU route's key.
   Firefox decodes 10-bit AV1 to 8-bit `BGRX`, so no raw AV1 route, P10 included, qualifies there.

@@ -15,8 +15,8 @@ Each assumes a checkout set up as in [Set up a checkout](setup.md).
      The asset build serves every vector in that folder, and the `EngineAssets` test checks that the two agree.
 2. Presentation:
    - add the route key to `src/validation/RawHDRPresentationAuthorization.ts`, or to the external or Dolby Vision authorization beside it;
-   - add the shader to `src/color/ColorPipelineShader.ts`;
-   - add the uploads to `src/presentation/RawYUVGPURenderer.ts` and `src/video/RawVideoFrameCopy.ts`;
+   - add the route's built-in signal to `src/presentation/passes/builtin/BuiltinSignals.ts` and its chain to `BuiltinChains.ts`;
+   - add the plane uploads to `src/presentation/passes/PlaneTextureSource.ts`, and the raw copy to `src/decode/video/RawVideoFrameCopy.ts`;
    - add any new raw format to `src/pipeline/DecodeWorkerProtocol.ts`.
 3. Runtime.
    `src/capability/CustomPlaybackEligibility.ts` selects the route, and `src/presentation/PresentationInput.ts` parses the color and Dolby Vision descriptors.
@@ -30,40 +30,77 @@ Each assumes a checkout set up as in [Set up a checkout](setup.md).
 
 Check: the engine checks from [Set up a checkout](setup.md), and the host's checks.
 
-## Rebuild one decoder
+## Add a codec that only a package decodes
 
-1. Edit the bridge in `wasm/<kit>/`, or move the pinned commit in `vendor/`.
-2. Run `make -C wasm <kit>`, with Emscripten active or `EMSDK=` set.
-3. Run `npm test`, which exercises the decoders from `bin/wasm/` under Node.
-4. Run `make -C wasm check`, which must report every output identical.
+1. Name it as FFmpeg does, in `CUSTOM_VIDEO_CODECS` and `CUSTOM_PACKAGE_VIDEO_CODECS` or in the audio codec lists, where its capability reads `no-engine-decoder`.
+   Map the names a media server reports for it in both name tables, in `src/capability/CustomPlaybackEligibility.ts` and `CustomDecodeCapabilities.ts`, and give it a case in every switch the type checker names.
+2. Pair it with its containers in `src/capability/CustomContainerCodecSupport.ts`.
+3. For video, give the worker its frame-pool route in `src/pipeline/CustomDecode.worker.ts`: the container codec IDs it reads, and the codec private data and packets a package receives, with any container reader under `src/demux/`.
+   Describe that codec private data in [Decoder packages](decoder-packages.md), since every package of the codec depends on it.
+4. Build a decoder project for it in `wgpud/<project>/`, as the next recipe says, whose header accepts the codec's name.
+5. Cover the eligibility, the container reach, and the worker's route in `test/`, and the project in its own `test/`.
+
+## Change or add a decoder project
+
+1. In the `wgpud/` submodule, a checkout of the decoders repository, edit, or create, `wgpud/<project>/`: its `decoder.json`, its decoder source, whose header declares the project's name as its `id:`, and, for a module, a `Makefile` that includes `../rules.mk` and builds `module`.
+   List its self-test vectors in `decoder.json`, one per output format at most, and run `python scripts/codec_vector_assets/generate_decoder_package_vectors.py` to write its vectors file.
+2. Run `npm run decoders -- <project>`; it needs the decoder toolchain (see [WebAssembly build](decoders.md#you-need)), and a C module needs `EMSDK` set or the engine's emsdk from `make -C wasm emsdk`.
+3. Run its tests, `npx vitest --watch=false wgpud/<project>`, which load the package from `bin/wgpud/`.
+4. Run `npm run decoders -- --check`, which must report every package identical.
    A change that is not reproducible shows up here.
+5. Update the project table in [WebAssembly build](decoders.md#decoder-projects).
+6. Commit the change in the decoders repository and push it to `main`, then release it with its Release workflow, as [Release a repository](decoders.md#release-a-repository) says.
+7. In the engine, run `node scripts/pinned-releases.mjs --pin decoders <tag>`, move the `wgpud` submodule to the released commit, and commit the gitlink and `tools/pinned-releases.json` in one engine commit.
+
+## Change or add a pass project
+
+1. In the `wgpup/` submodule, a checkout of the passes repository, edit, or create, `wgpup/<project>/` with its pass files: WGSL files at the project's top level, each of one or more passes in the [pass file format](new-pass.md), under a file name no other project uses.
+   A generated pass keeps its generator and inputs in the project and is committed, so a build needs no generator.
+   An mpv user shader converts with `tools/convert_mpv_shader.py` (see [Migrate an mpv shader to a wgpup](mpv-shaders.md)).
+2. For a new project, add it to `EXPECTED_PROJECTS` in `test/presentation/passes/PostprocessingPasses.test.ts`.
+   Run `npx vitest --watch=false test/presentation/passes`, whose pass rules every pass file must keep.
+3. Run `npm run passes`, which copies the pass files into `bin/wgpup/`, and pick the pass in the sandbox's shader panel to see it.
+4. Update the project table in [Bundled passes](bundled-passes.md).
+5. Commit the change in the passes repository and push it to `main`, then release it with its Release workflow, as [Release a repository](decoders.md#release-a-repository) says.
+6. In the engine, run `node scripts/pinned-releases.mjs --pin passes <tag>`, move the `wgpup` submodule to the released commit, and commit the gitlink and `tools/pinned-releases.json` in one engine commit.
+
+## Rebuild one engine module
+
+1. Edit `wasm/<kit>/`, `libdovi` or `audio-output-stage`.
+2. Run `make -C wasm <kit>`, with `EMSDK` set or the engine's emsdk from `make -C wasm emsdk`.
+3. Run `npm test`.
+4. Run `make -C wasm check`, which must report every output identical.
 
 ## Change the Dolby Vision parser
 
 1. Edit `wasm/libdovi/src/lib.rs`, or the vendored crate in `wasm/libdovi/vendor/dolby_vision/`.
 2. For any change to the vendored crate, add an entry to its `PATCHES.md` naming the file, the change, and the FFmpeg behavior it follows.
-3. If the packed snapshot changes, update `src/video/dolby-vision/DolbyVisionRPUDataLayout.ts`, the decoder in `DolbyVisionRPUParser.ts`, the reshaping in `src/color/DolbyVisionColorTransform.ts`, and the schema version in `lib.rs` and `DolbyVisionRPUParser.ts` together.
+3. If the packed snapshot changes, update `src/demux/dolby-vision/DolbyVisionRPUDataLayout.ts`, the decoder in `DolbyVisionRPUParser.ts`, the reshaping in `src/color/DolbyVisionColorTransform.ts`, and the schema version in `lib.rs` and `DolbyVisionRPUParser.ts` together.
    The revision prefix names the vendored dovi_tool commit and changes only when the copy moves to another upstream revision.
 4. From `wasm/libdovi/`, run `cargo test --locked` and `cargo clippy --locked --all-targets`.
 5. Run `make -C wasm libdovi`, then `make -C wasm check KITS=libdovi`.
 6. Run `npm test`.
-   The parser tests in `test/video/dolby-vision/` run the rebuilt `dovi-rpu-parser.wasm`.
+   The parser tests in `test/demux/dolby-vision/` run the rebuilt `dovi-rpu-parser.wasm`.
 
 ## Revise a committed codec vector
 
-1. For an encoder-dependent vector (JPEG 2000, MPEG-2, the TrueHD sources), delete the committed file.
+1. For an encoder-dependent vector (the TrueHD sources, the JPEG 2000 decoder vectors), delete the committed file.
    A differing encode never replaces one.
-2. Run its generator with the pinned FFmpeg on PATH, for example `python scripts/codec_vector_assets/generate_mpeg2_capability_vector.py`.
+2. Run its generator with the pinned FFmpeg on PATH, for example `python scripts/codec_vector_assets/generate_truehd_capability_vectors.py --regenerate-sources`.
+   A stream a decoder project's `decoder.json` lists also needs `python scripts/codec_vector_assets/generate_decoder_package_vectors.py <project>`, which rewrites that project's self-test vectors.
 3. Run `python scripts/generate_all_codec_vector_assets.py --check` and the generator tests.
-4. Review the diff of `bin/codec_vector_assets/`, and update any pinned fingerprint or length only after inspecting the decoded output.
+4. Review the diff of `bin/codec_vector_assets/` and of the `wgpud/` submodule, and update any pinned fingerprint or length only after inspecting the decoded output.
+   A changed decoder project's vectors are committed in the decoders repository and reach the engine as the recipe [Change or add a decoder project](#change-or-add-a-decoder-project) says.
 
 ## Move an engine folder
 
 1. Change the folder in `tools/constants.json`.
    Every reader in [Repository layout](layout.md#folder-names-live-in-one-file) follows.
 2. Edit by hand the files that cannot read it:
-   - `.gitignore`, `.gitattributes`, `.gitmodules`, and `tsconfig.json`;
-   - `package.json`: its scripts, and its `imports` map, which sends `#wasm/*` to `bin/wasm/*` for bundlers and to `wasm/*` for TypeScript, and `#codec_vector_assets/*` to the generated modules;
+   - `.gitignore`, `.gitattributes`, `.gitmodules`, and `tsconfig.json`, whose `paths` entry names the Mediabunny fork's folder;
+   - `sandbox/vite.config.ts`, whose alias names that folder too, and the host's webpack, Vitest, and tsconfig aliases of it;
+   - `package.json`: its scripts, and its `imports` map, which sends `#codec_vector_assets/*` to the generated modules;
+   - each decoder project's `decoder.json`, whose vectors name a layout key and a path under it;
    - this book.
 3. Rerun the DTS and TrueHD generators, which embed import paths computed from the constants, then run every `--check` and the full engine checks.
 

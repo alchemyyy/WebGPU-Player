@@ -2,25 +2,32 @@
 
 | Path | Holds |
 | --- | --- |
-| `src/` | The engine's TypeScript, by domain. See [Module map](module-map.md) |
+| `src/` | The engine's TypeScript, by stage: `demux/`, `decode/`, then `presentation/` and the audio output in `audio/`, beside `capability/`, `color/`, `validation/`, and the orchestration in `pipeline/`. See [Module map](module-map.md) |
 | `src/EngineAssets.ts` | The typed names of every file the engine fetches at runtime, and their URL resolution |
 | `src/EngineConfiguration.ts` | The feature flags a host can set |
-| `src/capability/vectors/` | Hand-made vectors: embedded TypeScript vectors, qualification streams fetched at runtime (`qualification/`), and inputs that only tests and generators read (`test/`) |
+| `src/capability/vectors/` | Hand-made vectors: embedded TypeScript vectors, streams no script generates (`qualification/`), and inputs that only tests and generators read (`test/`) |
 | `test/` | The Vitest suites, mirroring `src/`, and shared helpers in `test/helpers/` |
-| `wasm/` | The decoder sources and build: C bridges and their TypeScript declarations, the `libdovi` crate, license texts, and the Makefile. See [WebAssembly decoders](decoders.md) |
-| `vendor/` | The FFmpeg and dcadec submodules, fetched only by `make -C wasm sources` |
-| `scripts/` | `build.mjs` (the served assets), `library-assets.mjs` (which file is served from where), and the codec vector generators. See [Codec vectors](codec-vectors.md) |
-| `tools/` | Development tooling that never ships, and `constants.json`. See [Tools](tools.md) |
+| `sandbox/` | The testing sandbox, a local web app that plays media from a picked folder through the engine: its Vite config, page, and sources in `src/`. See [Sandbox](sandbox.md) |
+| `wasm/` | The engine's own WebAssembly modules and their build: the `libdovi` crate, the audio output stage, license texts, and the Makefile. See [WebAssembly build](decoders.md) |
+| `wgpud/` | The submodule of [webgpu-player-decoders](https://github.com/alchemyyy/webgpu-player-decoders): the decoder projects, each of which builds one [decoder package](decoder-packages.md), with its tests in `test/`, their shared build rules, and `atmos/`, the Dolby Atmos sources the `eac3` and `truehd` projects compile in. See [WebAssembly build](decoders.md#decoder-projects) |
+| `wgpup/` | The submodule of [webgpu-player-passes](https://github.com/alchemyyy/webgpu-player-passes): the pass projects, whose WGSL pass files a host offers as optional passes, and the license texts of their upstream sources. See [Bundled passes](bundled-passes.md) |
+| `vendor/` | The FFmpeg and dcadec submodules, fetched only by `make -C wgpud sources`, and the Mediabunny fork in `vendor/mediabunny/`, which every checkout needs (see [Set up a checkout](setup.md)) |
+| `scripts/` | `build.mjs` (the served assets), `library-assets.mjs` (which file is served from where), `pinned-releases.mjs` (the pinned decoder and pass releases' install), `decoder-packages.mjs` (the decoder projects' build), `pass-files.mjs` (the pass projects' copy), `generate-atmos-hrir.mjs` (the head-related impulse responses the Atmos binaural renderer carries), and the codec vector generators. See [Codec vectors](codec-vectors.md) |
+| `tools/` | Development tooling that never ships, `constants.json`, and `pinned-releases.json`, the pinned decoder and pass releases. See [Tools](tools.md) and [Pinned releases](decoders.md#pinned-releases) |
 | `docs/` | This book: chapters in `src/`, PlantUML sources in `diagrams/` and their SVGs in `src/diagrams/`, stylesheets, scripts, and the favicon in `theme/`, and the built book in `book/` |
 | `images/` | The project logo, `webgpu-player-logo.svg`, the Inkscape source of the favicon |
 | `bin/` | Generated files, all ignored except `bin/codec_vector_assets/`. See below |
 
 `bin/` holds:
 
-- `bin/wasm/`: the decoder builds from `make -C wasm`.
+- `bin/wasm/`: the engine modules' builds from `make -C wasm`.
+- `bin/wgpud/`: the decoder packages of the pinned release from `npm run pinned-releases`, or local builds from `npm run decoders`.
+- `bin/wgpup/`: the pass files of the pinned release from `npm run pinned-releases`, or local copies from `npm run passes`.
+- `bin/installed-releases.json`: the files `npm run pinned-releases` installed, with their SHA-256.
 - `bin/libraries/` and `bin/build-info.json`: the served assets from `npm run build`.
 - `bin/playback_smoke_media/`: local playback media from the smoke media generators.
 - `bin/plantuml/`: the pinned PlantUML jar that `tools/render-diagrams.mjs` downloads.
+- `bin/emsdk/`: the engine's own emsdk at the pinned Emscripten, which `make -C wasm emsdk` installs and the Makefiles use when `EMSDK` is unset.
 - `bin/codec_vector_assets/`: the generated codec vectors.
   This is the one committed folder, so every change to a vector shows in review.
 
@@ -36,7 +43,8 @@ Read a path from it instead of spelling it out, so moving a folder is a one-line
 | `scripts/codec_vector_assets/` | `engine_layout.py`, which re-exports `tools/constants.py` |
 | Tests | `test/helpers/enginePaths.ts` |
 | `vitest.config.ts` | A JSON import |
-| `wasm/Makefile` | `node -p`, which is why decoder builds need Node.js |
+| `sandbox/vite.config.ts` and `sandbox/src/main.ts` | A JSON import |
+| `build.sh`, `wasm/Makefile`, `wgpud/Makefile`, and `wgpud/rules.mk` | `node -p`, which is why WebAssembly builds need Node.js |
 | Hosts | The file itself, at `<engine>/tools/constants.json` |
 
 Some files cannot read it.
