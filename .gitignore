@@ -7,11 +7,9 @@ __pycache__/
 # generated codec vector assets are committed
 !/bin/codec_vector_assets/
 
-# Build trees and Rust target directories of the engine's WebAssembly and decoder projects
+# Build trees and Rust target directories of the engine's WebAssembly modules
 wasm/build/
 wasm/libdovi/target/
-/wgpud/build/
-/wgpud/*/*/target/
 
 # The compiled mkbook documentation; .github/workflows/docs.yml builds and publishes it
 /docs/book/

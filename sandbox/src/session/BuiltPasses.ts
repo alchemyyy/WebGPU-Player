@@ -1,4 +1,5 @@
-// The pass files of the engine's pass projects, which the asset build copies into the pass output folder and the sandbox's dev server lists, so the shader panel offers them.
+// The pass files in the engine's pass output folder, the pinned passes release or the copy npm run passes makes, which the sandbox's dev server
+// lists, so the shader panel offers them.
 // The dev server serves the engine's output folder as its public folder, so each pass file is fetched from there
 import { PASS_FILE_EXTENSION } from 'webgpu-player/presentation/passes/PassLanguage';
 

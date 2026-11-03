@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Launches the sandbox, the engine's test player for local media, and opens it in the default browser.
 #
-# Checks that the npm dependencies are installed, then runs `npm run sandbox`, which builds the served assets with
-# scripts/build.mjs and starts the Vite dev server from sandbox/vite.config.ts.
-# The asset build stops with the command to run when the WebAssembly decoders are not built.
+# Checks that the npm dependencies are installed, installs the pinned decoder packages and pass files into bin/wgpud/
+# and bin/wgpup/ with scripts/pinned-releases.mjs when they are not there, then runs `npm run sandbox`, which builds the
+# served assets with scripts/build.mjs and starts the Vite dev server from sandbox/vite.config.ts.
+# The asset build stops with the command to run when the engine's WebAssembly modules are not built.
 # Works in Git Bash on Windows and in bash on Linux and macOS.
 
 set -euo pipefail
@@ -29,7 +30,9 @@ Options:
 Other options go to Vite, such as --port <number> to serve on another port.
 Vite opens the browser that BROWSER names, when it is set.
 
-The sandbox needs the npm dependencies and the WebAssembly decoders; see docs/src/setup.md.
+The sandbox needs the npm dependencies and the engine's WebAssembly modules; see docs/src/setup.md.
+It installs the pinned decoder packages and pass files, which tools/pinned-releases.json names, when a pinned file is
+missing, and keeps the files already there: the pinned ones, and local builds of npm run decoders and npm run passes.
 
 Examples:
   ./sandbox.sh
@@ -77,6 +80,9 @@ console.log(packageNames.filter(packageName => !isInstalled(packageName)).join("
 ')" || fail 'Cannot read package.json'
 # npm prefix names the host's root when a host lists the engine as a workspace, and the engine root otherwise
 [ -z "$missing_packages" ] || fail "Missing npm packages: $missing_packages; run npm ci in $(npm prefix)"
+
+# Decoder packages and pass files, which the sandbox lists: the pinned releases, unless they or local builds are in place
+npm run --silent pinned-releases || fail 'The pinned releases did not install; see docs/src/setup.md'
 
 if [ "$open_browser" = true ]; then
     vite_arguments+=('--open')

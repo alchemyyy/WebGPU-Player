@@ -17,3 +17,9 @@
 	path = vendor/mediabunny
 	url = https://github.com/alchemyyy/mediabunny.git
 	shallow = true
+[submodule "wgpud"]
+	path = wgpud
+	url = https://github.com/alchemyyy/webgpu-player-decoders.git
+[submodule "wgpup"]
+	path = wgpup
+	url = https://github.com/alchemyyy/webgpu-player-passes.git

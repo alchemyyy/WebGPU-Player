@@ -393,7 +393,7 @@ export type SandboxLibraryCommands = {
     restore: (requestPermission: boolean) => Promise<void>
 };
 
-/** A pass file of the engine's pass projects, which the asset build copies into its output folder and the shader panel offers. */
+/** A pass file in the engine's pass output folder, from the pinned passes release or npm run passes, which the shader panel offers. */
 export type BuiltShaderPass = Readonly<{
     fileName: string
     /** Where the dev server serves the file */

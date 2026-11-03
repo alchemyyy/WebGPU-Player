@@ -18,6 +18,8 @@
   "libraryOutputDirectory": "bin/libraries",
   "decoderOutputDirectory": "bin/wgpud",
   "passOutputDirectory": "bin/wgpup",
+  "pinnedReleasesFile": "tools/pinned-releases.json",
+  "installedReleasesFile": "bin/installed-releases.json",
   "codecVectorAssetsDirectory": "bin/codec_vector_assets",
   "playbackSmokeMediaDirectory": "bin/playback_smoke_media",
   "buildInfoFile": "bin/build-info.json",

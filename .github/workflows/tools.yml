@@ -4,15 +4,15 @@ name: Tools
 
 on:
   push:
-    # The tools, the pass projects whose upstream shaders the converter tests convert, and this workflow
+    # The tools, the pass projects' submodule, whose upstream shaders the converter tests convert, and this workflow
     paths:
       - tools/**
-      - wgpup/**
+      - wgpup
       - .github/workflows/tools.yml
   pull_request:
     paths:
       - tools/**
-      - wgpup/**
+      - wgpup
       - .github/workflows/tools.yml
   workflow_dispatch:
 
@@ -31,6 +31,10 @@ jobs:
       # The tests need none of the codec submodules, which checkout leaves out by default
       - name: Check out the engine
         uses: actions/checkout@v7
+
+      # The converter tests regenerate the NIS passes and convert the Anime4K shaders of the pass projects' submodule
+      - name: Check out the pass projects
+        run: git submodule update --init -- "$(python3 -c 'import json; print(json.load(open("tools/constants.json"))["passesDirectory"])')"
 
       # The converter declares the naga version it accepts, so this workflow never restates it
       - name: Read the pinned naga version

@@ -1,4 +1,5 @@
-// Reads the pass files of the pass projects in wgpup/, which the asset build copies into bin/wgpup/ for hosts to offer
+// Reads the pass files of the pass projects in wgpup/, which npm run passes copies into bin/wgpup/ for hosts to offer, as the passes release
+// collects them
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -22,7 +23,7 @@ function compareNames(first: string, second: string): number {
     return first.localeCompare(second);
 }
 
-/** Reads every pass file, a WGSL file at a project's top level, as the asset build copies them, in project then file name order. */
+/** Reads every pass file, a WGSL file at a project's top level, as npm run passes copies them, in project then file name order. */
 export function readPostprocessingPasses(): PostprocessingPassFile[] {
     const passes: PostprocessingPassFile[] = [];
     const projects = readdirSync(PASSES_DIRECTORY, { withFileTypes: true })

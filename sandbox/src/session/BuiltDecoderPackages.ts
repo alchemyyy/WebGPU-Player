@@ -1,4 +1,5 @@
-// The engine's built decoder packages, which the sandbox's dev server lists, so the decoder package panel adds them all in one step.
+// The engine's decoder packages in its output folder, the pinned release or local builds, which the sandbox's dev server lists, so the decoder
+// package panel adds them all in one step.
 // The dev server serves the engine's output folder as its public folder, so each package is fetched from there
 import { DECODER_PACKAGE_FILE_EXTENSION } from 'webgpu-player/decode/packages/DecoderPackage';
 
@@ -12,7 +13,7 @@ export async function fetchBuiltDecoderPackages(): Promise<File[]> {
     const listed = await fetchBuiltOutputEntries(BUILT_DECODER_PACKAGES_ROUTE, 'built-packages-unavailable');
     const entries = listed.filter((entry: BuiltOutputEntry): boolean => entry.fileName.toLowerCase().endsWith(DECODER_PACKAGE_FILE_EXTENSION));
     if (entries.length === 0) {
-        throw new Error('built-packages-missing: the decoder package output folder is empty; build the packages with npm run decoders');
+        throw new Error('built-packages-missing: the decoder package output folder is empty; install the pinned packages with npm run pinned-releases');
     }
     const files: File[] = [];
     for (const entry of entries) {

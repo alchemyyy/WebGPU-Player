@@ -326,11 +326,11 @@ export function readDecoderProjectVectors(project: string): ArrayBuffer {
     return toArrayBuffer(new Uint8Array(readFileSync(join(DECODERS_DIRECTORY, project, `${project}${VECTORS_SECTION_EXTENSION}`))));
 }
 
-/** Reads a decoder project's package from bin/wgpud, which `npm run decoders` builds; a missing one fails with that instruction. */
+/** Reads a decoder project's package from bin/wgpud, which `npm run pinned-releases` installs or `npm run decoders` builds; a missing one fails with those instructions. */
 export function readDecoderProjectPackageFile(project: string): ArrayBuffer {
     const packagePath = join(DECODER_OUTPUT_DIRECTORY, `${project}${PACKAGE_FILE_EXTENSION}`);
     if (!existsSync(packagePath)) {
-        throw new Error(`Missing ${packagePath}; build it with npm run decoders -- ${project}`);
+        throw new Error(`Missing ${packagePath}; install it with npm run pinned-releases, or build it with npm run decoders -- ${project}`);
     }
     return toArrayBuffer(new Uint8Array(readFileSync(packagePath)));
 }

@@ -1,0 +1,34 @@
+{
+  "decoders": {
+    "repository": "alchemyyy/webgpu-player-decoders",
+    "tag": "v0.1.0",
+    "files": {
+      "av1.wasm": "97f835047debc9c1f44d764691c9820f4019c4991dddc231e0bd9dfdb02f42cf",
+      "dts.wasm": "cc8454c5a6c7672f47c3a4b6ef7e2e4bf412805ab11491687d6f8fbc2bc005db",
+      "eac3.wasm": "fac88bb851c8ae7ca58cae0c70f96733882ecc15cf3667e5aee167ce9f2aed8c",
+      "hevc.wasm": "c6ded8713db199bfaa268ed3e3d0be8997c4f593d2d382d55086a6b97ed21f11",
+      "jpeg2000.wasm": "61bc4ff87d781f8b39cac14532d41470a0a7ba519859ec4ee21ea278b1301a42",
+      "mpeg2.wasm": "8513413531b1dd409cf681510c03ffe7679db9d5cdf9e26b3ce34795893aeff0",
+      "mpeg4.wasm": "e2f7a52f98ab89983a6dd7a14c797841baa4f640caf2908d1274e0c2bb82c5c9",
+      "truehd.wasm": "af594a327e706205d3da60050398d34e0cfa0d45c9de809c648c6661df3d8273",
+      "uncompressed.wasm": "493ce5cc0d1b9fa49410e679d71c6af8c896870cb2fc3e75b643e548a51016e1",
+      "vc1.wasm": "f9dab604910142553072d384df44b5e746884a87af862211a24ccd4ff3d1db73",
+      "wma.wasm": "42c7d0ed7a9d110c3fdbded1a6e9a1cb45c99fddb84c32d5cdfb7ae174f7ffea"
+    }
+  },
+  "passes": {
+    "repository": "alchemyyy/webgpu-player-passes",
+    "tag": "v0.1.0",
+    "files": {
+      "NVScaler.wgsl": "2a090817cd733306fffbdc7b51a8aea2fffefc767be7ca46cfa93b605a08582a",
+      "NVSharpen.wgsl": "08cbee8b8cd0db7ea3da708c269653e68c9530f1f20a01462c0fe8ab729f1d8f",
+      "anime4k-l.wgsl": "d3a2a1372c71a3b638b9c5467fa8e9cc84173065015cfc8f58eeb0a0711325a6",
+      "anime4k-ul.wgsl": "03a76bd3da7936e1ec448e60f7cd2c1b744ae8b9fa2bda6b9d0b83f3bc5f72f9",
+      "catmull-rom.wgsl": "38dfcc8d1cfe2529aed3a939c442e061b0f708b7f6ac762545552fb4a08f8589",
+      "saturation.wgsl": "ae2dd5cbf4337d3ca6cd4f099cbd72c96489f429db44e3fa14c3ecb4d1182ec7",
+      "sharpen.wgsl": "11c28db45c9253f38aa8ef7b570a0fecfbe19b919a3a154b37d2981c8f4f4246",
+      "smooth-motion.wgsl": "39f0e8842d0587ba8c4c6a4904ba9b1c78067b72022aa27a61753578c7278f4f",
+      "temporal-blend.wgsl": "d71b09495327d86f532030533143233a1cde32a71deeab8d4b32fe8d207d1ab6"
+    }
+  }
+}
