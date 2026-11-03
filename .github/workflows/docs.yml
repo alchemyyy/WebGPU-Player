@@ -1,11 +1,11 @@
-# Publishes the book in docs/ to GitHub Pages when a push to master changes it, or when run by hand (Actions > Docs > Run workflow).
+# Publishes the book in docs/ to GitHub Pages when a push to main changes it, or when run by hand (Actions > Docs > Run workflow).
 # The build job builds the book with the pinned mdBook, and the deploy job publishes it.
 # NOTE: Pages must deploy from GitHub Actions (Settings > Pages > Source)
 name: Docs
 
 on:
   push:
-    branches: [master]
+    branches: [main]
     # The book and this workflow; the book reads nothing outside docs/
     paths:
       - docs/**
