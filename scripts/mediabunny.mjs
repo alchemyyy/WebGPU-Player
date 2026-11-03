@@ -16,8 +16,10 @@ const BUILD_DIRECTORY = join(MEDIABUNNY_SOURCE_DIRECTORY, 'dist');
 // Names the commit a build is of, so a moved pin rebuilds
 const BUILD_STAMP_FILE = join(BUILD_DIRECTORY, 'webgpu-player-build.json');
 // The fork's own build steps for its modules, from its scripts/build.sh: type check and emit, then add the import extensions
+// The toolchain is the fork's devDependencies, which npm leaves out under NODE_ENV=production, as a host's production build sets;
+// npx would then run a tsc from a folder above, which type checks against that folder's @types
 const BUILD_COMMAND_LINES = [
-    'npm ci --ignore-scripts',
+    'npm ci --ignore-scripts --include=dev',
     'npx --no -- tsc -p src',
     'npx --no -- tsx scripts/add-import-extensions.ts'
 ];
