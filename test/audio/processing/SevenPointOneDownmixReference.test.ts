@@ -8,7 +8,6 @@ import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import {
-    CUSTOM_SEVEN_POINT_ONE_DOWNMIX_POLICY,
     downmixSevenPointOneToStereo,
     type StereoChannelData
 } from 'webgpu-player/audio/processing/CustomAudioDownmix';
@@ -186,7 +185,7 @@ function computeStereoMetrics(channelData: StereoChannelData): StereoMetrics {
 }
 
 describe('7.1 mpv/FFmpeg downmix reference', () => {
-    it('pins the exact WAVE order, mask, and selected mpv policy', () => {
+    it('pins the exact WAVE order, mask, and mpv default matrix', () => {
         expect(REFERENCE.schemaVersion).toBe(1);
         expect(REFERENCE.waveChannelMask).toBe(0x63f);
         expect(REFERENCE.channelOrder).toEqual([
@@ -199,13 +198,12 @@ describe('7.1 mpv/FFmpeg downmix reference', () => {
             'side-left',
             'side-right'
         ]);
-        expect(CUSTOM_SEVEN_POINT_ONE_DOWNMIX_POLICY).toBe('mpv-default-limited');
         expect(REFERENCE.policies.mpvDefault.lfeGain).toBe(0);
         for (let inputChannelIndex = 0; inputChannelIndex < CHANNEL_COUNT; inputChannelIndex += 1) {
             const impulse = createEmptyChannels(1);
             impulse[inputChannelIndex][0] = 1;
 
-            const [ outputLeft, outputRight ] = downmixSevenPointOneToStereo(impulse);
+            const [ outputLeft, outputRight ] = downmixSevenPointOneToStereo(impulse, CUSTOM_AUDIO_DOWNMIX_ALGORITHMS.StandardLORO);
 
             expect(outputLeft[0]).toBeCloseTo(
                 REFERENCE.policies.mpvDefault.matrix[0][inputChannelIndex],
@@ -226,7 +224,7 @@ describe('7.1 mpv/FFmpeg downmix reference', () => {
                 REFERENCE.corpus.inputFloat32SHA256
             );
 
-            const output = downmixSevenPointOneToStereo(corpus);
+            const output = downmixSevenPointOneToStereo(corpus, CUSTOM_AUDIO_DOWNMIX_ALGORITHMS.StandardLORO);
             const actual = computeStereoMetrics(output);
             const expected = REFERENCE.measurements[String(sampleRate)].mpvDefault;
 

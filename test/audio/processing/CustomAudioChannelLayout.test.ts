@@ -195,7 +195,8 @@ describe('CustomAudioChannelLayout', () => {
 
         const output = mixCustomAudioToStereo(
             channels,
-            CUSTOM_SEVEN_POINT_ONE_CHANNEL_LAYOUT
+            CUSTOM_SEVEN_POINT_ONE_CHANNEL_LAYOUT,
+            CUSTOM_AUDIO_DOWNMIX_ALGORITHMS.StandardLORO
         );
         expect(output[0][0]).toBeCloseTo(
             1 * STANDARD_DIRECT_GAIN + (3 + 5 + 7) * STANDARD_MIXED_GAIN,

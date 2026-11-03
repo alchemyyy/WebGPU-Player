@@ -168,7 +168,6 @@ const SEVEN_POINT_ONE_RFC7845_COEFFICIENTS: SevenPointOneDownmixCoefficients =
         side: 0.336565
     });
 
-export const CUSTOM_SEVEN_POINT_ONE_DOWNMIX_POLICY = 'mpv-default-limited' as const;
 export const AUDIO_DOWNMIX_SETTINGS_VERSION = 1;
 export const AUDIO_DOWNMIX_SETTING_RANGES = Object.freeze({
     centerLevel: Object.freeze({

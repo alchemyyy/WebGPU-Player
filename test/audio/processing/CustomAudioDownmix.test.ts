@@ -13,6 +13,7 @@ import {
 } from 'webgpu-player/audio/processing/CustomAudioDownmix';
 import {
     CUSTOM_AUDIO_DOWNMIX_ALGORITHMS,
+    DEFAULT_CUSTOM_AUDIO_DOWNMIX_ALGORITHM,
     type CustomAudioDownmixAlgorithm
 } from 'webgpu-player/audio/processing/CustomAudioDownmixAlgorithm';
 import type { AudioDownmixSettingsRamp } from 'webgpu-player/audio/processing/StreamingAudioDownmixSettings';
@@ -608,7 +609,7 @@ describe('downmixSevenPointOneToStereo', () => {
             channelData.push(createConstantChannel(channelIndex === 3 ? 100 : 1, 1));
         }
 
-        const [ outputLeft, outputRight ] = downmixSevenPointOneToStereo(channelData);
+        const [ outputLeft, outputRight ] = downmixSevenPointOneToStereo(channelData, CUSTOM_AUDIO_DOWNMIX_ALGORITHMS.StandardLORO);
 
         const correlatedPeak = STANDARD_DIRECT_GAIN + 3 * STANDARD_MIXED_GAIN;
         expect(outputLeft[0]).toBeCloseTo(correlatedPeak, 6);
@@ -649,7 +650,7 @@ describe('downmixSevenPointOneToStereo', () => {
                 ));
             }
 
-            const [ outputLeft, outputRight ] = downmixSevenPointOneToStereo(channelData);
+            const [ outputLeft, outputRight ] = downmixSevenPointOneToStereo(channelData, CUSTOM_AUDIO_DOWNMIX_ALGORITHMS.StandardLORO);
 
             expect(outputLeft[0]).toBeCloseTo(expectedLeft[inputChannelIndex], 7);
             expect(outputRight[0]).toBeCloseTo(expectedRight[inputChannelIndex], 7);
@@ -708,7 +709,7 @@ describe('downmixSevenPointOneToStereo', () => {
 
         expect(downmixSevenPointOneToStereo(
             channelData,
-            CUSTOM_AUDIO_DOWNMIX_ALGORITHMS.StandardLORO,
+            DEFAULT_CUSTOM_AUDIO_DOWNMIX_ALGORITHM,
             createDefaultAudioDownmixSettings()
         )).toEqual(downmixSevenPointOneToStereo(channelData));
     });
