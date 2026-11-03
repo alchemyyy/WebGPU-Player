@@ -17,7 +17,7 @@ Codecs and post-processing effects are supported through dynamically loaded WGSL
 
 
 
-The documentation is a book in [docs/](docs/src/SUMMARY.md), written with [mdBook](https://github.com/rust-lang/mdBook).
+The documentation is a book in [docs/](docs/src/SUMMARY.md), written with [mdBook](https://github.com/rust-lang/mdBook). The current list of supported formats and codecs is [here](docs/src/codec-support.md).
 
 ### Sandbox Screenshot
 
