@@ -130,7 +130,7 @@ Each repository releases through its `.github/workflows/release.yml`, run by han
    `--pin <decoders|passes> <tag>` reads that release's `SHA256SUMS`, pins its `.wasm` or `.wgsl` files with their SHA-256 in `tools/pinned-releases.json`, then installs.
 4. Move the submodule to the commit the release is tagged at, and commit the gitlink and `tools/pinned-releases.json` together in one engine commit, so the submodule and its pin always move together.
 
-The decoders workflow checks out the engine at its `engine-ref` input, `overhaul` by default, puts the decoders repository at the engine's `wgpud/`, installs the pinned Emscripten with `make -C wasm emsdk` and Rust, and runs the engine's own steps: `make -C wgpud sources`, `npm run decoders`, which loads every package with the engine's loader, and `make -C wgpud source-archives`.
+The decoders workflow checks out the engine at its `engine-ref` input, `main` by default, puts the decoders repository at the engine's `wgpud/`, installs the pinned Emscripten with `make -C wasm emsdk` and Rust, and runs the engine's own steps: `make -C wgpud sources`, `npm run decoders`, which loads every package with the engine's loader, and `make -C wgpud source-archives`.
 Its release files are every `<project>.wasm`, the license texts of `licenses/`, the three source archives, which are the corresponding source of the LGPL packages, and `SHA256SUMS`.
 The passes workflow needs no engine checkout: it collects every WGSL file at the top level of every project folder, flat, and fails on two files of one name, as `npm run passes` does; its release files are those, the license texts of `licenses/`, and `SHA256SUMS`.
 
