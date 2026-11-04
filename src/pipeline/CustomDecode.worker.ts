@@ -1492,8 +1492,8 @@ async function getSelectedAudioTrackMetadata(
         audioTrack.getTimeResolution()
     ]);
     const sampleRate = getDeclaredAudioSampleRate(internalCodecID, declaredSampleRate);
-    // Matroska and ISO BMFF TrueHD tracks, QuickTime DTS core tracks, and Matroska A_MS/ACM tracks and AVI streams of a format tag Mediabunny does not
-    // map have no Mediabunny codec, which only a package decodes; the last two carry a WAVEFORMATEX, whose format tag names the codec
+    // Matroska MLP tracks, QuickTime DTS core tracks, and Matroska A_MS/ACM tracks and AVI streams of a format tag Mediabunny does not map have no
+    // Mediabunny codec, which only a package decodes; the last two carry a WAVEFORMATEX, whose format tag names the codec
     const waveFormatTrack = codec === null ? readWaveFormatAudioTrack(audioTrack) : null;
     if (waveFormatTrack?.status === 'failed') {
         throw new UnsupportedCustomDecodeSourceError(`The selected audio codec has no decode route: ${waveFormatTrack.failure}`);

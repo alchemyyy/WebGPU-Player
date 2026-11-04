@@ -19,7 +19,7 @@ const CUSTOM_COMPRESSED_AUDIO_CODECS: readonly CustomAudioCodec[] = Object.freez
     'ac3',
     'eac3'
 ]);
-// The worker maps the dtsc, dtsh, dtsl, and mlpa sample entries Mediabunny leaves without a codec
+// Mediabunny maps the dtsc, dtsh, dtsl, and mlpa sample entries, and the worker the QuickTime DTS core entry Mediabunny leaves without a codec
 const CUSTOM_ISO_BASE_MEDIA_AUDIO_CODECS: readonly CustomAudioCodec[] = Object.freeze([
     ...CUSTOM_COMPRESSED_AUDIO_CODECS,
     'dts',

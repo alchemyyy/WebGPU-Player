@@ -9,8 +9,6 @@ import {
     resolveDeclaredAudioChannelLayout
 } from 'webgpu-player/demux/CustomAudioTrackMetadata';
 
-// ISO BMFF reads a 32-bit integer rate as 16.16 fixed point
-const ISO_BASE_MEDIA_SAMPLE_RATE_SCALE = 0x1_0000;
 // Mediabunny's decoder configuration codecs for DTS Express and the DTS core
 const DTS_EXPRESS_CODEC_STRING = 'dtse';
 const DTS_CORE_CODEC_STRING = 'dtsc';
@@ -19,9 +17,7 @@ describe('CustomAudioTrackMetadata', () => {
     it.each([
         // The QuickTime DTS core entry, whose fourcc ends in a space, which Mediabunny does not map
         [ 'DTS ', 'dts' ],
-        [ 'A_MLP', 'mlp' ],
-        [ 'A_TRUEHD', 'truehd' ],
-        [ 'mlpa', 'truehd' ]
+        [ 'A_MLP', 'mlp' ]
     ] as const)('identifies the codec-less %s track as %s', (internalCodecID, decoderCodec) => {
         expect(getContainerAudioCodec(null, internalCodecID)).toBe(decoderCodec);
     });
@@ -35,6 +31,9 @@ describe('CustomAudioTrackMetadata', () => {
         [ null, 'dtsc' ],
         [ null, 'dtsh' ],
         [ null, 'dtsl' ],
+        // Mediabunny maps these TrueHD tracks itself
+        [ null, 'A_TRUEHD' ],
+        [ null, 'mlpa' ],
         // Only the exact fourcc maps
         [ null, 'DTS' ],
         [ null, 'A_AAC' ],
@@ -50,15 +49,6 @@ describe('CustomAudioTrackMetadata', () => {
         expect(isDTSExpressTrack('dts', { codec: DTS_CORE_CODEC_STRING, numberOfChannels: 6, sampleRate: 48_000 })).toBe(false);
         expect(isDTSExpressTrack('dts', null)).toBe(false);
         expect(isDTSExpressTrack('eac3', { codec: DTS_EXPRESS_CODEC_STRING, numberOfChannels: 2, sampleRate: 48_000 })).toBe(false);
-    });
-
-    it('recovers the integer rate of a Dolby TrueHD ISO BMFF sample entry', () => {
-        expect(getDeclaredAudioSampleRate('mlpa', 48_000 / ISO_BASE_MEDIA_SAMPLE_RATE_SCALE))
-            .toBe(48_000);
-        expect(getDeclaredAudioSampleRate('mlpa', 192_000 / ISO_BASE_MEDIA_SAMPLE_RATE_SCALE))
-            .toBe(192_000);
-        // A muxer that wrote 16.16 already reads back as the integer rate
-        expect(getDeclaredAudioSampleRate('mlpa', 96_000)).toBe(96_000);
     });
 
     it('declares the 48 kHz DTS core when an ISO BMFF sample entry cannot hold the rate', () => {

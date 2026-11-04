@@ -20,11 +20,13 @@ const MATROSKA_VECTOR_PATH = resolve(
 );
 const MATROSKA_TRUEHD_CODEC_ID = 'A_TRUEHD';
 const TRUEHD_CODEC = 'truehd';
+// Mediabunny's decoder configuration codec for TrueHD, the ISO BMFF sample entry
+const TRUEHD_CODEC_STRING = 'mlpa';
 const TRUEHD_CHANNEL_COUNT = 6;
 const TRUEHD_SAMPLE_RATE = 96_000;
 
 describe('Mediabunny TrueHD demux integration', () => {
-    it('surfaces Matroska A_TRUEHD packets, which the engine identifies by their codec ID', async () => {
+    it('maps Matroska A_TRUEHD tracks to truehd itself, so the engine needs no codec ID of its own', async () => {
         const input = new Input({
             formats: ALL_FORMATS,
             source: new BufferSource(new Uint8Array(readFileSync(MATROSKA_VECTOR_PATH)))
@@ -36,10 +38,10 @@ describe('Mediabunny TrueHD demux integration', () => {
             const track = tracks[0];
             const codec = await track.getCodec();
             const internalCodecID = await track.getInternalCodecId();
-            expect(codec).toBeNull();
-            expect(await track.getDecoderConfig()).toBeNull();
+            expect(codec).toBe(TRUEHD_CODEC);
+            expect((await track.getDecoderConfig())?.codec).toBe(TRUEHD_CODEC_STRING);
             expect(internalCodecID).toBe(MATROSKA_TRUEHD_CODEC_ID);
-            expect(getContainerAudioCodec(codec, internalCodecID)).toBe(TRUEHD_CODEC);
+            expect(getContainerAudioCodec(codec, internalCodecID)).toBeNull();
             expect(await track.getNumberOfChannels()).toBe(TRUEHD_CHANNEL_COUNT);
             expect(await track.getSampleRate()).toBe(TRUEHD_SAMPLE_RATE);
 
