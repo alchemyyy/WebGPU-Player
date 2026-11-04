@@ -877,6 +877,14 @@ export function createSandboxSession(options: SandboxSessionOptions): SandboxSes
                 store.setState({ subtitleCues: parseWebVTTCues(text) });
             }
         },
+        setBlackBarCropEnabled: async (enabled: boolean): Promise<void> => {
+            try {
+                await presenter.setBlackBarCropEnabled(enabled);
+            } catch (error) {
+                throw failCommand('presenter', 'black-bar-crop-failed', describeError(error));
+            }
+            store.setState((state: SandboxState): Partial<SandboxState> => ({ presentation: { ...state.presentation, blackBarCrop: enabled } }));
+        },
         setDeinterlaceMode: async (mode: DeinterlaceMode): Promise<void> => {
             try {
                 await presenter.setDeinterlaceMode(mode);

@@ -26,6 +26,8 @@ import {
     PresentationExecutor
 } from 'webgpu-player/presentation/passes/PresentationExecutor';
 import type { TexturePresentationGeometry } from 'webgpu-player/presentation/PresentationGeometry';
+import { BLACK_BAR_STATISTICS_BYTE_LENGTH } from 'webgpu-player/presentation/passes/builtin/BlackBarAnalysisPass';
+import { BYTES_PER_WORD } from 'webgpu-player/presentation/WebGPUConstants';
 import { RENDER_SETTINGS_UNIFORM_BYTE_LENGTH } from 'webgpu-player/presentation/RenderSettings';
 import { DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH } from 'webgpu-player/demux/dolby-vision/DolbyVisionRPUParser';
 import {
@@ -90,7 +92,16 @@ type RecordedComputePass = {
 
 type RecordedPass = RecordedComputePass | RecordedRenderPass;
 
+type RecordedBufferCopy = {
+    destination: MockBuffer
+    destinationOffset: number
+    size: number
+    source: MockBuffer
+    sourceOffset: number
+};
+
 type CommandEncoderHarness = {
+    copies: RecordedBufferCopy[]
     encoder: GPUCommandEncoder
     passes: RecordedPass[]
 };
@@ -114,7 +125,7 @@ type DeviceHarness = {
 
 // WebGPU's flag values, which jsdom does not define
 // eslint-disable-next-line @typescript-eslint/naming-convention
-const GPU_BUFFER_USAGE = { COPY_DST: 8, INDIRECT: 256, STORAGE: 128, UNIFORM: 64 } as const;
+const GPU_BUFFER_USAGE = { COPY_DST: 8, COPY_SRC: 4, INDIRECT: 256, STORAGE: 128, UNIFORM: 64 } as const;
 // eslint-disable-next-line @typescript-eslint/naming-convention
 const GPU_TEXTURE_USAGE = { COPY_DST: 2, RENDER_ATTACHMENT: 16, STORAGE_BINDING: 8, TEXTURE_BINDING: 4 } as const;
 const GPU_SHADER_STAGE = { COMPUTE: 4, FRAGMENT: 2, VERTEX: 1 } as const;
@@ -210,6 +221,7 @@ const UNKNOWN_NAME = 'missing';
 const WORKGROUP_COUNTS: readonly [number, number, number] = [ 4, 2, 1 ];
 const INDIRECT_ARGUMENTS_BYTE_LENGTH = 12;
 const STATE_BYTE_LENGTH = 64;
+const BLACK_BAR_BUFFER_ID = 'black-bars';
 // A linear 3D LUT and a nearest table of 32-bit floats, which repeats
 const LUT_PASS_TEXTURE: PlannedPassTexture = { dimension: '3d', edge: 'clamp', filter: 'linear', format: 'rgba16float', id: 'lut', size: [ 17, 17, 17 ] };
 const WEIGHTS_PASS_TEXTURE: PlannedPassTexture = { dimension: '2d', edge: 'repeat', filter: 'nearest', format: 'rgba32float', id: 'weights', size: [ 5, 648, 1 ] };
@@ -340,6 +352,7 @@ function createDeviceHarness(): DeviceHarness {
 
 function createCommandEncoderHarness(): CommandEncoderHarness {
     const passes: RecordedPass[] = [];
+    const copies: RecordedBufferCopy[] = [];
     const encoder = {
         beginComputePass: () => {
             const record: RecordedComputePass = {
@@ -391,9 +404,12 @@ function createCommandEncoderHarness(): CommandEncoderHarness {
                     record.viewport = viewport;
                 }
             };
+        },
+        copyBufferToBuffer: (source: MockBuffer, sourceOffset: number, destination: MockBuffer, destinationOffset: number, size: number): void => {
+            copies.push({ destination, destinationOffset, size, source, sourceOffset });
         }
     } as unknown as GPUCommandEncoder;
-    return { encoder, passes };
+    return { copies, encoder, passes };
 }
 
 function createCompilationMessage(type: GPUCompilationMessageType, lineNum: number, linePos: number, message: string): GPUCompilationMessage {
@@ -402,6 +418,7 @@ function createCompilationMessage(type: GPUCompilationMessageType, lineNum: numb
 
 function createPlan(plan: Partial<PresentationPlan>): PresentationPlan {
     return {
+        blackBarAnalysis: null,
         buffers: [],
         deinterlace: null,
         displayRate: false,
@@ -453,6 +470,7 @@ function createVideoFrame(): VideoFrame {
 
 function createFrameInput(source: PresentationFrameSource, newFrame = true): PresentationFrameInput {
     return {
+        blackBarReadback: null,
         fieldState: PRESENTATION_FIELD_STATE.none,
         frameDurationMicroseconds: 0,
         geometry: GEOMETRY,
@@ -1491,6 +1509,50 @@ describe('PresentationExecutor', () => {
         expect(getComputePass(passes, 1).pipeline).toBe(harness.computePipelines[1]);
         // A persistent buffer counts as one frame of history
         expect(readLastPresentationSlot(harness, 2).historyValid).toBe(1);
+    });
+
+    it('runs the black bar analysis only for a frame with a readback, a workgroup per source row and column, and copies its statistics into it', async () => {
+        const harness = createDeviceHarness();
+        const outputPass = createRenderPass('Output', { bindings: [ { binding: 0, kind: 'engine', resource: 'external-texture' }, { binding: 1, kind: 'presentation' } ] });
+        const plan = createPlan({
+            blackBarAnalysis: { bufferId: BLACK_BAR_BUFFER_ID, passIndex: 1 },
+            buffers: [ { byteLength: BLACK_BAR_STATISTICS_BYTE_LENGTH, id: BLACK_BAR_BUFFER_ID, indirect: false, persistent: false } ],
+            passes: [
+                outputPass,
+                createComputePass('Black bars', {
+                    bindings: [
+                        { binding: 0, kind: 'presentation' },
+                        { binding: 1, kind: 'engine', resource: 'external-texture' },
+                        { access: 'storage', binding: 2, bufferId: BLACK_BAR_BUFFER_ID, kind: 'buffer' }
+                    ],
+                    coordinateMapping: 'identity',
+                    workgroupCounts: null
+                })
+            ]
+        });
+        const executor = await PresentationExecutor.create(harness.device, plan);
+        const statistics = findBuffer(harness, BLACK_BAR_BUFFER_ID);
+        const statisticsByteLength = (SOURCE_HEIGHT + SOURCE_WIDTH) * BYTES_PER_WORD;
+        const readback = { label: 'readback', size: statisticsByteLength } as unknown as GPUBuffer;
+
+        const unanalyzed = createCommandEncoderHarness();
+        executor.encode(unanalyzed.encoder, createExternalFrameInput());
+        expect(unanalyzed.passes.map((pass: RecordedPass): string => pass.kind)).toEqual([ 'render' ]);
+        expect(unanalyzed.copies).toEqual([]);
+
+        const analyzed = createCommandEncoderHarness();
+        executor.encode(analyzed.encoder, { ...createExternalFrameInput(), blackBarReadback: readback });
+        expect(statistics.descriptor.usage).toBe(GPU_BUFFER_USAGE.STORAGE | GPU_BUFFER_USAGE.COPY_SRC);
+        expect(getComputePass(analyzed.passes, 1).directDispatches).toEqual([ [ SOURCE_HEIGHT + SOURCE_WIDTH, 1, 1 ] ]);
+        expect(analyzed.copies).toEqual([ { destination: readback, destinationOffset: 0, size: statisticsByteLength, source: statistics, sourceOffset: 0 } ]);
+
+        // A readback too small for the frame's lines, or one a plan without the analysis cannot fill, is refused
+        const smallReadback = { label: 'small readback', size: statisticsByteLength - BYTES_PER_WORD } as unknown as GPUBuffer;
+        expect(() => executor.encode(createCommandEncoderHarness().encoder, { ...createExternalFrameInput(), blackBarReadback: smallReadback }))
+            .toThrow(RangeError);
+        const plainExecutor = await PresentationExecutor.create(harness.device, createPlan({ passes: [ outputPass ] }));
+        expect(() => plainExecutor.encode(createCommandEncoderHarness().encoder, { ...createExternalFrameInput(), blackBarReadback: readback }))
+            .toThrow('black-bar-analysis');
     });
 
     it('writes render settings and the RPU only when the plan binds them', async () => {

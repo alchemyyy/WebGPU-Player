@@ -231,6 +231,8 @@ export type AuthorizationTelemetry = Readonly<{
 }>;
 
 export type PresentationState = Readonly<{
+    /** Whether presentation crops the black bars encoded into the video, which the pipeline panel switches; the presenter keeps it across playbacks */
+    blackBarCrop: boolean
     /** How interlaced frames present, which the pipeline panel switches; the presenter keeps it across playbacks */
     deinterlaceMode: DeinterlaceMode
     /** The preset's files, in preset order */
@@ -363,6 +365,7 @@ export function createInitialSandboxState(): SandboxState {
         media: null,
         playback: { durationMicroseconds: null, muted: false, status: 'idle', volume: DEFAULT_VOLUME },
         presentation: {
+            blackBarCrop: false,
             deinterlaceMode: DEFAULT_DEINTERLACE_MODE,
             files: [],
             hdrOutput: false,
@@ -425,6 +428,8 @@ export type SandboxSessionCommands = {
     selectSubtitle: (selection: SubtitleSelection | null) => Promise<void>
     /** Restarts the media with the speaker layout and binaural setting, at the current time, so the route is chosen for them */
     setAudioOutputSettings: (settings: AudioOutputSettings) => Promise<void>
+    /** Selects whether presentation crops the black bars encoded into the video */
+    setBlackBarCropEnabled: (enabled: boolean) => Promise<void>
     /** Selects how interlaced frames present: a frame per field, a frame per frame, or woven as decoded */
     setDeinterlaceMode: (mode: DeinterlaceMode) => Promise<void>
     setHDROutputEnabled: (enabled: boolean) => Promise<void>

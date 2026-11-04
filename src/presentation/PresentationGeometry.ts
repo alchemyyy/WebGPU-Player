@@ -29,9 +29,17 @@ export type TexturePresentationGeometry = {
     viewportY: number
 };
 
+/** A rectangle of the source, normalized over it: its left and top edges from 0, its width and height up to 1. */
+export type SourceRectangle = Readonly<{ height: number; width: number; x: number; y: number }>;
+
+/** The whole source. */
+export const FULL_SOURCE_RECTANGLE: SourceRectangle = Object.freeze({ height: 1, width: 1, x: 0, y: 0 });
+
 export type TexturePresentationGeometryInput = {
     objectFit: string
     objectPosition: string
+    /** The part of the source that presents, which object-fit fits as the whole object, as a crop of the source would */
+    sourceCrop: SourceRectangle
     sourceHeight: number
     sourceWidth: number
     targetCSSHeight: number
@@ -300,7 +308,7 @@ function requirePositiveDimension(value: number, name: string): void {
     }
 }
 
-/** Computes CSS object-fit and object-position as a GPU viewport and source crop. */
+/** Computes CSS object-fit and object-position as a GPU viewport and source crop, fitting the source's crop as the object. */
 export function calculateTexturePresentationGeometry(input: TexturePresentationGeometryInput): TexturePresentationGeometry {
     requirePositiveDimension(input.sourceWidth, 'Source width');
     requirePositiveDimension(input.sourceHeight, 'Source height');
@@ -308,35 +316,41 @@ export function calculateTexturePresentationGeometry(input: TexturePresentationG
     requirePositiveDimension(input.targetCSSHeight, 'Target CSS height');
     requirePositiveDimension(input.targetPixelWidth, 'Target pixel width');
     requirePositiveDimension(input.targetPixelHeight, 'Target pixel height');
+    const crop = input.sourceCrop;
+    if (!(crop.x >= 0 && crop.y >= 0 && crop.width > 0 && crop.height > 0 && crop.x + crop.width <= 1 && crop.y + crop.height <= 1)) {
+        throw new RangeError(`Source crop ${crop.x},${crop.y} ${crop.width}x${crop.height} must lie within the source`);
+    }
+    const sourceWidth = input.sourceWidth * crop.width;
+    const sourceHeight = input.sourceHeight * crop.height;
 
     const containScale = Math.min(
-        input.targetCSSWidth / input.sourceWidth,
-        input.targetCSSHeight / input.sourceHeight
+        input.targetCSSWidth / sourceWidth,
+        input.targetCSSHeight / sourceHeight
     );
     let objectWidth: number;
     let objectHeight: number;
     switch (input.objectFit) {
         case 'contain':
-            objectWidth = input.sourceWidth * containScale;
-            objectHeight = input.sourceHeight * containScale;
+            objectWidth = sourceWidth * containScale;
+            objectHeight = sourceHeight * containScale;
             break;
         case 'cover': {
             const coverScale = Math.max(
-                input.targetCSSWidth / input.sourceWidth,
-                input.targetCSSHeight / input.sourceHeight
+                input.targetCSSWidth / sourceWidth,
+                input.targetCSSHeight / sourceHeight
             );
-            objectWidth = input.sourceWidth * coverScale;
-            objectHeight = input.sourceHeight * coverScale;
+            objectWidth = sourceWidth * coverScale;
+            objectHeight = sourceHeight * coverScale;
             break;
         }
         case 'none':
-            objectWidth = input.sourceWidth;
-            objectHeight = input.sourceHeight;
+            objectWidth = sourceWidth;
+            objectHeight = sourceHeight;
             break;
         case 'scale-down': {
             const scaleDown = Math.min(containScale, 1);
-            objectWidth = input.sourceWidth * scaleDown;
-            objectHeight = input.sourceHeight * scaleDown;
+            objectWidth = sourceWidth * scaleDown;
+            objectHeight = sourceHeight * scaleDown;
             break;
         }
         case 'fill':
@@ -356,11 +370,12 @@ export function calculateTexturePresentationGeometry(input: TexturePresentationG
     const visibleWidth = Math.max(visibleRight - visibleLeft, 0);
     const visibleHeight = Math.max(visibleBottom - visibleTop, 0);
 
+    // The object is the source's crop, so its coordinates map into the crop's part of the source
     return {
-        textureOffsetX: (visibleLeft - objectX) / objectWidth,
-        textureOffsetY: (visibleTop - objectY) / objectHeight,
-        textureScaleX: visibleWidth / objectWidth,
-        textureScaleY: visibleHeight / objectHeight,
+        textureOffsetX: crop.x + (crop.width * (visibleLeft - objectX) / objectWidth),
+        textureOffsetY: crop.y + (crop.height * (visibleTop - objectY) / objectHeight),
+        textureScaleX: crop.width * visibleWidth / objectWidth,
+        textureScaleY: crop.height * visibleHeight / objectHeight,
         viewportHeight: visibleHeight * input.targetPixelHeight / input.targetCSSHeight,
         viewportWidth: visibleWidth * input.targetPixelWidth / input.targetCSSWidth,
         viewportX: visibleLeft * input.targetPixelWidth / input.targetCSSWidth,

@@ -6,7 +6,9 @@ import {
     MAX_DECODED_RAW_FRAME_CREDITS
 } from 'webgpu-player/pipeline/DecodeWorkerProtocol';
 import type { CustomPlaybackTelemetry } from 'webgpu-player/pipeline/CustomPlaybackControllerTypes';
+import type { BlackBarCrop } from 'webgpu-player/presentation/BlackBarDetector';
 import { createHDRToSDRRenderSettings } from 'webgpu-player/presentation/RenderSettings';
+import type { StandardAspectRatio } from 'webgpu-player/presentation/StandardAspectRatios';
 import { EXTERNAL_HDR_AUTHORIZATION_ROUTE_KEYS } from 'webgpu-player/validation/ExternalHDRPresentationAuthorization';
 import { RAW_HDR_AUTHORIZATION_ROUTE_KEYS } from 'webgpu-player/validation/RawHDRPresentationAuthorization';
 
@@ -520,6 +522,22 @@ describe('describePlaybackInfo', () => {
             `hdr-to-sdr, ${toneMapping.operator}, ${toneMapping.inputPeakNits} nits in, ${toneMapping.outputPeakNits} nits out, paper white ${toneMapping.paperWhiteNits} nits`
         );
         expect(requireRow(section, 'Display').value).toContain(`exposure ${toneMapping.exposure}`);
+    });
+
+    it('describes the black bars the presenter crops: off, none until found, else each inset in samples and the standard ratio the picture rounds to', () => {
+        const initialState = createInitialSandboxState();
+        const describeBlackBars = (blackBarCrop: BlackBarCrop | null, blackBarAspectRatio: StandardAspectRatio | null = null): string => requireRow(
+            requireSection(describePlaybackInfo(createState({
+                telemetry: { ...initialState.telemetry, presenter: createPresenterTelemetry({ blackBarAspectRatio, blackBarCrop }) }
+            })), PRESENTATION_SECTION_ID),
+            'Black bars'
+        ).value;
+        const scope = { bottom: 140, left: 0, right: 0, top: 140 };
+
+        expect(describeBlackBars(null)).toBe('off');
+        expect(describeBlackBars({ bottom: 0, left: 0, right: 0, top: 0 })).toBe('none');
+        expect(describeBlackBars({ bottom: 140, left: 0, right: 0, top: 138 })).toBe('top 138, bottom 140, left 0, right 0');
+        expect(describeBlackBars(scope, { name: 'Blu-ray Scope', ratio: 2.4 })).toBe('top 140, bottom 140, left 0, right 0, 2.40:1 Blu-ray Scope');
     });
 
     it('describes each authorization with a row per failed route key and the failure as reason and detail', () => {

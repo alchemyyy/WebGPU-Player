@@ -56,6 +56,7 @@ vi.mock('webgpu-player/presentation/WebGPUPresenter', () => ({
         getTelemetry = vi.fn(() => ({ state: 'presenting' }));
         seek = vi.fn();
         setDecodedFramePushMode = vi.fn();
+        setBlackBarCropEnabled = vi.fn(() => Promise.resolve());
         setDeinterlaceMode = vi.fn(() => Promise.resolve());
         setHDROutputEnabled = vi.fn(() => Promise.resolve());
         setPresentationParameter = vi.fn();
@@ -206,6 +207,8 @@ const GPU_VIDEO_DECODER = { codec: 'hevc', decoderId: HEVC_PACKAGE.id, package: 
 // A package file the page could not load, as the decoder packages report it
 const PACKAGE_FAILURE_CODE = 'package-invalid';
 const PACKAGE_FAILURE_DETAIL = 'vc1.wasm WebAssembly.compile(): expected magic word';
+// The presenter's refusal of a black bar crop choice
+const BLACK_BAR_CROP_REJECTION = 'black-bar-crop: no executor';
 // The presenter's refusal of a mode outside its modes
 const DEINTERLACE_MODE_REJECTION = "deinterlace-mode: 'weave'";
 const ELIGIBLE_ROUTE = {
@@ -307,6 +310,21 @@ describe('SandboxSession', () => {
         await expect(harness.session.setDeinterlaceMode('off')).rejects.toThrow('deinterlace-mode-failed');
         expect(getFailures(harness)).toEqual([ { code: 'deinterlace-mode-failed', detail: DEINTERLACE_MODE_REJECTION, layer: 'presenter' } ]);
         expect(harness.store.getState().presentation.deinterlaceMode).toBe('single-rate');
+    });
+
+    it('hands the presenter the black bar crop choice and publishes it, and records a choice the presenter refuses', async () => {
+        const harness = createHarness();
+        const presenter = engineMocks.presenters[0];
+
+        await harness.session.setBlackBarCropEnabled(true);
+
+        expect(presenter.setBlackBarCropEnabled).toHaveBeenCalledWith(true);
+        expect(harness.store.getState().presentation.blackBarCrop).toBe(true);
+
+        presenter.setBlackBarCropEnabled.mockRejectedValueOnce(new Error(BLACK_BAR_CROP_REJECTION));
+        await expect(harness.session.setBlackBarCropEnabled(false)).rejects.toThrow('black-bar-crop-failed');
+        expect(getFailures(harness)).toEqual([ { code: 'black-bar-crop-failed', detail: BLACK_BAR_CROP_REJECTION, layer: 'presenter' } ]);
+        expect(harness.store.getState().presentation.blackBarCrop).toBe(true);
     });
 
     it('records a probe failure and rejects without starting a route', async () => {

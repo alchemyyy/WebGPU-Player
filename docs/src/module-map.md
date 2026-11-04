@@ -17,16 +17,19 @@ Each source file's tests are at the same relative path under `test/`, and integr
 ## presentation/
 
 - `WebGPUPresenter.ts`: the GPU device and canvas; rVFC and pushed-frame submission; each route's built-in chain, planned and recorded through `passes/`; HDR and Dolby Vision authorization; device-loss recovery; the latched fallback.
-  It also holds the engine API for presentation: the host's preset of user passes, live parameter changes, the plan report, HDR output for HDR sources, and the deinterlacing mode.
+  It also holds the engine API for presentation: the host's preset of user passes, live parameter changes, the plan report, HDR output for HDR sources, the deinterlacing mode, and the black bar crop.
   While a plan deinterlaces it shows the frame before the newest, tells the frame loop its lookahead, and draws held fields from history.
   While a plan holds a display-rate pass it measures the display's refresh rate from the frame loop's animation frames, takes frames one refresh ahead, and redraws from history at each tick's clock time.
+  While the black bar crop is on it reads back each new frame's black bar statistics and fits the picture the detector's bars leave, rounded to a standard aspect ratio near it.
+- `BlackBarDetector.ts`: the black bars a presentation crops, decided frame by frame from the black bar analysis's statistics: symmetric bars per axis, cropped at once for a letterbox or a pillarbox and else once two shots agree, given up at once for picture inside them, and cropped again only after 30 s of playback.
+- `StandardAspectRatios.ts`: the film and television aspect ratios of the Detect Aspect Ratio plugin, and the rounding of a black bar crop to the nearest one its bars reach by cutting at most 0.5% of the picture or showing at most a line of bar.
 - `DisplayRefresh.ts`: the display's refresh interval, a least-squares fit of animation frame times over refresh counts, reported once it is precise and restarted when the display changes.
 - `FrameInterval.ts`: the media time between a stream's frames, frame by frame: a least-squares fit of the last 24 new frames' timestamps over frame counts, counting skipped frames and restarted when the frame rate changes.
 - `DeinterlaceTimeline.ts`: the frames a deinterlacing plan's history holds and the draw a clock time picks: the field shown, of which frame, and its time, at double or single rate, with yadif's passthrough of progressive frames.
 - `PresentationInput.ts`: MediaStream metadata to color metadata; Dolby Vision descriptors with their RPU route; declared and exact native base metadata; the presented video ordinal; the known-SDR gate; the stream's fields from its `FieldOrder` or `IsInterlaced` and its size, and its declared frame rate, which `PresentationSetup.ts` hands the presenter.
 - `DolbyVisionGeometry.ts`: the P4 and P7 EL coded size (half the BL when the BL is wider than 1920).
 - `PresentationSetup.ts`: what a host calls around the eligibility, without state of its own: the play options' presentation input, the authorizations that gate the eligibility's presentation routes, the offers of the host's GPU decoder packages for a stream (`getGPUVideoDecoderOffers`) and the factory of their sessions on the presenter's device, the presenter's color pipeline for the chosen route, Dolby Vision bases included, and static HDR metadata updates.
-- `PresentationGeometry.ts`: pure object-fit and object-position math to viewport and texture transforms.
+- `PresentationGeometry.ts`: pure object-fit and object-position math to viewport and texture transforms, fitting a crop of the source, the black bar crop's, as the whole object.
 - `RenderSettings.ts`: versioned (v7) HDR-to-SDR settings and their 144-byte uniform, HDR10+ fields included.
 - `WebGPUConstants.ts`: the WebGPU values presentation and GPU decode share: canvas configuration, texture formats, features, and default limits.
 
@@ -46,10 +49,11 @@ The presentation pipeline: each route's fixed signal and default color track, us
   Without user passes every route plans one pass, which reads the source and writes the canvas.
   It reads the signal's planes apart for plane passes, from the source or a deinterlaced image, merges and converts the planes they replace, and gives every image its offset and extent, which the scaler corrects.
 - `PresentationExecutor.ts`: compiles a plan, owns its textures, history rings, buffers, and bind groups, binds the caller's uploads of its texture blocks, and records each frame without submitting; a draw from history records the passes from the plan's history draw start on, except those that read the source.
+  It runs a plan's black bar analysis only for a frame with a readback buffer, a workgroup per row and column of the frame's source, and copies its statistics into that buffer.
 - `PresentationPipelineCache.ts`: the passes each device keeps compiled, a bounded least recently used cache keyed by WGSL, bind group layout, and target format, which the executor compiles through.
 - `PassTextureCache.ts`: the uploads of texture blocks on one device by content identity, made when a plan first binds a block and released when no plan or preset holds it.
 - `PlaneTextureSource.ts`: the plane route's ingress: layout validation that names the failed check, one integer texture per plane, and the uploads.
-- `builtin/`: the built-in signals (`BuiltinSignals.ts`, `FramePoolSignal.ts`, which reads a pool slot of any output format, as its layout says, for the frame-pool route's chain, and `FramePoolDolbyVisionSignal.ts`, the raw Dolby Vision reconstruction over that read), color functions (`BuiltinColorFunctions.ts`), and route chains (`BuiltinChains.ts`), and the deinterlacing pass (`DeinterlacePass.ts`, yadif over the signal's ring).
+- `builtin/`: the built-in signals (`BuiltinSignals.ts`, `FramePoolSignal.ts`, which reads a pool slot of any output format, as its layout says, for the frame-pool route's chain, and `FramePoolDolbyVisionSignal.ts`, the raw Dolby Vision reconstruction over that read), color functions (`BuiltinColorFunctions.ts`), and route chains (`BuiltinChains.ts`), the deinterlacing pass (`DeinterlacePass.ts`, yadif over the signal's ring), and the black bar analysis (`BlackBarAnalysisPass.ts`, a compute pass over the signal that writes how many of 64 points along each row and column are lit and bright, and the sum of their signed luma).
   A deinterlacing plan's raw and frame pool signals read an interlaced frame's 4:2:0 chroma within each field.
   Every signal reads 4:2:0 chroma at the stream's declared location, left where it declares none.
   Each signal offers its planes to plane passes: the raw and frame pool signals their decoded planes, with chroma's siting, range, and matrix, the external signals planes derived from RGB through the stream's own matrix and range at its chroma subsampling, and the Dolby Vision signals none.

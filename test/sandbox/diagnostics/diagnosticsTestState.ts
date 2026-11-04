@@ -56,6 +56,7 @@ export function createPlannedTexture(overrides: Partial<PlannedTexture> & Pick<P
 
 export function createPresentationPlan(overrides: Partial<PresentationPlan> & Pick<PresentationPlan, 'passes'>): PresentationPlan {
     return {
+        blackBarAnalysis: null,
         buffers: [],
         deinterlace: null,
         displayRate: false,

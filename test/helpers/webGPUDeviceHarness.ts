@@ -329,6 +329,8 @@ export function createWebGPUDeviceHarness(options: WebGPUDeviceHarnessOptions = 
                 })
             };
         }),
+        // A copy between buffers moves nothing; a test writes what a readback buffer should hold before its map settles
+        copyBufferToBuffer: vi.fn(),
         copyTextureToBuffer: vi.fn((source: GPUTexelCopyTextureInfo, destination: GPUTexelCopyBufferInfo): void => {
             const origin = (source.origin ?? {}) as GPUOrigin3DDict;
             const texture = source.texture as unknown as MockGPUTexture;

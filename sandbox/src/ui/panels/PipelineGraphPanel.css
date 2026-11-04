@@ -1,4 +1,4 @@
-/* The pipeline graph: the deinterlacing control, then pass nodes positioned over an SVG of texture edges, with the passes the plan left out beside them */
+/* The pipeline graph: the deinterlacing and black bar crop controls, then pass nodes positioned over an SVG of texture edges, with the passes the plan left out beside them */
 .pipeline-graph-panel {
     display: flex;
     flex-direction: column;
@@ -6,6 +6,12 @@
 }
 
 .pipeline-graph-controls {
+    display: flex;
+    align-items: center;
+    gap: var(--sandbox-gap);
+}
+
+.pipeline-graph-control {
     display: flex;
     align-items: center;
     gap: 4px;

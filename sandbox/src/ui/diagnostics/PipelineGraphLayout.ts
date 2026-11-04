@@ -236,9 +236,11 @@ function describePassKind(pass: PlannedPass): string {
         case 'render':
             return `${pass.kind}${VALUE_SEPARATOR}${pass.coordinateMapping}`;
         case 'compute':
-            return pass.workgroupCounts === null ?
-                `${pass.kind}${VALUE_SEPARATOR}indirect` :
-                `${pass.kind}${VALUE_SEPARATOR}${formatExtent(pass.workgroupCounts)} workgroups`;
+            if (pass.workgroupCounts !== null) {
+                return `${pass.kind}${VALUE_SEPARATOR}${formatExtent(pass.workgroupCounts)} workgroups`;
+            }
+            // A pass without counts or an indirect buffer dispatches per frame, as the black bar analysis does, a workgroup per row and column
+            return `${pass.kind}${VALUE_SEPARATOR}${pass.indirectBufferId === null ? 'per source line' : 'indirect'}`;
     }
 }
 

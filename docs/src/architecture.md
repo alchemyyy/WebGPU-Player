@@ -239,6 +239,33 @@ The backing size is the CSS size times the device pixel ratio, capped by `maxTex
 - Telemetry's presented media time is the frame the clock falls in: the one before the newest until the clock reaches the newest.
 - A history reset clears the display-rate frames.
 
+### Black bars
+
+- `setBlackBarCropEnabled` turns the black bar crop on or off, off by default; the choice outlives sessions, and a change starts detection over and builds a new plan.
+- While it is on, plans end with `Presentation black bars` (`passes/builtin/BlackBarAnalysisPass.ts`), a compute pass over the route's signal after the pass that writes the canvas, so the frame's own passes never wait on it.
+  It runs a workgroup for every row and every column of the frame's source, `getBlackBarLineCounts` of the `presentation` uniform's source size, and each reads 64 points evenly along its line, shifted along it from frame to frame.
+  A point's luma is the BT.709 weighting of its 'source' R, G, and B, where 0 is black in every transfer, kept signed, so ringing that swings both ways around black cancels in a line's sum.
+  A point is lit above 0.1, about 0.3 nits in PQ and 0.4 in SDR at 100 nits, and bright above 0.3, as a subtitle's strokes are.
+  Each line's word holds how many of its points are lit, how many are bright, and the sum of their luma.
+- Only a new frame with a source runs the analysis: the presenter hands the executor a readback buffer (`PresentationFrameInput.blackBarReadback`), the executor copies the statistics into it, and the presenter maps it once the GPU wrote it, through `waitForGPUCompletion`.
+  Up to 3 readbacks map at once; a frame while all of them do goes unanalyzed.
+- `BlackBarDetector` decides the bars from each frame's words.
+  A line holds picture when its mean luma passes 0.06, about 0.1 nits, as FFmpeg's cropdetect reads a line, or when 2 or more of its points are bright, as a subtitle in a bar makes them.
+  The line at each end of a frame's picture that holds no bright point and less than half the level of the line inside it is chroma bled across the edge, not picture.
+  An end of an axis is a sharp edge when a line within 3 lines of it at 1080 lines is lit across half of the points within the other axis's picture.
+  Each axis crops symmetric bars, the smaller of its two ends, so a dark region at one end never crops the other, and bars must leave at least 30% of the frame.
+  - Bars crop at once on a frame that looks like a letterbox or a pillarbox: sharp edges at both ends of one axis, within 0.4% of the lines of each other, and a picture that spans the other axis.
+    Otherwise a frame whose picture ends in a sharp edge where its bars end proposes them, and they crop once a frame of another shot agrees within 0.4% and no frame between them showed picture inside them; a shot starts after a black frame, or where the mean levels of the rows and of the columns move by more than 8 of 255 on average.
+  - A frame whose picture reaches into the cropped bars, such as an IMAX scene or a subtitle in a bar, crops less at once.
+    Once an axis cropped, it crops more only for bars agreeing shots support and no picture reached into for 30 s of playback, at the start of a shot; a step between frames counts as at most 250 ms of it, so a seek ahead counts as little.
+  - A frame of another size starts over.
+- The crop rounds to a standard aspect ratio (`StandardAspectRatios.ts`), from the table of the Detect Aspect Ratio plugin, when its picture is that close: the nearest ratio that moving the bars of an axis the crop cuts reaches, by cutting at most 0.5% more of the picture or by showing at most one line more of bar, half a line at each end.
+  Moving the rows' bars changes the picture's height and the columns' its width, by the picture's shape on the display, its pixel aspect ratio included; where both axes could, the one that cuts picture moves, and the picture keeps its center.
+  So a picture coded at 1920x804 presents at 2.39:1, one at 1920x816 stays as measured, since 2.35:1 would show over half a line of each bar, and one with a subtitle in a bar near no ratio stays as measured too.
+- The crop applies to the layout: `calculateTexturePresentationGeometry` takes the part of the source the rounded bars leave as its source crop, which object-fit fits as the whole object, so a letterboxed film fills an ultrawide surface and `cover` zooms the picture rather than the bars.
+  A change takes effect from the next frame; the presenter invalidates the layout and asks for a redraw, which a paused pushed session answers with a refresh.
+- Telemetry's `blackBarCrop` gives the bars in the analyzed frame's lines, null while the crop is off, and `blackBarAspectRatio` the standard ratio the picture presents at, null while it presents as measured.
+
 ## Transitions
 
 - Seek: a new presentation generation, then `controller.seek`, which stops the running generation and starts a new one at the target in the same worker.

@@ -1,4 +1,4 @@
-// The panel that shows the active presentation plan as a flow graph, with the passes the plan left out beside it, and the deinterlacing control above it.
+// The panel that shows the active presentation plan as a flow graph, with the passes the plan left out beside it, and the deinterlacing and black bar crop controls above it.
 import { DEFAULT_DEINTERLACE_MODE, type DeinterlaceMode } from 'webgpu-player/presentation/DeinterlaceTimeline';
 import type { PassRejection, PlanReport, PresentationPlan } from 'webgpu-player/presentation/passes/PassTypes';
 
@@ -29,6 +29,9 @@ const ARROW_SIZE = 8;
 const LEFT_OUT_TITLE = 'Left out';
 const LINE_SEPARATOR = '\n';
 const DEINTERLACE_TITLE = 'Deinterlacing';
+const BLACK_BAR_CROP_TITLE = 'Crop black bars';
+// Black bar crop is off by default
+const DEFAULT_BLACK_BAR_CROP = false;
 // The modes in control order, with their labels; the record type makes the list cover every mode
 const DEINTERLACE_MODE_LABELS: Readonly<Record<DeinterlaceMode, string>> = {
     'double-rate': 'Double rate',
@@ -64,10 +67,32 @@ export function createPipelineGraphPanel(context: PanelContext): Panel {
     const deinterlaceDefaultButton = createDefaultButton(DEINTERLACE_MODE_LABELS[DEFAULT_DEINTERLACE_MODE], (): void => {
         chooseDeinterlaceMode(DEFAULT_DEINTERLACE_MODE);
     });
-    const controls = createElement('label', { className: 'pipeline-graph-controls' }, [
-        createElement('span', { text: DEINTERLACE_TITLE }),
-        deinterlaceSelect.element,
-        deinterlaceDefaultButton
+    /** Sends a black bar crop choice; a rejected one is reported, and the checkbox returns to the session's choice. */
+    const chooseBlackBarCrop = (enabled: boolean): void => {
+        blackBarCropInput.checked = enabled;
+        session.setBlackBarCropEnabled(enabled).catch((error: unknown): void => {
+            reportCommandRejection(error);
+            blackBarCropInput.checked = store.getState().presentation.blackBarCrop;
+        });
+    };
+    const blackBarCropInput = createElement('input', { attributes: { type: 'checkbox' } });
+    blackBarCropInput.addEventListener('change', (): void => {
+        chooseBlackBarCrop(blackBarCropInput.checked);
+    });
+    const blackBarCropDefaultButton = createDefaultButton('Off', (): void => {
+        chooseBlackBarCrop(DEFAULT_BLACK_BAR_CROP);
+    });
+    const controls = createElement('div', { className: 'pipeline-graph-controls' }, [
+        createElement('label', { className: 'pipeline-graph-control' }, [
+            createElement('span', { text: DEINTERLACE_TITLE }),
+            deinterlaceSelect.element,
+            deinterlaceDefaultButton
+        ]),
+        createElement('label', { className: 'pipeline-graph-control' }, [
+            blackBarCropInput,
+            createElement('span', { text: BLACK_BAR_CROP_TITLE })
+        ]),
+        blackBarCropDefaultButton
     ]);
     const body = createElement('div', { className: 'pipeline-graph-body' }, [ scroller, leftOut ]);
     const element = createElement('section', { className: 'pipeline-graph-panel' }, [ controls, body ]);
@@ -86,6 +111,9 @@ export function createPipelineGraphPanel(context: PanelContext): Panel {
         ),
         subscribeSelection(store, (state: SandboxState): DeinterlaceMode => state.presentation.deinterlaceMode, (mode: DeinterlaceMode): void => {
             deinterlaceSelect.setValue(mode);
+        }),
+        subscribeSelection(store, (state: SandboxState): boolean => state.presentation.blackBarCrop, (enabled: boolean): void => {
+            blackBarCropInput.checked = enabled;
         })
     ];
     return {

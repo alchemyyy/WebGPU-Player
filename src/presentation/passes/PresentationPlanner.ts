@@ -57,6 +57,7 @@ import {
     normalizePassParameterValue,
     PRESENTATION_UNIFORMS_WGSL
 } from './PassResources';
+import { BLACK_BAR_STATISTICS_BYTE_LENGTH, createBlackBarAnalysisWGSL, createBlackBarStatisticsWGSL } from './builtin/BlackBarAnalysisPass';
 import {
     createDeinterlaceWGSL,
     DEINTERLACE_ENTRY_POINT,
@@ -131,6 +132,9 @@ const CHROMA_PLANE_LABEL = `${LABEL_PREFIX} chroma plane`;
 const NATIVE_LABEL = `${LABEL_PREFIX} native`;
 const MERGE_LABEL = `${LABEL_PREFIX} merge`;
 const DEINTERLACE_LABEL = `${LABEL_PREFIX} deinterlace`;
+const BLACK_BAR_LABEL = `${LABEL_PREFIX} black bars`;
+// The buffer the black bar analysis writes its statistics into
+const BLACK_BAR_STATISTICS_BUFFER_ID = 'black-bars';
 const SCALE_LABEL = `${LABEL_PREFIX} scale`;
 const COLOR_LABEL = `${LABEL_PREFIX} color`;
 const OUTPUT_LABEL = `${LABEL_PREFIX} output`;
@@ -197,6 +201,7 @@ type PlaneMerge = {
 
 /**
  * What a pass computes before its color steps.
+ * - 'black-bar-analysis': the built-in black bar analysis, a compute pass over the signal that writes a buffer rather than an image.
  * - 'deinterlace': the built-in deinterlacing pass over the signal's history, at the stream's bit depth.
  * - 'signal': the route's signal, read from the source at the pass's coordinate.
  * - 'plane-read': one of the signal's planes, read on its own grid as normalized codes, its target coordinate scaled onto the reference grid's extent.
@@ -205,6 +210,7 @@ type PlaneMerge = {
  * - 'user': a user kernel, scaler, or compute body.
  */
 type DraftCore =
+    | { kind: 'black-bar-analysis' }
     | { bitDepth: number; kind: 'deinterlace' }
     | { kind: 'plane-merge'; merge: PlaneMerge; source: PlaneSource }
     | { kind: 'plane-read'; plane: 'chroma' | 'luma'; scale: Offset; source: PlaneSource }
@@ -546,7 +552,26 @@ class PresentationPlanBuilder {
         }
         this.placeOutput();
         this.resolveInputs();
+        if (this.request.blackBarAnalysis === true) {
+            this.placeBlackBarAnalysis();
+        }
         return this.createPlan(candidates);
+    }
+
+    /**
+     * Places the black bar analysis last, after the pass that writes the output, so the frame's own passes never wait on it: a compute pass over
+     * the signal at the frame's visible size, which writes its statistics buffer.
+     */
+    private placeBlackBarAnalysis(): void {
+        this.pushDraft({
+            core: { kind: 'black-bar-analysis' },
+            coordinateMapping: 'identity',
+            hookedTextureId: null,
+            inputs: [],
+            kind: 'compute',
+            label: BLACK_BAR_LABEL,
+            targetTextureId: null
+        });
     }
 
     private reject(name: string, reason: PassRejectionReason, detail: string): void {
@@ -1160,8 +1185,12 @@ class PresentationPlanBuilder {
         const generator = new PassCodeGenerator(this.request, this.textures);
         const passes = this.drafts.map((draft: DraftPass): PlannedPass => generator.generate(draft));
         const includedPasses = candidates.filter((pass: ActivePass): boolean => this.activePasses.has(pass));
+        const blackBarPassIndex = this.drafts.findIndex((draft: DraftPass): boolean => draft.core.kind === 'black-bar-analysis');
         return {
-            buffers: [],
+            blackBarAnalysis: blackBarPassIndex < 0 ? null : { bufferId: BLACK_BAR_STATISTICS_BUFFER_ID, passIndex: blackBarPassIndex },
+            buffers: blackBarPassIndex < 0 ?
+                [] :
+                [ { byteLength: BLACK_BAR_STATISTICS_BYTE_LENGTH, id: BLACK_BAR_STATISTICS_BUFFER_ID, indirect: false, persistent: false } ],
             deinterlace: this.deinterlace === null ? null : { ...this.deinterlace },
             displayRate: includedPasses.some((pass: ActivePass): boolean => pass.manifest.rate === 'display'),
             // A draw from history starts at the first pass whose output changes between the draws of one frame
@@ -1485,7 +1514,7 @@ class PassCodeGenerator {
             builder.appendEngineCode(this.bindTextureInput(input, bindingList));
         }
         if (draft.kind === 'compute') {
-            builder.appendEngineCode(this.bindStorageTarget(draft, bindingList));
+            builder.appendEngineCode(this.bindComputeOutput(draft, bindingList));
         }
         if (readsSignal(draft.core)) {
             builder.appendEngineCode(this.chain.signal.code);
@@ -1633,9 +1662,14 @@ class PassCodeGenerator {
         return createTextureAccessorsWGSL(input.accessorPrefix, binding, this.isFilterable(input), SAMPLER_VARIABLE, input.offset);
     }
 
-    private bindStorageTarget(draft: DraftPass, bindingList: BindingList): string {
-        const textureId = requireTargetTexture(draft);
+    /** Binds what a compute pass writes: the black bar analysis its statistics buffer, and a user pass its storage target. */
+    private bindComputeOutput(draft: DraftPass, bindingList: BindingList): string {
         const binding = bindingList.bindings.length;
+        if (draft.core.kind === 'black-bar-analysis') {
+            bindingList.bindings.push({ access: 'storage', binding, bufferId: BLACK_BAR_STATISTICS_BUFFER_ID, kind: 'buffer' });
+            return createBlackBarStatisticsWGSL(binding);
+        }
+        const textureId = requireTargetTexture(draft);
         bindingList.bindings.push({ access: 'storage', binding, historyOffset: 0, kind: 'texture', textureId });
         return createStorageTargetWGSL(binding, requireTexture(this.textures, textureId).format, this.getStepEntryPoints(draft));
     }
@@ -1643,6 +1677,9 @@ class PassCodeGenerator {
     private createStage(draft: DraftPass): string {
         const core = draft.core;
         if (draft.kind === 'compute') {
+            if (core.kind === 'black-bar-analysis') {
+                return createBlackBarAnalysisWGSL(this.chain.signal.entryPoint);
+            }
             if (core.kind !== 'user' || !core.pass.manifest.workgroup) {
                 throw new Error(`Compute pass '${draft.label}' has no user workgroup`);
             }
@@ -1660,6 +1697,8 @@ class PassCodeGenerator {
             FRAGMENT_COORDINATE :
             `(${FRAGMENT_COORDINATE} + ${toWGSLVector(draft.coordinateShift)})`;
         switch (core.kind) {
+            case 'black-bar-analysis':
+                throw new Error(`Pass '${draft.label}' is a compute pass, which has no fragment core`);
             case 'deinterlace':
                 return `${DEINTERLACE_ENTRY_POINT}(${FRAGMENT_POSITION})`;
             case 'plane-merge':
@@ -1724,9 +1763,13 @@ class PassCodeGenerator {
     }
 }
 
-/** Returns whether a core runs the route's signal code, whose resources its pass binds: the signal's, and a plane core's that reads the source. */
+/**
+ * Returns whether a core runs the route's signal code, whose resources its pass binds: the signal's, the black bar analysis's, and a plane core's
+ * that reads the source.
+ */
 function readsSignal(core: DraftCore): boolean {
     switch (core.kind) {
+        case 'black-bar-analysis':
         case 'signal':
             return true;
         case 'plane-merge':

@@ -41,6 +41,8 @@ const SINGLE_RATE_INDEX = DEINTERLACE_MODE_ORDER.indexOf('single-rate');
 const OFF_INDEX = DEINTERLACE_MODE_ORDER.indexOf('off');
 const DOUBLE_RATE_INDEX = DEINTERLACE_MODE_ORDER.indexOf('double-rate');
 const REJECTED_MODE_DETAIL = 'deinterlace-mode-failed';
+const REJECTED_CROP_DETAIL = 'black-bar-crop-failed';
+const CHECKBOX_SELECTOR = 'input[type="checkbox"]';
 
 /** A temporal kernel that reads its own previous output, and the output pass over it. */
 function createTemporalPlan(): PresentationPlan {
@@ -172,6 +174,44 @@ describe('createPipelineGraphPanel', () => {
         select.dispatchEvent(new Event('change'));
 
         await vi.waitFor(() => expect(select.selectedIndex).toBe(DOUBLE_RATE_INDEX));
+        expect(consoleError).toHaveBeenCalledWith(expect.anything(), rejection);
+        consoleError.mockRestore();
+        panel.destroy();
+    });
+
+    it('switches black bar crop from the checkbox beside deinterlacing, which follows the session\'s choice', () => {
+        const context = createFakePanelContext();
+        const panel = createPipelineGraphPanel(context);
+        const controls = requireElement(panel.element, CONTROLS_SELECTOR);
+        const checkbox = requireElement(controls, CHECKBOX_SELECTOR) as HTMLInputElement;
+        installPlan(context, createTemporalPlan());
+
+        expect(checkbox.checked).toBe(false);
+        checkbox.checked = true;
+        checkbox.dispatchEvent(new Event('change'));
+        expect(vi.mocked(context.session.setBlackBarCropEnabled)).toHaveBeenLastCalledWith(true);
+
+        context.store.setState(state => ({ presentation: { ...state.presentation, blackBarCrop: true } }));
+        expect(checkbox.checked).toBe(true);
+        const defaultButtons = controls.querySelectorAll<HTMLButtonElement>(DEFAULT_BUTTON_SELECTOR);
+        defaultButtons[defaultButtons.length - 1].click();
+        expect(vi.mocked(context.session.setBlackBarCropEnabled)).toHaveBeenLastCalledWith(false);
+        panel.destroy();
+    });
+
+    it('returns the checkbox to the session\'s choice when the session rejects a crop choice, logging the rejection', async () => {
+        const consoleError = vi.spyOn(console, 'error').mockImplementation((): void => undefined);
+        const context = createFakePanelContext();
+        const rejection = new Error(REJECTED_CROP_DETAIL);
+        vi.mocked(context.session.setBlackBarCropEnabled).mockRejectedValueOnce(rejection);
+        const panel = createPipelineGraphPanel(context);
+        const checkbox = requireElement(panel.element, CHECKBOX_SELECTOR) as HTMLInputElement;
+        installPlan(context, createTemporalPlan());
+
+        checkbox.checked = true;
+        checkbox.dispatchEvent(new Event('change'));
+
+        await vi.waitFor(() => expect(checkbox.checked).toBe(false));
         expect(consoleError).toHaveBeenCalledWith(expect.anything(), rejection);
         consoleError.mockRestore();
         panel.destroy();

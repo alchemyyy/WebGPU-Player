@@ -152,8 +152,11 @@ It is in `sandbox/src/ui/panels/DecoderPackagePanel.ts`, over `sandbox/src/sessi
   The passes the plan left out are listed beside the graph as `reason: detail`.
 - An interlaced file's plan shows `Presentation deinterlace` after the signal, reading the signal's frame, `[-1]`, and `[-2]`.
   The Deinterlacing select above the graph switches between Double rate, the default, Single rate, and Off, through `WebGPUPresenter.setDeinterlaceMode`, and keeps its mode across files.
+- The Crop black bars checkbox beside the Deinterlacing select, off by default, crops the black bars encoded into the video through `WebGPUPresenter.setBlackBarCropEnabled`, and keeps its choice across files.
+  While it is on, the plan ends with `Presentation black bars`, a compute pass `per source line` that reads the source and writes each row's and column's statistics to a storage buffer (see [Black bars](architecture.md#black-bars)); the picture the bars leave then fits the canvas, so the crop shows on a canvas of another shape than the frame's.
 - Playback info groups the media and its tracks, the route and the override, the clock, video decode, audio, presentation, authorization, and the failure log, newest first.
   Its sections collapse, and stay collapsed across refreshes.
+  The presentation section's Black bars row shows the bars the presenter crops, in the frame's samples: `off` while the crop is off, `none` until bars are found, else `top`, `bottom`, `left`, and `right`, and the standard aspect ratio the picture presents at, such as `2.39:1 Modern Anamorphic Scope`, when it rounds to one.
   On the frame-pool route, video decode adds a GPU decoder row: its name, state, and failure, its pool's free slots, and its decoded, held-back, reused, and stream change counts.
 - The shader panel adds the [bundled passes](bundled-passes.md), passes from files, or files dropped on it.
   Its bundled pass selector lists the pass files in `bin/wgpup/`, which `npm run pinned-releases` installs from the pinned passes release, or `npm run passes` copies from the `wgpup/` submodule: the dev server lists them at `/__sandbox/built-passes`, and a pick fetches that file and records `built-pass-unavailable` when it cannot.

@@ -59,6 +59,8 @@ import {
 } from '../decode/video/VideoFields';
 import type { ChromaLocation, ChromaSubsampling, VideoChromaFormat } from '../demux/VideoChromaFormat';
 import { createBuiltinChain } from './passes/builtin/BuiltinChains';
+import { getBlackBarLineCounts, type BlackBarLineCounts } from './passes/builtin/BlackBarAnalysisPass';
+import { BlackBarDetector, NO_BLACK_BAR_CROP, type BlackBarCrop } from './BlackBarDetector';
 import DeinterlaceTimeline, {
     DEFAULT_DEINTERLACE_MODE,
     DEINTERLACE_MODES,
@@ -92,15 +94,19 @@ import { getRawPlaneLayoutFailure } from './passes/PlaneTextureSource';
 import {
     configurePresentationCanvas,
     createPlannedOutput,
+    getPresentationSourceSize,
     PresentationCompileError,
     PresentationExecutor
 } from './passes/PresentationExecutor';
 import { planPresentation } from './passes/PresentationPlanner';
 import {
     calculateTexturePresentationGeometry,
+    FULL_SOURCE_RECTANGLE,
+    type SourceRectangle,
     type TexturePresentationGeometry
 } from './PresentationGeometry';
-import { VALIDATION_ERROR_FILTER } from './WebGPUConstants';
+import { roundBlackBarCrop, type StandardAspectRatio } from './StandardAspectRatios';
+import { BYTES_PER_WORD, VALIDATION_ERROR_FILTER } from './WebGPUConstants';
 import {
     DolbyVisionPresentationAuthorizationRegistry,
     type DolbyVisionAuthorizationRoute,
@@ -168,6 +174,10 @@ const NEUTRAL_BT709_FULL_RANGE_COLOR_DESCRIPTION = 'bt709:bt709:bt709:full';
 const UNNAMED_PRESET_PASS_PREFIX = 'pass ';
 // Marks a compile error in engine-generated code, whose line is in the generated module rather than in a pass source
 const ENGINE_COMPILE_DETAIL_PREFIX = 'engine ';
+// The frames whose black bar statistics may map at once; a new frame while all of them do goes unanalyzed, which a readback that lags behind the
+// frames limits itself by
+const BLACK_BAR_READBACK_COUNT = 3;
+const BLACK_BAR_READBACK_LABEL = 'Presentation black bar readback';
 
 function waitForWebGPUResourceOperation<Value>(
     promise: Promise<Value>
@@ -227,6 +237,10 @@ export type PresentationFallbackReason =
 
 export type PresentationTelemetry = {
     appliedHDR10PlusFrameCount: number
+    /** The standard aspect ratio the cropped picture presents at, rounded from its measured shape; null while nothing crops or no standard ratio is near. */
+    blackBarAspectRatio: StandardAspectRatio | null
+    /** The black bars presentation crops, in the presented frame's visible samples: all 0 until bars are found, and null while the crop is off. */
+    blackBarCrop: BlackBarCrop | null
     /** Applied HDR10+ frames whose metadata was carried from an earlier frame, because they had no valid metadata of their own. */
     carriedHDR10PlusFrameCount: number
     decodedFrameCount: number
@@ -531,6 +545,18 @@ type CachedPresentationLayout = {
 
 type TexturePresentation = TexturePresentationGeometry;
 
+/** A buffer that frames' black bar statistics read back through: pending while it maps a frame's copy, which no later frame then writes. */
+type BlackBarReadback = {
+    buffer: GPUBuffer
+    pending: boolean
+};
+
+/** A new frame's black bar analysis: the lines the analysis pass writes for its source, and the readback that takes their statistics. */
+type BlackBarAnalysisRequest = Readonly<{
+    lines: BlackBarLineCounts
+    readback: BlackBarReadback
+}>;
+
 /** When a frame presents: a new frame advances history, and a redraw repeats the last new frame. */
 type FrameTiming = {
     /** The frame's own duration, or null when only the interval since the previous frame is known. */
@@ -759,34 +785,15 @@ function getDisplayRateDraw(frames: DisplayRateFrames, clockMicroseconds: number
 
 type VisibleSize = Readonly<{ height: number; width: number }>;
 
-/** Returns the size of a frame source's visible rectangle in samples, as the executor sizes the source: a VideoFrame's visible rectangle, or its display size. */
-function getSourceVisibleSize(source: PresentationFrameSource): VisibleSize {
-    switch (source.kind) {
-        case 'external': {
-            const externalSource = source.source;
-            if ('videoWidth' in externalSource) {
-                return { height: externalSource.videoHeight, width: externalSource.videoWidth };
-            }
-            const rectangle = externalSource.visibleRect;
-            return rectangle ?
-                { height: rectangle.height, width: rectangle.width } :
-                { height: externalSource.displayHeight, width: externalSource.displayWidth };
-        }
-        case 'frame-pool':
-        case 'planes':
-            return { height: source.frame.visibleRectangle.height, width: source.frame.visibleRectangle.width };
-    }
-}
-
 /** Returns the size of a decoded frame's visible rectangle in samples, which a deinterlacing plan runs at. */
 function getDecodedFrameVisibleSize(decodedFrame: DecodedPresentationFrame): VisibleSize {
     switch (decodedFrame.outputMode) {
         case 'frame-pool':
-            return getSourceVisibleSize({ frame: decodedFrame.frame, kind: 'frame-pool' });
+            return getPresentationSourceSize({ frame: decodedFrame.frame, kind: 'frame-pool' });
         case 'raw-planes':
-            return getSourceVisibleSize({ enhancementFrame: null, frame: decodedFrame.frame, kind: 'planes' });
+            return getPresentationSourceSize({ enhancementFrame: null, frame: decodedFrame.frame, kind: 'planes' });
         case 'video-frame':
-            return getSourceVisibleSize({ kind: 'external', source: decodedFrame.frame });
+            return getPresentationSourceSize({ kind: 'external', source: decodedFrame.frame });
     }
 }
 
@@ -947,6 +954,8 @@ function layoutPlanSizesMatch(first: CachedPresentationLayout, second: CachedPre
 function createTelemetry(settings: RenderSettings): PresentationTelemetry {
     return {
         appliedHDR10PlusFrameCount: 0,
+        blackBarAspectRatio: null,
+        blackBarCrop: null,
         carriedHDR10PlusFrameCount: 0,
         decodedFrameCount: 0,
         deviceRecoveryCount: 0,
@@ -1366,6 +1375,15 @@ export default class WebGPUPresenter {
 
     private activeGeneration = 0;
     private automaticInputPeakNits = true;
+    // The host's black bar crop choice, which outlives sessions
+    private blackBarCropEnabled = false;
+    // Decides the bars to crop from the analyzed frames' statistics; a session or a change of the choice starts it over
+    private readonly blackBarDetector = new BlackBarDetector();
+    // Advances whenever the detector starts over, so the statistics of a frame analyzed before reach it no more
+    private blackBarEpoch = 0;
+    // The buffers frames' black bar statistics read back through, on the device they were made on
+    private blackBarReadbacks: BlackBarReadback[] = [];
+    private blackBarReadbackDevice: GPUDevice | null = null;
     private activeDolbyVisionProfile: DolbyVisionReconstructionProfile | null = null;
     private activeDolbyVisionFELReconstruction = false;
     private activeInputColorMetadata: InputColorMetadata | null = null;
@@ -1502,6 +1520,7 @@ export default class WebGPUPresenter {
         this.surface = null;
         this.telemetry = createTelemetry(this.settings);
         this.telemetry.state = 'initializing';
+        this.resetBlackBarDetection();
 
         void this.prepareGeneration(generation);
     }
@@ -1591,6 +1610,7 @@ export default class WebGPUPresenter {
         this.unbindLayoutHandling();
         this.removeCanvas();
         this.releaseRouteResources();
+        this.resetBlackBarDetection();
         this.surface = null;
         this.telemetry.state = 'idle';
     }
@@ -1602,6 +1622,7 @@ export default class WebGPUPresenter {
         const device = this.device;
         this.device = null;
         this.releaseExecutor();
+        this.releaseBlackBarReadbacks();
         this.canvasFormat = null;
         this.configuredDevice = null;
         this.configuredOutput = null;
@@ -2223,6 +2244,23 @@ export default class WebGPUPresenter {
             return;
         }
         this.hdrOutputEnabled = enabled;
+        this.planRevision += 1;
+        await this.applyPlanInputs();
+    }
+
+    /**
+     * Selects whether presentation crops the black bars encoded into the video, off by default.
+     * While on, the plan analyzes each new frame's rows and columns on the GPU, BlackBarDetector decides the bars from them, and the picture the bars
+     * leave presents as the source, which object-fit fits to the surface by its own shape. The choice outlives sessions and resolves once an executor
+     * for it is installed; a change starts detection over.
+     */
+    async setBlackBarCropEnabled(enabled: boolean): Promise<void> {
+        if (enabled === this.blackBarCropEnabled) {
+            return;
+        }
+        this.blackBarCropEnabled = enabled;
+        this.resetBlackBarDetection();
+        this.invalidatePresentationLayout();
         this.planRevision += 1;
         await this.applyPlanInputs();
     }
@@ -3317,7 +3355,8 @@ export default class WebGPUPresenter {
     }
 
     /**
-     * Returns the plan request of the route's chain and the planned preset passes: the canvas output, HDR while HDR output is active, and the best-known facts.
+     * Returns the plan request of the route's chain and the planned preset passes: the canvas output, HDR while HDR output is active, the black bar
+     * analysis while the crop is on, and the best-known facts.
      * Display-rate passes plan while frames come from the frame loop, which draws between them.
      */
     private createPlanRequest(device: GPUDevice, canvasFormat: GPUTextureFormat, presetPasses: readonly PresetPass[]): PlanRequest {
@@ -3325,6 +3364,7 @@ export default class WebGPUPresenter {
         const deinterlace = this.getDeinterlaceRequest();
         const configuration = withStreamChroma(this.desiredChainConfiguration, this.streamChromaSubsampling, this.streamChromaLocation);
         return {
+            blackBarAnalysis: this.blackBarCropEnabled,
             chain: createBuiltinChain(withInterlacedChroma(withHDROutput(configuration, hdrOutput), deinterlace !== null)),
             deinterlace,
             displayRateAvailable: this.decodedFramePushActive,
@@ -3966,6 +4006,7 @@ export default class WebGPUPresenter {
      * A new frame that does not follow the previous one in time first starts history over.
      * A plan that deinterlaces takes the frame into its history, and shows the field of the held frame the frame's target time reaches;
      * a display-rate plan takes it as its history's newest frame, and draws it at its target time.
+     * While the black bar crop is on, a new frame's statistics read back for the detector once the GPU wrote them.
      */
     private submitFrame(
         source: PresentationFrameSource,
@@ -3995,7 +4036,9 @@ export default class WebGPUPresenter {
             this.frameInterval.record(timing.timestampMicroseconds, timing.durationMicroseconds);
         }
         const draw = this.prepareFrameDraw(source, timing);
-        return this.encodeSubmission(device, canvasContext, executor, layout, {
+        const analysis = timing.newFrame ? this.requestBlackBarAnalysis(device, source) : null;
+        const submission = this.encodeSubmission(device, canvasContext, executor, layout, {
+            blackBarReadback: analysis?.readback.buffer ?? null,
             fieldState: draw.fieldState,
             newFrame: timing.newFrame,
             presentedTimeMicroseconds: draw.presentedTimeMicroseconds,
@@ -4003,6 +4046,10 @@ export default class WebGPUPresenter {
             targetTimeMicroseconds: timing.targetTimeMicroseconds ?? timing.timestampMicroseconds,
             timestampMicroseconds: draw.timestampMicroseconds
         });
+        if (analysis !== null) {
+            this.readBlackBarStatistics(device, analysis, timing.timestampMicroseconds);
+        }
+        return submission;
     }
 
     /**
@@ -4032,7 +4079,7 @@ export default class WebGPUPresenter {
         if (deinterlace === null) {
             return unchangedDraw;
         }
-        const visibleSize = getSourceVisibleSize(source);
+        const visibleSize = getPresentationSourceSize(source);
         const fitsPlan = visibleSize.width === deinterlace.frameWidth && visibleSize.height === deinterlace.frameHeight;
         const fields = fitsPlan ? this.getEffectiveFrameFields(timing.fields) : null;
         // The plan's signal reads an interlaced frame's 4:2:0 chroma within each field, whichever field shows
@@ -4063,7 +4110,7 @@ export default class WebGPUPresenter {
         canvasContext: GPUCanvasContext,
         executor: PresentationExecutor,
         layout: CachedPresentationLayout,
-        frame: Pick<PresentationFrameInput, 'fieldState' | 'newFrame' | 'source' | 'targetTimeMicroseconds' | 'timestampMicroseconds'>
+        frame: Pick<PresentationFrameInput, 'blackBarReadback' | 'fieldState' | 'newFrame' | 'source' | 'targetTimeMicroseconds' | 'timestampMicroseconds'>
             & Pick<PresentationDraw, 'presentedTimeMicroseconds'>
     ): FrameSubmission {
         const validateSubmission = !this.submissionValidated;
@@ -4074,6 +4121,7 @@ export default class WebGPUPresenter {
         try {
             const commandEncoder = device.createCommandEncoder();
             executor.encode(commandEncoder, {
+                blackBarReadback: frame.blackBarReadback,
                 fieldState: frame.fieldState,
                 frameDurationMicroseconds: this.frameInterval.getIntervalMicroseconds(),
                 geometry: layout.presentation,
@@ -4116,6 +4164,7 @@ export default class WebGPUPresenter {
             return null;
         }
         return this.encodeSubmission(device, canvasContext, executor, layout, {
+            blackBarReadback: null,
             fieldState: draw.fieldState,
             newFrame: false,
             presentedTimeMicroseconds: draw.presentedTimeMicroseconds,
@@ -4469,6 +4518,7 @@ export default class WebGPUPresenter {
         void this.applyPlanInputs();
     }
 
+    /** Fits the source to the surface as the video's object-fit and object-position say, the picture the black bar crop leaves standing for the source. */
     private calculateTexturePresentation(
         video: HTMLVideoElement,
         geometry: CanvasGeometry,
@@ -4479,6 +4529,7 @@ export default class WebGPUPresenter {
         return calculateTexturePresentationGeometry({
             objectFit: computedStyle.objectFit || 'fill',
             objectPosition: computedStyle.objectPosition || '50% 50%',
+            sourceCrop: this.getBlackBarSourceCrop(sourceWidth, sourceHeight),
             sourceHeight,
             sourceWidth,
             targetCSSHeight: geometry.cssHeight,
@@ -4486,6 +4537,107 @@ export default class WebGPUPresenter {
             targetPixelHeight: geometry.height,
             targetPixelWidth: geometry.width
         });
+    }
+
+    /**
+     * Returns the part of the source the black bars leave, rounded to a standard aspect ratio near the picture's shape on a source of the display size,
+     * and reports the ratio; the whole source while none crop.
+     */
+    private getBlackBarSourceCrop(displayWidth: number, displayHeight: number): SourceRectangle {
+        const crop = this.blackBarDetector.getCrop();
+        if (crop === NO_BLACK_BAR_CROP) {
+            this.telemetry.blackBarAspectRatio = null;
+            return FULL_SOURCE_RECTANGLE;
+        }
+        const rounded = roundBlackBarCrop(crop, this.blackBarDetector.getLineCounts(), displayWidth, displayHeight);
+        this.telemetry.blackBarAspectRatio = rounded.standard;
+        return rounded.sourceCrop;
+    }
+
+    /**
+     * Returns a new frame's black bar analysis while the crop is on and the plan analyzes: the lines its source has, and an idle readback, grown for
+     * them when too small; null while every readback still maps an earlier frame's statistics, so the frame goes unanalyzed.
+     */
+    private requestBlackBarAnalysis(device: GPUDevice, source: PresentationFrameSource): BlackBarAnalysisRequest | null {
+        if (!this.blackBarCropEnabled || !this.executorPlan?.blackBarAnalysis) {
+            return null;
+        }
+        if (this.blackBarReadbackDevice !== device) {
+            this.releaseBlackBarReadbacks();
+            this.blackBarReadbackDevice = device;
+        }
+        const size = getPresentationSourceSize(source);
+        const lines = getBlackBarLineCounts(size.width, size.height);
+        const byteLength = (lines.rows + lines.columns) * BYTES_PER_WORD;
+        let readback = this.blackBarReadbacks.find((candidate: BlackBarReadback): boolean => !candidate.pending);
+        if (readback === undefined && this.blackBarReadbacks.length === BLACK_BAR_READBACK_COUNT) {
+            return null;
+        }
+        if (readback === undefined || readback.buffer.size < byteLength) {
+            // A new readback, or an idle one too small for the frame's lines, takes a buffer of their size
+            readback?.buffer.destroy();
+            const buffer = device.createBuffer({ label: BLACK_BAR_READBACK_LABEL, size: byteLength, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+            if (readback === undefined) {
+                readback = { buffer, pending: false };
+                this.blackBarReadbacks.push(readback);
+            } else {
+                readback.buffer = buffer;
+            }
+        }
+        return { lines, readback };
+    }
+
+    /**
+     * Maps a submitted frame's black bar statistics once the GPU wrote them, and hands them to the detector unless detection started over since;
+     * a change of the crop presents from the next frame on, and a paused frame redraws with it.
+     */
+    private readBlackBarStatistics(device: GPUDevice, analysis: BlackBarAnalysisRequest, timestampMicroseconds: number): void {
+        const { lines, readback } = analysis;
+        const buffer = readback.buffer;
+        const byteLength = (lines.rows + lines.columns) * BYTES_PER_WORD;
+        const epoch = this.blackBarEpoch;
+        readback.pending = true;
+        void waitForGPUCompletion(device, buffer.mapAsync(GPUMapMode.READ, 0, byteLength)).then((): void => {
+            let changed = false;
+            try {
+                if (epoch === this.blackBarEpoch && this.device === device) {
+                    const words = new Uint32Array(buffer.getMappedRange(0, byteLength));
+                    changed = this.blackBarDetector.analyze({
+                        columns: words.subarray(lines.rows),
+                        rows: words.subarray(0, lines.rows),
+                        timestampMicroseconds
+                    });
+                }
+            } finally {
+                buffer.unmap();
+                readback.pending = false;
+            }
+            if (changed) {
+                this.telemetry.blackBarCrop = this.blackBarDetector.getCrop();
+                this.invalidatePresentationLayout();
+                this.redrawCurrentFrame(this.activeGeneration);
+            }
+        }, (): void => {
+            // A lost device or a released readback maps nothing
+            readback.pending = false;
+        });
+    }
+
+    /** Starts black bar detection over: nothing crops, and the statistics of frames analyzed before reach the detector no more. */
+    private resetBlackBarDetection(): void {
+        this.blackBarDetector.reset();
+        this.blackBarEpoch += 1;
+        this.telemetry.blackBarCrop = this.blackBarCropEnabled ? NO_BLACK_BAR_CROP : null;
+        this.telemetry.blackBarAspectRatio = null;
+    }
+
+    /** Destroys the black bar readbacks, which a pending map of rejects. */
+    private releaseBlackBarReadbacks(): void {
+        for (const readback of this.blackBarReadbacks) {
+            readback.buffer.destroy();
+        }
+        this.blackBarReadbacks = [];
+        this.blackBarReadbackDevice = null;
     }
 
     private recordPresentedFrame(

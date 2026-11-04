@@ -147,6 +147,8 @@ export function createControllerTelemetry(overrides: Partial<CustomPlaybackTelem
 export function createPresenterTelemetry(overrides: Partial<PresentationTelemetry> = {}): PresentationTelemetry {
     return {
         appliedHDR10PlusFrameCount: 0,
+        blackBarAspectRatio: null,
+        blackBarCrop: null,
         carriedHDR10PlusFrameCount: 0,
         decodedFrameCount: 0,
         deviceRecoveryCount: 0,

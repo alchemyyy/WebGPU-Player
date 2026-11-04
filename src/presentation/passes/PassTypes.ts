@@ -404,6 +404,8 @@ export type DeinterlaceRequest = {
 };
 
 export type PlanRequest = {
+    /** Whether the plan analyzes the frames' black bars, through a compute pass over the signal whose statistics the presenter reads back; absent is false */
+    blackBarAnalysis?: boolean
     chain: BuiltinChain
     /** The deinterlacing pass, or absent or null for none; a signal with a bypass condition never takes one */
     deinterlace?: DeinterlaceRequest | null
@@ -552,8 +554,19 @@ export type PlannedParameterSet = {
     passName: string
 };
 
+/**
+ * A plan's black bar analysis: its compute pass, which runs only for a frame that asks for it, and the buffer it writes one word per row and per column
+ * into, which the frame's readback buffer then takes a copy of.
+ */
+export type PlannedBlackBarAnalysis = {
+    bufferId: string
+    passIndex: number
+};
+
 /** An immutable plan: passes in execution order and the resources they use. */
 export type PresentationPlan = {
+    /** The black bar analysis the plan placed, or null for none */
+    blackBarAnalysis: PlannedBlackBarAnalysis | null
     buffers: readonly PlannedBuffer[]
     /** The deinterlacing pass the plan placed, or null for none */
     deinterlace: DeinterlaceRequest | null
@@ -603,6 +616,11 @@ export type PresentationFrameSource =
 
 /** What the executor needs to record one frame. */
 export type PresentationFrameInput = {
+    /**
+     * The buffer the frame's black bar analysis copies its statistics into, at offset 0, or null to analyze nothing; a frame with a source and a plan
+     * with the analysis only. It needs MAP_READ and COPY_DST usage and a word for each row and column getBlackBarLineCounts gives for the source.
+     */
+    blackBarReadback: GPUBuffer | null
     /** PRESENTATION_FIELD_STATE bits: which field of which held frame presents, and whether the signal's frame is interlaced. */
     fieldState: number
     /** The media time between the stream's frames: the mean of the recent new frames' durations; 0 before one is known. */

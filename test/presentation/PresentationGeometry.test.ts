@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 
 import {
     calculateTexturePresentationGeometry,
+    FULL_SOURCE_RECTANGLE,
+    type SourceRectangle,
     type TexturePresentationGeometry,
     type TexturePresentationGeometryInput
 } from 'webgpu-player/presentation/PresentationGeometry';
@@ -9,6 +11,7 @@ import {
 const BASE_INPUT: TexturePresentationGeometryInput = {
     objectFit: 'fill',
     objectPosition: '50% 50%',
+    sourceCrop: FULL_SOURCE_RECTANGLE,
     sourceHeight: 1_080,
     sourceWidth: 1_920,
     targetCSSHeight: 1_000,
@@ -16,6 +19,8 @@ const BASE_INPUT: TexturePresentationGeometryInput = {
     targetPixelHeight: 1_000,
     targetPixelWidth: 1_000
 };
+// The 1920x800 picture of a 2.40:1 film letterboxed in 1920x1080
+const LETTERBOX_CROP: SourceRectangle = { height: 800 / 1_080, width: 1, x: 0, y: 140 / 1_080 };
 
 function expectGeometry(actual: TexturePresentationGeometry, expected: TexturePresentationGeometry): void {
     for (const propertyName of Object.keys(expected) as Array<keyof TexturePresentationGeometry>) {
@@ -161,5 +166,50 @@ describe('calculateTexturePresentationGeometry', () => {
         expect(containGeometry.viewportY).toBeCloseTo(437.5, 8);
         expect(coverGeometry.textureOffsetX).toBeCloseTo(0.4375, 8);
         expect(coverGeometry.textureOffsetY).toBeCloseTo(0, 8);
+    });
+
+    it('fits a source crop as the object, and maps its coordinates into the crop', () => {
+        // On an ultrawide screen the picture fills the width, centered in the height it leaves
+        const ultrawideGeometry = calculateTexturePresentationGeometry({
+            ...BASE_INPUT,
+            objectFit: 'contain',
+            sourceCrop: LETTERBOX_CROP,
+            targetCSSHeight: 1_080,
+            targetCSSWidth: 2_560,
+            targetPixelHeight: 1_080,
+            targetPixelWidth: 2_560
+        });
+        // On a 16:9 screen, cover fills it with the picture rather than with the bars
+        const coverGeometry = calculateTexturePresentationGeometry({
+            ...BASE_INPUT,
+            objectFit: 'cover',
+            sourceCrop: LETTERBOX_CROP,
+            targetCSSHeight: 1_080,
+            targetCSSWidth: 1_920,
+            targetPixelHeight: 1_080,
+            targetPixelWidth: 1_920
+        });
+
+        expectGeometry(ultrawideGeometry, {
+            textureOffsetX: 0,
+            textureOffsetY: 140 / 1_080,
+            textureScaleX: 1,
+            textureScaleY: 800 / 1_080,
+            viewportHeight: 3_200 / 3,
+            viewportWidth: 2_560,
+            viewportX: 0,
+            viewportY: 20 / 3
+        });
+        expectGeometry(coverGeometry, {
+            textureOffsetX: 336 / 2_592,
+            textureOffsetY: 140 / 1_080,
+            textureScaleX: 1_920 / 2_592,
+            textureScaleY: 800 / 1_080,
+            viewportHeight: 1_080,
+            viewportWidth: 1_920,
+            viewportX: 0,
+            viewportY: 0
+        });
+        expect(() => calculateTexturePresentationGeometry({ ...BASE_INPUT, sourceCrop: { ...LETTERBOX_CROP, y: 0.5 } })).toThrow(RangeError);
     });
 });

@@ -511,7 +511,8 @@ export function encodeAuthorizationFrame(
 ): GPUCommandBuffer {
     const commandEncoder = device.createCommandEncoder({ label });
     executor.encode(commandEncoder, {
-        // Authorization renders the fixed chain, which no field state changes
+        // Authorization renders the fixed chain, which analyzes no black bars and no field state changes
+        blackBarReadback: null,
         fieldState: PRESENTATION_FIELD_STATE.none,
         frameDurationMicroseconds: 0,
         geometry: createIdentityGeometry(targetTexture.width, targetTexture.height),

@@ -16,7 +16,9 @@ import {
 } from 'webgpu-player/pipeline/DecodeWorkerProtocol';
 import type { GPUVideoDecodeFeedTelemetry } from 'webgpu-player/decode/video/gpu/GPUVideoDecodeFeed';
 import type { MediaClockSnapshot } from 'webgpu-player/pipeline/MediaClock';
+import type { BlackBarCrop } from 'webgpu-player/presentation/BlackBarDetector';
 import type { HDRToSDRRenderSettings, RenderSettings } from 'webgpu-player/presentation/RenderSettings';
+import type { StandardAspectRatio } from 'webgpu-player/presentation/StandardAspectRatios';
 import type { PresentationTelemetry } from 'webgpu-player/presentation/WebGPUPresenter';
 import { requireMicroseconds } from 'webgpu-player/TimeMath';
 import type { DolbyVisionAuthorizationTelemetry } from 'webgpu-player/validation/DolbyVisionPresentationAuthorization';
@@ -625,6 +627,7 @@ function describePresenterRows(presenter: PresentationTelemetry): InfoRow[] {
         createRow('Fallback', NONE_TEXT, 'muted') :
         createRow('Fallback', formatFailure(presenter.fallbackReason, presenter.fallbackDetail), 'failure'));
     rows.push(createRow('Device recoveries', String(presenter.deviceRecoveryCount), getCountTone(presenter.deviceRecoveryCount, 'warning')));
+    rows.push(createRow('Black bars', describeBlackBarCrop(presenter.blackBarCrop, presenter.blackBarAspectRatio), presenter.blackBarCrop === null ? 'muted' : 'normal'));
     rows.push(createRow('HDR10+', joinPresentValues([
         `${presenter.appliedHDR10PlusFrameCount} applied`,
         `${presenter.carriedHDR10PlusFrameCount} carried`,
@@ -641,6 +644,23 @@ function describePresenterRows(presenter: PresentationTelemetry): InfoRow[] {
         rows.push(createRow('FEL authorization', presenter.dolbyVisionFELAuthorizationFailure, 'failure'));
     }
     return rows;
+}
+
+/** The black bars presentation crops, in samples, and the standard ratio the picture presents at; off while the crop is off, none until bars are found. */
+function describeBlackBarCrop(crop: BlackBarCrop | null, standard: StandardAspectRatio | null): string {
+    if (crop === null) {
+        return 'off';
+    }
+    if (crop.top === 0 && crop.bottom === 0 && crop.left === 0 && crop.right === 0) {
+        return NONE_TEXT;
+    }
+    return joinPresentValues([
+        `top ${crop.top}`,
+        `bottom ${crop.bottom}`,
+        `left ${crop.left}`,
+        `right ${crop.right}`,
+        standard === null ? null : `${standard.ratio.toFixed(2)}:1 ${standard.name}`
+    ]);
 }
 
 /** The last presented frame, and how far ahead of its frame callback the browser expected to display it. */

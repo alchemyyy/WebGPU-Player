@@ -61,3 +61,5 @@ Read the engine's folders from `tools/constants.json` (`sourceDirectory`, `scrip
   Over plain HTTP on a LAN address, a host that still selects the WebGPU player plays HTML pass-through only, which proves nothing.
 - The presenter places its canvas over the surface's video element and fits frames by that element's CSS `object-fit`, so the element needs a layout box.
   Hide it with `visibility: hidden` or cover it, but never with `display: none` or the `hidden` attribute, which leave every frame undrawn as `surface-empty`.
+- While the black bar crop is on (`WebGPUPresenter.setBlackBarCropEnabled`), the presenter fits the picture the bars leave rather than the whole frame, so the picture's rectangle on the surface differs from the frame's.
+  Layers a host draws over the video, such as subtitles, place themselves over the element's box and know nothing of the crop; the presenter's telemetry gives it as `blackBarCrop`.

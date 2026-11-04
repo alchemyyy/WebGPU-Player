@@ -42,6 +42,7 @@ import type {
     PassTarget,
     PassTextureEdge,
     PlannedBinding,
+    PlannedBlackBarAnalysis,
     PlannedBuffer,
     PlannedOutput,
     PlannedPass,
@@ -61,6 +62,7 @@ import {
     type PlaneTextureSet,
     uploadPlanes
 } from './PlaneTextureSource';
+import { getBlackBarLineCounts } from './builtin/BlackBarAnalysisPass';
 import {
     getCompiledPresentationPass,
     type CompiledPresentationPass,
@@ -137,7 +139,9 @@ type RenderTarget = { kind: 'output' } | { kind: 'ring'; ring: HistoryRing };
 
 type ComputeDispatch =
     | { indirectBuffer: GPUBuffer; kind: 'indirect' }
-    | { kind: 'direct'; workgroupCounts: readonly [number, number, number] };
+    | { kind: 'direct'; workgroupCounts: readonly [number, number, number] }
+    /** A workgroup per row and per column of the frame's source, which the black bar analysis reads */
+    | { kind: 'source-lines' };
 
 type ComputeRecording = { dispatch: ComputeDispatch; kind: 'compute'; pipeline: GPUComputePipeline };
 
@@ -532,25 +536,25 @@ function writeParameterValue(target: DataView, byteOffset: number, parameter: Pa
     }
 }
 
-function setSourceSize(values: PresentationUniformValues, source: PresentationFrameSource): void {
+/**
+ * Returns the size of a frame source as passes see it, the `presentation` uniform's source size: a decoded frame's visible rectangle in samples,
+ * a VideoFrame's visible rectangle or else its display size, or a video element's intrinsic size.
+ */
+export function getPresentationSourceSize(source: PresentationFrameSource): Readonly<{ height: number; width: number }> {
     switch (source.kind) {
         case 'external': {
             const externalSource = source.source;
             if ('videoWidth' in externalSource) {
-                values.sourceHeight = externalSource.videoHeight;
-                values.sourceWidth = externalSource.videoWidth;
-                return;
+                return { height: externalSource.videoHeight, width: externalSource.videoWidth };
             }
             const visibleRectangle = externalSource.visibleRect;
-            values.sourceHeight = visibleRectangle ? visibleRectangle.height : externalSource.displayHeight;
-            values.sourceWidth = visibleRectangle ? visibleRectangle.width : externalSource.displayWidth;
-            return;
+            return visibleRectangle ?
+                { height: visibleRectangle.height, width: visibleRectangle.width } :
+                { height: externalSource.displayHeight, width: externalSource.displayWidth };
         }
         case 'frame-pool':
         case 'planes':
-            values.sourceHeight = source.frame.visibleRectangle.height;
-            values.sourceWidth = source.frame.visibleRectangle.width;
-            return;
+            return { height: source.frame.visibleRectangle.height, width: source.frame.visibleRectangle.width };
     }
 }
 
@@ -645,7 +649,8 @@ function recordComputePass(
     commandEncoder: GPUCommandEncoder,
     pass: ExecutorPass,
     recording: ComputeRecording,
-    bindGroup: GPUBindGroup
+    bindGroup: GPUBindGroup,
+    sourceLineCount: number
 ): void {
     const computePass = commandEncoder.beginComputePass({ label: pass.label });
     computePass.setPipeline(recording.pipeline);
@@ -657,6 +662,9 @@ function recordComputePass(
             break;
         case 'indirect':
             computePass.dispatchWorkgroupsIndirect(dispatch.indirectBuffer, INDIRECT_DISPATCH_BYTE_OFFSET);
+            break;
+        case 'source-lines':
+            computePass.dispatchWorkgroups(sourceLineCount, 1, 1);
             break;
     }
     computePass.end();
@@ -683,6 +691,7 @@ function createPlaneSourceResources(planeTextures: PlaneTextureSet, enhancementT
  */
 export class PresentationExecutor {
     private readonly bindsEnhancementPlanes: boolean;
+    private readonly blackBarAnalysis: PlannedBlackBarAnalysis | null;
     private readonly device: GPUDevice;
     private readonly dolbyVisionRPUBuffer: GPUBuffer | null;
     private readonly enhancementBuffer: GPUBuffer | null;
@@ -757,6 +766,7 @@ export class PresentationExecutor {
         this.device = device;
         this.passTextureViews = passTextureViews;
         this.sourceKind = plan.sourceKind;
+        this.blackBarAnalysis = plan.blackBarAnalysis;
         for (const texture of plan.passTextures) {
             this.passTextures.set(texture.id, texture);
         }
@@ -933,6 +943,7 @@ export class PresentationExecutor {
      * A new frame advances history after recording; a redraw repeats the last new frame's ring slots and history state.
      * A frame without a source redraws the last new frame from history: it skips the passes that read the source, and every pass before
      * the plan's history draw start, whose outputs no draw of that frame changes.
+     * The black bar analysis runs only for a frame with a readback buffer, after the frame's passes, and copies its statistics into that buffer.
      */
     encode(commandEncoder: GPUCommandEncoder, frame: PresentationFrameInput): void {
         this.requireUsable();
@@ -945,7 +956,15 @@ export class PresentationExecutor {
             if (source === null && (pass.bindsSource || pass.index < this.historyDrawStart)) {
                 continue;
             }
+            if (pass.index === this.blackBarAnalysis?.passIndex && frame.blackBarReadback === null) {
+                continue;
+            }
             this.recordPass(commandEncoder, pass, historyFrameNumber % pass.phaseCount, externalTexture, frame);
+        }
+        if (this.blackBarAnalysis !== null && frame.blackBarReadback !== null) {
+            const lines = getBlackBarLineCounts(this.uniformValues.sourceWidth, this.uniformValues.sourceHeight);
+            const statistics = this.requireBuffer(this.blackBarAnalysis.bufferId);
+            commandEncoder.copyBufferToBuffer(statistics, 0, frame.blackBarReadback, 0, (lines.rows + lines.columns) * BYTES_PER_WORD);
         }
         if (frame.newFrame) {
             this.frameCount += 1;
@@ -953,7 +972,10 @@ export class PresentationExecutor {
         }
     }
 
-    /** Throws unless the frame's source fits the plan: a source of the plan's kind, or none for a redraw from history the plan allows. */
+    /**
+     * Throws unless the frame's source fits the plan: a source of the plan's kind, or none for a redraw from history the plan allows,
+     * and a readback buffer only with a source for a plan's black bar analysis to read, large enough for its statistics.
+     */
     private requireFrameSource(frame: PresentationFrameInput): void {
         const source = frame.source;
         if (source !== null && source.kind !== this.sourceKind) {
@@ -961,6 +983,19 @@ export class PresentationExecutor {
         }
         if (source === null && (frame.newFrame || !this.canDrawFromHistory())) {
             throw new Error(`history-draw: ${frame.newFrame ? 'a new frame needs its source' : 'a pass reads the source at the output'}`);
+        }
+        const readback = frame.blackBarReadback;
+        if (readback === null) {
+            return;
+        }
+        if (source === null || this.blackBarAnalysis === null) {
+            throw new Error(`black-bar-analysis: ${source === null ? 'a draw from history has no source to analyze' : 'the plan has none'}`);
+        }
+        const size = getPresentationSourceSize(source);
+        const lines = getBlackBarLineCounts(size.width, size.height);
+        const byteLength = (lines.rows + lines.columns) * BYTES_PER_WORD;
+        if (readback.size < byteLength) {
+            throw new RangeError(`black-bar-readback: ${readback.size} bytes, expected at least ${byteLength}`);
         }
     }
 
@@ -977,9 +1012,11 @@ export class PresentationExecutor {
             pass.bindGroups[phase];
         const recording = pass.recording;
         switch (recording.kind) {
-            case 'compute':
-                recordComputePass(commandEncoder, pass, recording, bindGroup);
+            case 'compute': {
+                const lines = getBlackBarLineCounts(this.uniformValues.sourceWidth, this.uniformValues.sourceHeight);
+                recordComputePass(commandEncoder, pass, recording, bindGroup, lines.rows + lines.columns);
                 break;
+            }
             case 'render':
                 recordRenderPass(commandEncoder, pass, recording, bindGroup, phase, frame);
                 break;
@@ -1065,7 +1102,9 @@ export class PresentationExecutor {
         for (const buffer of plan.buffers) {
             const usage = GPUBufferUsage.STORAGE
                 | (uniformBufferIds.has(buffer.id) ? GPUBufferUsage.UNIFORM : 0)
-                | (buffer.indirect ? GPUBufferUsage.INDIRECT : 0);
+                | (buffer.indirect ? GPUBufferUsage.INDIRECT : 0)
+                // Frames that ask for the black bar analysis take a copy of its statistics
+                | (buffer.id === plan.blackBarAnalysis?.bufferId ? GPUBufferUsage.COPY_SRC : 0);
             this.plannedBuffers.set(buffer.id, this.createOwnedBuffer(buffer.id, buffer.byteLength, usage));
         }
     }
@@ -1102,20 +1141,23 @@ export class PresentationExecutor {
             inputTexture: pass.inputTextureId === null ? null : this.requireRing(pass.inputTextureId).planned,
             label: pass.label,
             phaseCount: this.getPhaseCount(pass),
-            recording: this.createPassRecording(pass, pipeline)
+            recording: this.createPassRecording(pass, index, pipeline)
         };
     }
 
-    private createPassRecording(pass: PlannedPass, pipeline: PassPipeline): ComputeRecording | RenderRecording {
+    private createPassRecording(pass: PlannedPass, index: number, pipeline: PassPipeline): ComputeRecording | RenderRecording {
         switch (pipeline.kind) {
             case 'compute':
-                return { dispatch: this.createComputeDispatch(pass), kind: 'compute', pipeline: pipeline.pipeline };
+                return { dispatch: this.createComputeDispatch(pass, index), kind: 'compute', pipeline: pipeline.pipeline };
             case 'render':
                 return { kind: 'render', pipeline: pipeline.pipeline, target: this.createRenderTarget(pass) };
         }
     }
 
-    private createComputeDispatch(pass: PlannedPass): ComputeDispatch {
+    private createComputeDispatch(pass: PlannedPass, index: number): ComputeDispatch {
+        if (index === this.blackBarAnalysis?.passIndex) {
+            return { kind: 'source-lines' };
+        }
         if (pass.indirectBufferId !== null) {
             return { indirectBuffer: this.requireBuffer(pass.indirectBufferId), kind: 'indirect' };
         }
@@ -1388,7 +1430,9 @@ export class PresentationExecutor {
         const values = this.uniformValues;
         const geometry = frame.geometry;
         if (frame.source !== null) {
-            setSourceSize(values, frame.source);
+            const size = getPresentationSourceSize(frame.source);
+            values.sourceHeight = size.height;
+            values.sourceWidth = size.width;
         }
         values.fieldState = frame.fieldState;
         values.frameDurationSeconds = frame.frameDurationMicroseconds / MICROSECONDS_PER_SECOND;

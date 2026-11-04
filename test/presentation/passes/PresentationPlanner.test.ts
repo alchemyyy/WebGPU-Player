@@ -15,6 +15,7 @@ import type {
     PresentationPlan
 } from 'webgpu-player/presentation/passes/PassTypes';
 import { planPresentation } from 'webgpu-player/presentation/passes/PresentationPlanner';
+import { BLACK_BAR_STATISTICS_BYTE_LENGTH } from 'webgpu-player/presentation/passes/builtin/BlackBarAnalysisPass';
 import { DEFAULT_MAXIMUM_TEXTURE_DIMENSION_3D } from 'webgpu-player/presentation/WebGPUConstants';
 import { createDefaultRenderSettings, createHDRToSDRRenderSettings } from 'webgpu-player/presentation/RenderSettings';
 
@@ -196,6 +197,32 @@ describe('planPresentation without user passes', () => {
         const presentationPlan = plan(createHDRChain(), [], createFacts({ outputHeight: 1, outputWidth: 1, sourceHeight: 1, sourceWidth: 1 }));
 
         expect(presentationPlan.passes).toHaveLength(1);
+    });
+
+    it('places the black bar analysis last when asked: a compute pass over the source that writes its statistics buffer', () => {
+        const request: PlanRequest = {
+            chain: createHDRChain(),
+            device: { features: new Set<string>(), maximumTextureDimension: MAXIMUM_TEXTURE_DIMENSION },
+            facts: createFacts(),
+            output: SDR_OUTPUT,
+            passes: [ createKernelPass({ domain: 'sdr', name: 'Sharpen' }) ]
+        };
+        const presentationPlan = planPresentation({ ...request, blackBarAnalysis: true });
+        const analysisPass = presentationPlan.passes.at(-1);
+
+        expect(presentationPlan.blackBarAnalysis).toEqual({ bufferId: 'black-bars', passIndex: presentationPlan.passes.length - 1 });
+        expect(presentationPlan.buffers).toEqual([ { byteLength: BLACK_BAR_STATISTICS_BYTE_LENGTH, id: 'black-bars', indirect: false, persistent: false } ]);
+        expect(analysisPass).toMatchObject({ coordinateMapping: 'identity', inputTextureId: null, kind: 'compute', label: 'Presentation black bars', target: null });
+        expect(analysisPass?.bindings).toEqual([
+            { binding: 0, kind: 'presentation' },
+            { binding: 1, kind: 'engine', resource: 'plane-luma' },
+            { binding: 2, kind: 'engine', resource: 'plane-chroma-u' },
+            { binding: 3, kind: 'engine', resource: 'plane-chroma-v' },
+            { access: 'storage', binding: 4, bufferId: 'black-bars', kind: 'buffer' }
+        ]);
+        // The frame's own passes are the plan's without the analysis
+        expect(presentationPlan.passes.slice(0, -1)).toEqual(planPresentation(request).passes);
+        expect(planPresentation(request).blackBarAnalysis).toBeNull();
     });
 
     it('guards every step with the Profile 4 bypass in the pass that reads the signal', () => {

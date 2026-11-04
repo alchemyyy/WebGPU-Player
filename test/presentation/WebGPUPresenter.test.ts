@@ -274,7 +274,9 @@ import {
     createDeferred,
     createWebGPUDeviceHarness,
     getBufferWrites,
+    getBuffers,
     installWebGPUGlobals,
+    type MockGPUBuffer,
     type RecordedBufferWrite,
     type WebGPUDeviceHarness
 } from '../helpers/webGPUDeviceHarness';
@@ -488,6 +490,19 @@ const FIRST_RESIZED_WIDTH = 960;
 const FIRST_RESIZED_HEIGHT = 540;
 const SECOND_RESIZED_WIDTH = 640;
 const SECOND_RESIZED_HEIGHT = 360;
+// A frame whose picture a letterbox leaves at 2.40:1, the statistics the black bar analysis writes of its rows and columns, and the presenter's readback
+const LETTERBOX_FRAME_WIDTH = 24;
+const LETTERBOX_FRAME_HEIGHT = 16;
+const LETTERBOX_BAR = 3;
+const LETTERBOX_STANDARD_NAME = 'Blu-ray Scope';
+const LETTERBOX_PICTURE_LEVEL = 128;
+const BLACK_BAR_SAMPLES_PER_LINE = 64;
+// A line's word holds its lit sample count, its bright sample count above it, and its level sum above both, each sample's level above an offset, so a
+// black line's level field is the offset times its samples
+const BLACK_BAR_BRIGHT_COUNT_SHIFT = 7;
+const BLACK_BAR_LEVEL_SUM_SHIFT = 14;
+const BLACK_BAR_BLACK_LINE_LEVELS = 64 * BLACK_BAR_SAMPLES_PER_LINE;
+const BLACK_BAR_READBACK_LABEL = 'Presentation black bar readback';
 
 type CanvasContextHarness = {
     context: GPUCanvasContext
@@ -1059,6 +1074,19 @@ function presentRawFrame(presenter: WebGPUPresenter, frame: TransferableRawVideo
         mediaTimeMicroseconds: frame.timestampMicroseconds,
         outputMode: 'raw-planes'
     }, 1);
+}
+
+/** Writes what the black bar analysis writes for a letterboxed frame into a readback: picture across every row between the bars, and down every column. */
+function writeLetterboxStatistics(readback: MockGPUBuffer): void {
+    const words = new Uint32Array(readback.bytes.buffer, readback.bytes.byteOffset, LETTERBOX_FRAME_HEIGHT + LETTERBOX_FRAME_WIDTH);
+    const columnSamples = BLACK_BAR_SAMPLES_PER_LINE * (LETTERBOX_FRAME_HEIGHT - 2 * LETTERBOX_BAR) / LETTERBOX_FRAME_HEIGHT;
+    // The picture's samples are lit and bright
+    const packPictureLine = (samples: number): number => (
+        samples | (samples << BLACK_BAR_BRIGHT_COUNT_SHIFT) | (((samples * LETTERBOX_PICTURE_LEVEL) + BLACK_BAR_BLACK_LINE_LEVELS) << BLACK_BAR_LEVEL_SUM_SHIFT)
+    );
+    words.fill(BLACK_BAR_BLACK_LINE_LEVELS << BLACK_BAR_LEVEL_SUM_SHIFT);
+    words.fill(packPictureLine(BLACK_BAR_SAMPLES_PER_LINE), LETTERBOX_BAR, LETTERBOX_FRAME_HEIGHT - LETTERBOX_BAR);
+    words.fill(packPictureLine(columnSamples), LETTERBOX_FRAME_HEIGHT);
 }
 
 describe('WebGPUPresenter', () => {
@@ -5238,6 +5266,42 @@ describe('WebGPUPresenter', () => {
 
         expect(getLastPlanRequest()).toMatchObject({ facts: { hdrOutput: false }, output: SDR_PLANNED_OUTPUT });
         expect(contextHarness.configure).toHaveBeenCalledOnce();
+    });
+
+    it('crops the black bars analyzed frames show from the next frame on, analyzes nothing while off, and presents whole frames once switched off', async () => {
+        const metadata = createPQColorMetadata();
+        const { deviceHarness, presenter } = await startRawRoutePresentation(metadata, 'I420P10', createHDRToSDRRenderSettings());
+        const frame = { ...createRawFrame('I420P10', metadata, LETTERBOX_FRAME_WIDTH, LETTERBOX_FRAME_HEIGHT), timestampMicroseconds: RAW_FRAME_TIMESTAMP_MICROSECONDS };
+        const presentAt = (timestampMicroseconds: Microseconds): number[] => {
+            deviceHarness.queueWriteBuffer.mockClear();
+            expect(presentRawFrame(presenter, { ...frame, timestampMicroseconds })).toBe(true);
+            return getPresentationCoordinateWrites(deviceHarness).at(-1) ?? [];
+        };
+        expect(presentAt(RAW_FRAME_TIMESTAMP_MICROSECONDS)).toEqual([ 1, 1, 0, 0 ]);
+        expect(getBuffers(deviceHarness, BLACK_BAR_READBACK_LABEL)).toEqual([]);
+        expect(presenter.getTelemetry().blackBarCrop).toBeNull();
+
+        await presenter.setBlackBarCropEnabled(true);
+        expect(getLastPlanRequest().blackBarAnalysis).toBe(true);
+        expect(presenter.getTelemetry().blackBarCrop).toEqual({ bottom: 0, left: 0, right: 0, top: 0 });
+        // A letterboxed frame presents whole until its statistics read back, which crop its bars
+        expect(presentAt(NEXT_RAW_FRAME_TIMESTAMP_MICROSECONDS)).toEqual([ 1, 1, 0, 0 ]);
+        const [ readback ] = getBuffers(deviceHarness, BLACK_BAR_READBACK_LABEL);
+        writeLetterboxStatistics(readback);
+        await vi.waitFor(() => expect(presenter.getTelemetry().blackBarCrop).toEqual({ bottom: LETTERBOX_BAR, left: 0, right: 0, top: LETTERBOX_BAR }));
+
+        // The video's object-fit fills the surface with the picture the bars leave, which presents at its standard ratio
+        const pictureHeight = (LETTERBOX_FRAME_HEIGHT - 2 * LETTERBOX_BAR) / LETTERBOX_FRAME_HEIGHT;
+        expect(presentAt(addMicroseconds(NEXT_RAW_FRAME_TIMESTAMP_MICROSECONDS, RAW_FRAME_DURATION_MICROSECONDS)))
+            .toEqual([ 1, pictureHeight, 0, LETTERBOX_BAR / LETTERBOX_FRAME_HEIGHT ]);
+        expect(presenter.getTelemetry().blackBarAspectRatio?.name).toBe(LETTERBOX_STANDARD_NAME);
+
+        await presenter.setBlackBarCropEnabled(false);
+        expect(getLastPlanRequest().blackBarAnalysis).toBe(false);
+        expect(presenter.getTelemetry().blackBarCrop).toBeNull();
+        expect(presenter.getTelemetry().blackBarAspectRatio).toBeNull();
+        expect(presentAt(addMicroseconds(NEXT_RAW_FRAME_TIMESTAMP_MICROSECONDS, requireMicroseconds(2 * RAW_FRAME_DURATION_MICROSECONDS))))
+            .toEqual([ 1, 1, 0, 0 ]);
     });
 
     /** Configures a Profile 7 I420P10 session and returns whether it configured. */

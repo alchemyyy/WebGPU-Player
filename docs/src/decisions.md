@@ -799,6 +799,44 @@ These were settled on stock Chrome on Windows, with a Chromium 153 source audit.
   A Dolby Vision route never deinterlaces, since the profiles are progressive, so it keeps requiring `IsInterlaced` false; a declared base layer's ordinary route deinterlaces.
   Every other codec's interlaced or unknown scan is eligible.
 
+## Black bars
+
+- Black bar crop is built into presentation, not a pass (11-03).
+  A pass writes pixels inside the output rectangle the plan gives it: it cannot move that rectangle, change how the picture fits the surface, or report what it found, so a pass could only zoom within the frame's own letterboxed rectangle, never let the picture fill a surface of another shape.
+  The crop has to reach the layout, so the presenter decides it and `calculateTexturePresentationGeometry` fits the picture the bars leave as the source.
+- The GPU measures and the CPU decides (11-03).
+  `Presentation black bars` reads 64 points along every row and column of the signal, about 384,000 points of a 4K frame's 8.3 million; the same dispatch over a 4K texture took 9 microseconds on an NVIDIA Blackwell GPU in Chrome, measured with timestamp queries, and its readback is a word per line, 24 KiB at 4K.
+  `BlackBarDetector` took 34 microseconds per 4K frame in JavaScript.
+  Reading the planes on the CPU would cost a copy of every frame, and an external texture has no planes to copy.
+  Deciding on the CPU keeps the rules testable and their state plain, at a frame's latency: a change shows from the frame after the one that showed it.
+- The crop behaves as a scan of the whole film would (11-03).
+  A scan beforehand crops one rectangle, the union of every frame's picture, from the first frame on.
+  Detection that sees no frame ahead gives bars up at once when picture reaches into them, as the union does, and takes bars only on evidence a dark scene cannot fake: a sharp picture edge where the bars end, symmetric bars, and agreement across two shots.
+  A frame that looks like a letterbox or a pillarbox, sharp symmetric edges on one axis and picture across the other, crops at once, so a film crops from its first bright frame, as a scanned film would from its first.
+  Unlike one rectangle, an axis crops again once 30 s of playback kept the picture out of the bars, so an IMAX scene, the opening credits, or a subtitle in a bar does not leave the rest of a film uncropped, and the change lands at the start of a shot; a film that changes its aspect ratio from shot to shot keeps its larger picture.
+- A line holds picture by its signed mean luma, as FFmpeg's cropdetect reads a line, or by 2 bright points (11-04).
+  The 11-03 rule, 2 of 64 points whose largest of R, G, and B passed 0.1, read the ringing a coder leaves beside a bright edge, and the chroma bled across it, as picture.
+  In the sandbox, on 10 s letterboxed clips of moving content with 140-line bars, it cropped 139 lines for H.264 at CRF 20, HEVC at CRF 28, and 10-bit H.264 on the raw-planes route, 137 for H.264 at CRF 32, and 139 for AV1 at CRF 45, which grew to 136 at 4 s, since every frame that rings harder adds to the union.
+  Ringing swings both ways around black, so a line's signed mean luma cancels it: on the decoded luma planes of those encodes, lines past the one beside the edge stayed under 0.03, and luma leaves chroma out.
+  A line holds picture above 0.06, about 0.1 nits in SDR and in PQ, which is black to the eye.
+  A mean misses sparse picture, a subtitle in a bar or a small bright object, so 2 points of luma above 0.3 also hold picture; no artifact in the bars of those encodes reached 0.3, and chroma bled onto black and clamped reaches 0.21 at most.
+  The new rule cropped exactly, 140 lines, 131 for bars of 131 and 132, and 240 columns of a pillarbox, from the first analyzed frame to the end of each clip: H.264 at CRF 20 and 32, HEVC at CRF 28, also in PQ, and AV1 at CRF 45 on the video-frame route, 10-bit H.264 at CRF 24 on the raw-planes route, and HEVC and AV1 on the frame-pool route.
+- One line of bled chroma beside an edge is not picture (11-04).
+  Chrome's conversion of a `VideoFrame` lights the line beside the picture's edge with clamped chroma: its mean luma reached 0.04 to 0.11 in those clips, against 0.2 to 0.6 for the edge line, with no bright point, while the lines past it stayed under 0.02.
+  The raw-planes and frame-pool signals keep R, G, and B unclamped, which cancels the chroma in luma.
+  So the line at each end of a frame's picture that holds no bright point and less than half the level of the line inside it is left out.
+- Averaging the statistics over frames would not have helped (11-04).
+  The edge error was a bias, not noise: a coder rings the same way beside the same edge in every frame, so an average keeps the ringing, and the union of frames, which the crop needs so that it never cuts picture, grows with every frame that rings harder.
+  The fix is what each frame measures, after which the first bright frame crops exactly and later frames add nothing.
+- A cut moves the rows' and the columns' mean levels by more than 8 of 255 (11-04).
+  The 11-03 rule, the rows' mean levels moving by more than 20, missed cuts between moving test patterns of like brightness: in a windowboxed clip it missed both, so the windowbox, which needs a second shot, never cropped.
+  The rows and the columns together moved by 11 to 52 at the cuts of those clips, and by 3.3 at most within a shot, and the windowbox now crops at its first cut.
+- A crop rounds to a standard aspect ratio only within a line of bar or 0.5% of picture (11-04).
+  The Detect Aspect Ratio plugin measures trickplay thumbnails, so it snaps any measurement within 0.075 to its table of 24 film and television ratios; a measurement of full frames is exact to the line, so only near ratios round, to absorb a stray line, such as a dim edge line on the first bright frame or a bar split 131 and 132.
+  Its table is kept, each ratio that names a fraction at the fraction's value and Academy at its defined 1.375, since the rounding sets the crop: 1.33 for 4:3 would cut nearly 2 columns from each side of a 1440-column picture.
+  Coded pictures round their ratio to a few lines, such as 1920x804 for 2.39:1 or 1920x816 for 2.35:1's 817.02, so rounding to the nearest ratio either way would bring a sliver of bar back.
+  Rounding cuts at most 0.5% of the picture, 2 lines at each end of 800, and shows at most half a line of each bar, which leaves a 1920x816 picture as measured; on an axis without bars it moves nothing, since that axis's picture is whole.
+
 ## Firefox
 
 These were settled on Firefox 157 on Windows.
