@@ -11,7 +11,7 @@ export type URLSourceBufferSizes = Readonly<{
 type RetainedURLSource = {
     readonly key: string
     readonly reference: SourceRef<UrlSource>
-    // Whether a run completed its preparation over the source, which pinned the container's header and index and sized the buffers
+    // Whether a run completed its preparation over the source, which pinned what it cached, the container's header among it, and sized the buffers
     settled: boolean
 };
 
@@ -69,8 +69,9 @@ export class URLSourceRetention {
     }
 
     /**
-     * Once a run first completed its preparation over the retained source, pins what the source cached, the container's header and index among it,
-     * and sizes its read-ahead and cache by the media's average bitrate; without a duration they keep their sizes.
+     * Once a run first completed its preparation over the retained source, pins what the source cached, the container's header among it, so that
+     * Mediabunny pins an index it reads later too, such as Matroska Cues at a first seek, and sizes its read-ahead and cache by the media's average
+     * bitrate; without a duration they keep their sizes.
      */
     public async settle(source: UrlSource, durationMicroseconds: Microseconds | null): Promise<void> {
         const retained = this.retained;

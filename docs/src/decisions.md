@@ -941,9 +941,16 @@ These were settled on Firefox 157 on Windows.
   The fork's `UrlSource` keeps a response open for 4 s at its target, where a sequential reader extends it, keeps a set read-ahead past the latest read, pins what it cached outside its cache budget, and cancels waiting reads (branch `v2-url-source-read-ahead`).
   The worker keeps the last run's source for the next run over the same URL and pattern, cancels its waiting reads when a run stops, and releases it when a run fails, when a run opens other media, or when no run takes it within 5 s.
   Since runs overlap, only the run that took the source last decides its release, so a stopped run that ends after the next one took the source leaves it be.
-  After the first preparation over a source, the worker pins its cache, the container's header and index among it, and sizes its read-ahead to 5 s of media and its cache to 15 s, at the media's size over the server's duration, else the container's, within 8 to 64 MiB and 32 to 192 MiB.
+  After the first preparation over a source, the worker pins its cache, the container's header among it, and sizes its read-ahead to 5 s of media and its cache to 15 s, at the media's size over the server's duration, else the container's, within 8 to 64 MiB and 32 to 192 MiB.
+  Since 11-05 the Matroska index arrives later, at the first lookup past the start, and the fork pins it as it reads it once the cache is pinned (below).
   The server's duration reaches the worker in the start request, whose absence asks for the container's in the ready response.
   Each run still opens its own input, because a canceled read rejects promises a kept demuxer could have memoized.
+- Startup reads only what the first frame needs (11-05).
+  A Matroska start at 0 read the Cues at the end of the file before the first frame: a second request after the header's, whose response stood behind the header's, which stayed open past its target and kept taking data on the same connection.
+  Through a redirecting front end, each of those requests also paid the redirect.
+  The fork's Matroska demuxer now reads Cues that sit behind a seek head at the first lookup for a time past the start, from which a lookup at the start begins at the first cluster anyway, and pins them in the source's cache when its host pinned it, so every later run's seek reads them from memory (branch `v2-matroska-deferred-cues`).
+  The fork's `UrlSource` sends range requests after a redirect straight to its target, starting over at its URL when a request there fails (`v2-url-source-redirected-requests`), and a read that waits on a new request ends the responses that only prefetch, which stay idle until a read near them resumes them (`v2-url-source-waiting-reads`).
+  A resume or a seek still reads the Cues before its cluster, now without a response at the start of the file competing.
 - MPEG-TS, M2TS, and MPEG program streams play on a timeline that starts at their first timestamp (10-29).
   A transport stream stamps its packets with a program clock that need not start at zero: a Blu-ray title starts at 600 s, and broadcast recordings a fraction of a second or more in.
   A program stream carries the clock of the source it was cut from the same way; a DVD-Video title starts a fraction of a second in, and a VOB cut from later in a title at its own time.

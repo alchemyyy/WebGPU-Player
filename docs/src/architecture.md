@@ -367,7 +367,8 @@ Every stale callback is dropped by a generation or revision check:
   It adds that origin to the start and every resync target before it reads the tracks, and takes it off every frame, packet, decoded PCM input, native audio fragment, startup progress report, and container duration it posts.
   The audio decode worker and the worklet run on the playback timeline; the queues the worker keys by packet timestamps, the Dolby Vision RPU and HDR10+ queues and the EL pairing, keep container times.
 - Every seek, audio switch, and paused repaint starts a new run in the session's worker, and each run opens its input again, over the last run's URL source when it reads the same URL (`demux/URLSourceRetention.ts`).
-  The source keeps its cache, the container's header and index pinned in it, and its open responses, so a seek reads the header and index from memory and reads on near where the last run stopped.
+  The source keeps its cache, with the container's header pinned in it and its index once read, and its open responses, so a seek reads the header and index from memory and reads on near where the last run stopped.
+  Matroska Cues are read at the first lookup past the start, so a run that starts at 0 never reads the end of the file.
   A run's stop cancels the reads its input still waits for; a failed run's source, or one no run takes within 5 s, is released, and only by the run that took it last.
   After the first preparation over a source, its read-ahead holds 5 s of media and its cache 15 s, at the media's size over its duration, within 8 to 64 MiB and 32 to 192 MiB; a file's cache stays 32 MiB.
 - Decoded PCM gain (volume cubed times normalization) is applied after the limiter and is not capped, so a boost can clip; clipping is counted.
