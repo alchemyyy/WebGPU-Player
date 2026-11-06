@@ -179,6 +179,8 @@ export type PlaybackStatus = 'ended' | 'failed' | 'idle' | 'loading' | 'paused' 
 export type PlaybackState = Readonly<{
     durationMicroseconds: Microseconds | null
     muted: boolean
+    /** The playback rate, which every later start of the media keeps */
+    rate: number
     status: PlaybackStatus
     /** From 0 to 1 */
     volume: number
@@ -363,7 +365,7 @@ export function createInitialSandboxState(): SandboxState {
         failures: [],
         library: { root: null, selectedPath: null, status: 'empty' },
         media: null,
-        playback: { durationMicroseconds: null, muted: false, status: 'idle', volume: DEFAULT_VOLUME },
+        playback: { durationMicroseconds: null, muted: false, rate: 1, status: 'idle', volume: DEFAULT_VOLUME },
         presentation: {
             blackBarCrop: false,
             deinterlaceMode: DEFAULT_DEINTERLACE_MODE,
@@ -434,6 +436,8 @@ export type SandboxSessionCommands = {
     setDeinterlaceMode: (mode: DeinterlaceMode) => Promise<void>
     setHDROutputEnabled: (enabled: boolean) => Promise<void>
     setMuted: (muted: boolean) => void
+    /** Changes the playback rate live, or restarts the media at the current time when the rate crosses the audible range's boundary */
+    setPlaybackRate: (rate: number) => void
     setRenderSettings: (settings: HDRToSDRRenderSettings) => void
     /** Restarts the media on the route the override selects, at the current time */
     setRouteOverride: (override: RouteOverride) => Promise<void>

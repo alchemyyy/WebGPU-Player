@@ -247,6 +247,8 @@ export type DecodeWorkerStartRequest = {
     type: 'start'
     videoDecoderBackend: CustomDecodeVideoDecoderBackend
     videoOutputMode: CustomDecodeVideoOutputMode
+    /** The decoding routes post only frames some multiple of this interval of media time falls within; absent posts every frame */
+    videoPresentationIntervalMicroseconds?: Microseconds
     /** Zero-based ordinal within input.getVideoTracks(), not a Jellyfin stream index. */
     videoTrackIndex: number
 };
@@ -315,9 +317,13 @@ export type DecodeWorkerStopRequest = {
     type: 'stop'
 };
 
-/** Restarts only the video stream from the key packet before a target while audio continues. */
+/**
+ * Restarts only the video stream while audio continues: from the key packet before a target, or with `keyframe: 'next'`,
+ * from the first key packet at or after it, which presents first.
+ */
 export type DecodeWorkerResyncVideoRequest = {
     generation: number
+    keyframe?: 'next'
     targetTimeMicroseconds: Microseconds
     type: 'resync-video'
     /** Increases with every video control request; frames from older epochs are stale. */
@@ -329,6 +335,13 @@ export type DecodeWorkerSuspendVideoRequest = {
     generation: number
     type: 'suspend-video'
     videoEpoch: number
+};
+
+/** Replaces the run's video presentation interval live; null posts every frame. */
+export type DecodeWorkerSetVideoPresentationIntervalRequest = {
+    generation: number
+    type: 'set-video-presentation-interval'
+    videoPresentationIntervalMicroseconds: Microseconds | null
 };
 
 /**
@@ -356,6 +369,7 @@ export type DecodeWorkerRequest =
     | DecodeWorkerRecycleFrameRequest
     | DecodeWorkerResyncAudioRequest
     | DecodeWorkerResyncVideoRequest
+    | DecodeWorkerSetVideoPresentationIntervalRequest
     | DecodeWorkerStartRequest
     | DecodeWorkerStopRequest
     | DecodeWorkerSuspendVideoRequest
@@ -1159,7 +1173,13 @@ export function isDolbyVisionProfile(value: unknown): value is CustomDecodeDolby
 }
 
 function isVideoResyncRequest(value: Record<string, unknown>): boolean {
-    return isVideoEpoch(value.videoEpoch, false) && isMicroseconds(value.targetTimeMicroseconds);
+    return isVideoEpoch(value.videoEpoch, false)
+        && isMicroseconds(value.targetTimeMicroseconds)
+        && (value.keyframe === undefined || value.keyframe === 'next');
+}
+
+function isVideoPresentationInterval(value: unknown): value is Microseconds {
+    return isPositiveInteger(value);
 }
 
 function hasValidOptionalAudioDownmix(value: Record<string, unknown>): boolean {
@@ -1287,6 +1307,8 @@ export function isDecodeWorkerRequest(value: unknown): value is DecodeWorkerRequ
                 && isCodedDimension(value.maximumCodedHeight)
                 && isVideoOutputMode(value.videoOutputMode)
                 && isVideoDecoderBackend(value.videoDecoderBackend)
+                && (value.videoPresentationIntervalMicroseconds === undefined
+                    || isVideoPresentationInterval(value.videoPresentationIntervalMicroseconds))
                 && isNativeHDRTransfer(value.nativeHDRTransfer)
                 && typeof value.neutralizeHDRColorMetadata === 'boolean'
                 && (value.neutralizeHDRColorMetadata ?
@@ -1322,6 +1344,9 @@ export function isDecodeWorkerRequest(value: unknown): value is DecodeWorkerRequ
             return isAudioResyncRequest(value);
         case 'resync-video':
             return isVideoResyncRequest(value);
+        case 'set-video-presentation-interval':
+            return value.videoPresentationIntervalMicroseconds === null
+                || isVideoPresentationInterval(value.videoPresentationIntervalMicroseconds);
         case 'stop':
             return true;
         case 'suspend-video':

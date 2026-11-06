@@ -641,6 +641,8 @@ export function createSandboxSession(options: SandboxSessionOptions): SandboxSes
         const audioPrewarm = current.audioPrewarm;
         const controller = createController(current, eligibility, audioPrewarm);
         current.controller = controller;
+        // A new controller only records the rate, so the route starts at it
+        void controller.setPlaybackRate(store.getState().playback.rate);
         const frameLoop = new CustomPlaybackFrameLoop({
             controller,
             isCurrent: (): boolean => isRouteCurrent(current, controller),
@@ -907,6 +909,24 @@ export function createSandboxSession(options: SandboxSessionOptions): SandboxSes
         setMuted: (muted: boolean): void => {
             playback?.controller?.setMuted(muted);
             publishPlayback({ muted });
+        },
+        setPlaybackRate: (rate: number): void => {
+            const current = playback;
+            const controller = current?.controller ?? null;
+            if (current && controller) {
+                try {
+                    // A rate that crosses the audible range's boundary restarts the generation, which settles like a seek
+                    controller.setPlaybackRate(rate)?.then((result: CustomPlaybackStartResult): void => {
+                        handleStartResult(current, controller, result);
+                    }, (error: unknown): void => {
+                        recordFailure('session', 'playback-rate-failed', describeError(error));
+                    });
+                } catch (error) {
+                    recordFailure('session', 'playback-rate-failed', describeError(error));
+                    return;
+                }
+            }
+            publishPlayback({ rate });
         },
         setRenderSettings: (settings: HDRToSDRRenderSettings): void => {
             // Without an HDR route presenting, the settings wait for the next one

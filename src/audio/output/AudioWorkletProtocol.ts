@@ -53,6 +53,12 @@ export type AudioWorkletGainMessage = {
     volume: number
 };
 
+/** Time-stretches the output to a rate, keeping its pitch; the rate holds across flushes until the lease deactivates */
+export type AudioWorkletRateMessage = {
+    playbackRate: number
+    type: 'rate'
+};
+
 export type AudioWorkletDestroyMessage = {
     type: 'destroy'
 };
@@ -86,6 +92,7 @@ export type CustomAudioWorkletMessage =
     | AudioWorkletFlushMessage
     | AudioWorkletGainMessage
     | AudioWorkletPlaybackMessage
+    | AudioWorkletRateMessage
     | AudioWorkletSignalAnalysisMessage;
 
 /** The failure a decoded audio output reports when the processor refuses a first chunk past its leading gap bound, on the producer's channel and the page's alike */
@@ -122,7 +129,10 @@ export type AudioWorkletTelemetry = {
     outputFrames: number
     overflowEvents: number
     overflowFrames: number
+    /** The rate the processor rendered at when it reported: media seconds per second of output */
+    playbackRate: number
     playing: boolean
+    /** Input frames not yet rendered, in the processor's queue and in its time-stretcher */
     queuedFrames: number
     reason: AudioWorkletTelemetryReason
     sequence: number | null

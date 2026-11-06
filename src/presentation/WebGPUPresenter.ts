@@ -2319,6 +2319,12 @@ export default class WebGPUPresenter {
         }
     }
 
+    /** Returns the display's measured refresh interval, which the clock's rate does not scale, or null before a measurement. */
+    getDisplayRefreshIntervalMicroseconds(): Microseconds | null {
+        const interval = this.displayRefresh.getIntervalMilliseconds();
+        return interval === null ? null : millisecondsToMicroseconds(interval);
+    }
+
     /**
      * Returns how far ahead of the clock the frame loop takes frames: while a plan deinterlaces, the newest held frame's duration, so the frame after it,
      * which deinterlacing reads as the next frame, arrives when the clock reaches the newest; while a plan draws at the display's rate, one refresh,

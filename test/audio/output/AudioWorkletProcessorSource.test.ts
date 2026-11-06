@@ -290,6 +290,7 @@ describe('AudioWorkletProcessorSource', () => {
             hasPhysicalOutputTimeCorrelation: false,
             mediaTimeContextTimeMicroseconds: 10_004_000,
             mediaTimeMicroseconds: -996_000,
+            playbackRate: 1,
             reason: 'underflow',
             underflowEvents: 1,
             underflowFrames: 4

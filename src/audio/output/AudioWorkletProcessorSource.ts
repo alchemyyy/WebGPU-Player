@@ -1,3 +1,5 @@
+import { CUSTOM_AUDIO_WORKLET_TIME_STRETCH_SOURCE } from './AudioWorkletTimeStretchSource';
+
 export const CUSTOM_AUDIO_WORKLET_PROCESSOR_NAME = 'jellyfin-custom-audio-output-v1';
 /**
  * The longest silence the processor renders from a flush position up to the first chunk, as when an audio track starts after the video.
@@ -12,7 +14,7 @@ const CUSTOM_AUDIO_WORKLET_SOURCE = `'use strict';
 
 const MICROSECONDS_PER_SECOND = 1000000;
 const MAXIMUM_LEADING_GAP_SECONDS = ${CUSTOM_AUDIO_WORKLET_MAXIMUM_LEADING_GAP_SECONDS};
-
+${CUSTOM_AUDIO_WORKLET_TIME_STRETCH_SOURCE}
 class JellyfinCustomAudioOutputProcessor extends AudioWorkletProcessor {
     constructor(options) {
         super();
@@ -58,6 +60,13 @@ class JellyfinCustomAudioOutputProcessor extends AudioWorkletProcessor {
         this.leadingGapStartMicroseconds = 0;
         // The current producer's end of its channel; a flush detaches it
         this.producerPort = null;
+        // A rate other than 1 time-stretches the output, keeping its pitch; it holds across flushes until the lease deactivates
+        this.playbackRate = 1;
+        // The rate the latest output frame advanced media time at, which telemetry reports
+        this.renderedPlaybackRate = 1;
+        this.stretcher = new WsolaTimeStretcher(this.channelCount, sampleRate, this);
+        // The media time just after the stretcher's newest input frame
+        this.stretchInputEndMicroseconds = 0;
         this.port.onmessage = messageEvent => this.handleMessage(messageEvent.data);
     }
 
@@ -84,6 +93,9 @@ class JellyfinCustomAudioOutputProcessor extends AudioWorkletProcessor {
                 break;
             case 'playback':
                 this.playing = message.playing === true;
+                break;
+            case 'rate':
+                this.setPlaybackRate(message.playbackRate);
                 break;
             case 'signal-analysis':
                 this.setSignalAnalysis(message.enabled === true);
@@ -143,6 +155,8 @@ class JellyfinCustomAudioOutputProcessor extends AudioWorkletProcessor {
         this.generation = generation;
         this.volume = 1;
         this.muted = false;
+        this.playbackRate = 1;
+        this.renderedPlaybackRate = 1;
         this.consumedFrames = 0;
         this.outputFrames = 0;
         this.droppedFrames = 0;
@@ -247,6 +261,12 @@ class JellyfinCustomAudioOutputProcessor extends AudioWorkletProcessor {
         this.muted = muted === true;
     }
 
+    setPlaybackRate(playbackRate) {
+        if (Number.isFinite(playbackRate) && playbackRate > 0) {
+            this.playbackRate = playbackRate;
+        }
+    }
+
     flush(generation, mediaTimeMicroseconds) {
         // The producer's chunks belong to the generation the flush ends
         this.detachProducer();
@@ -265,16 +285,21 @@ class JellyfinCustomAudioOutputProcessor extends AudioWorkletProcessor {
 
     clearQueue() {
         while (this.chunkCount > 0) {
-            const chunk = this.chunks[this.headChunkIndex];
-            this.chunks[this.headChunkIndex] = undefined;
-            this.headChunkIndex = (this.headChunkIndex + 1) % this.maxChunks;
-            this.chunkCount -= 1;
             // Every queue clear follows a detach, so a producer's chunk is dropped and only a page chunk returns
-            this.releaseChannelData(chunk.channelData, chunk.producerPort, chunk.sequence, 'consumed');
+            this.releaseHeadChunk(this.chunks[this.headChunkIndex]);
         }
         this.headChunkIndex = 0;
         this.tailChunkIndex = 0;
         this.queuedFrames = 0;
+        this.stretcher.reset();
+    }
+
+    // Returns a played chunk to the realm that sent it
+    releaseHeadChunk(chunk) {
+        this.chunks[this.headChunkIndex] = undefined;
+        this.headChunkIndex = (this.headChunkIndex + 1) % this.maxChunks;
+        this.chunkCount -= 1;
+        this.releaseChannelData(chunk.channelData, chunk.producerPort, chunk.sequence, 'consumed');
     }
 
     process(inputs, outputs) {
@@ -302,6 +327,10 @@ class JellyfinCustomAudioOutputProcessor extends AudioWorkletProcessor {
         const silentPrefixFrameCount = this.renderLeadingGap(renderFrameCount);
         let outputOffset = silentPrefixFrameCount;
         const gain = this.muted ? 0 : this.volume;
+        if (this.playbackRate !== 1 || this.stretcher.active) {
+            outputOffset = this.renderStretched(outputChannels, outputOffset, renderFrameCount, gain);
+        }
+        // The stretcher takes every ring frame it can at a rate other than 1, so ring frames left here play at rate 1
         while (outputOffset < renderFrameCount && this.chunkCount > 0) {
             const chunk = this.chunks[this.headChunkIndex];
             const chunkFrameCount = chunk.channelData[0].length;
@@ -330,12 +359,10 @@ class JellyfinCustomAudioOutputProcessor extends AudioWorkletProcessor {
             this.mediaTimeMicroseconds = chunk.timestampMicroseconds
                 + Math.round((chunk.frameOffset * MICROSECONDS_PER_SECOND) / sampleRate);
             this.mediaTimeContextTimeMicroseconds = this.framesToMicroseconds(currentFrame + outputOffset);
+            this.renderedPlaybackRate = 1;
 
             if (chunk.frameOffset === chunkFrameCount) {
-                this.chunks[this.headChunkIndex] = undefined;
-                this.headChunkIndex = (this.headChunkIndex + 1) % this.maxChunks;
-                this.chunkCount -= 1;
-                this.releaseChannelData(chunk.channelData, chunk.producerPort, chunk.sequence, 'consumed');
+                this.releaseHeadChunk(chunk);
             }
         }
 
@@ -365,18 +392,58 @@ class JellyfinCustomAudioOutputProcessor extends AudioWorkletProcessor {
     }
 
     // Advances the leading gap over the zero-filled output and returns its frame count.
-    // Gap frames are rendered output, so they are neither underflow nor consumed PCM
+    // Gap frames are rendered output, so they are neither underflow nor consumed PCM.
+    // The gap spans media time, so at a rate other than 1 its silence lasts the gap divided by the rate
     renderLeadingGap(renderFrameCount) {
         if (this.leadingGapFrames <= 0 || this.chunkCount === 0) {
             return 0;
         }
 
-        const silentFrameCount = Math.min(this.leadingGapFrames, renderFrameCount);
-        this.leadingGapFrames -= silentFrameCount;
-        this.leadingGapRenderedFrames += silentFrameCount;
+        const playbackRate = this.playbackRate;
+        const silentFrameCount = Math.min(Math.ceil(this.leadingGapFrames / playbackRate), renderFrameCount);
+        const gapFrameCount = Math.min(this.leadingGapFrames, silentFrameCount * playbackRate);
+        this.leadingGapFrames -= gapFrameCount;
+        this.leadingGapRenderedFrames += gapFrameCount;
         this.mediaTimeMicroseconds = this.leadingGapStartMicroseconds + this.framesToMicroseconds(this.leadingGapRenderedFrames);
         this.mediaTimeContextTimeMicroseconds = this.framesToMicroseconds(currentFrame + silentFrameCount);
+        this.renderedPlaybackRate = playbackRate;
         return silentFrameCount;
+    }
+
+    // Renders time-stretched output, and raw output the stretcher still holds, from outputOffset; returns where it stopped
+    renderStretched(outputChannels, outputOffset, renderFrameCount, gain) {
+        const stretcher = this.stretcher;
+        const renderedOffset = stretcher.render(outputChannels, outputOffset, renderFrameCount, gain, this.playbackRate);
+        if (renderedOffset > outputOffset) {
+            this.mediaTimeMicroseconds = this.stretchInputEndMicroseconds
+                - Math.round(((stretcher.inputFrames - stretcher.nominalFrame) * MICROSECONDS_PER_SECOND) / sampleRate);
+            this.mediaTimeContextTimeMicroseconds = this.framesToMicroseconds(currentFrame + renderedOffset);
+            this.renderedPlaybackRate = stretcher.renderedRate;
+        }
+        return renderedOffset;
+    }
+
+    // Hands up to frameCount ring frames to the stretcher, or skips them, releasing each chunk it empties as playback does; returns how many it took
+    takeRingFrames(frameCount, copy) {
+        let takenFrameCount = 0;
+        while (takenFrameCount < frameCount && this.chunkCount > 0) {
+            const chunk = this.chunks[this.headChunkIndex];
+            const chunkFrameCount = chunk.channelData[0].length;
+            const chunkTakenFrameCount = Math.min(chunkFrameCount - chunk.frameOffset, frameCount - takenFrameCount);
+            if (copy) {
+                this.stretcher.appendInput(chunk.channelData, chunk.frameOffset, chunkTakenFrameCount);
+            }
+            chunk.frameOffset += chunkTakenFrameCount;
+            takenFrameCount += chunkTakenFrameCount;
+            this.queuedFrames -= chunkTakenFrameCount;
+            this.consumedFrames += chunkTakenFrameCount;
+            this.stretchInputEndMicroseconds = chunk.timestampMicroseconds
+                + Math.round((chunk.frameOffset * MICROSECONDS_PER_SECOND) / sampleRate);
+            if (chunk.frameOffset === chunkFrameCount) {
+                this.releaseHeadChunk(chunk);
+            }
+        }
+        return takenFrameCount;
     }
 
     analyzeOutput(outputChannels, startFrameIndex, endFrameIndex) {
@@ -481,8 +548,10 @@ class JellyfinCustomAudioOutputProcessor extends AudioWorkletProcessor {
             outputFrames: this.outputFrames,
             overflowEvents: this.overflowEvents,
             overflowFrames: this.overflowFrames,
+            playbackRate: this.renderedPlaybackRate,
             playing: this.playing,
-            queuedFrames: this.queuedFrames,
+            // Input not yet rendered: the ring's and the stretcher's
+            queuedFrames: this.queuedFrames + this.stretcher.queuedFrames,
             reason,
             sequence,
             signal,

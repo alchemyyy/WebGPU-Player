@@ -101,6 +101,14 @@ export type HEVCSPSChroma = {
     chromaSampleLocationType: number | null
 };
 
+/** An SPS's ID and the highest temporal sub-layer of its pictures. */
+export type HEVCSPSTemporalSubLayers = {
+    /** sps_max_sub_layers_minus1: the highest TemporalId a picture of the SPS takes */
+    maximumSubLayerIndex: number
+    /** sps_seq_parameter_set_id */
+    sequenceParameterSetID: number
+};
+
 export type HEVCHDRTransfer = 'hlg' | 'pq';
 
 class BoundedBitReader {
@@ -647,6 +655,25 @@ type ParsedHEVCSPS = {
     VUI: ParsedVUI
 };
 
+type SPSHead = {
+    maximumSubLayerIndex: number
+    profileTierLevel: ProfileTierLevel
+    sequenceParameterSetID: number
+};
+
+/** Reads the SPS fields before chroma_format_idc: its temporal sub-layers, its profile, tier, and level, and its ID. */
+function readSPSHead(reader: BoundedBitReader): SPSHead {
+    reader.skipBits(4, 'sps_video_parameter_set_id');
+    const maximumSubLayerIndex = reader.readBits(3, 'sps_max_sub_layers_minus1');
+    if (maximumSubLayerIndex > 6) {
+        throw new TypeError('The HEVC SPS has too many temporal sub-layers');
+    }
+    reader.skipBits(1, 'sps_temporal_id_nesting_flag');
+    const profileTierLevel = parseProfileTierLevel(reader, maximumSubLayerIndex);
+    const sequenceParameterSetID = reader.readUnsignedExpGolomb('sps_seq_parameter_set_id', 15);
+    return { maximumSubLayerIndex, profileTierLevel, sequenceParameterSetID };
+}
+
 /**
  * Reads an SPS through its VUI, as far as FFmpeg's hevc/ps.c reads the SPS of any profile before its extensions.
  * Bounded, it fails where the progressive Main and Main 10 bounds fail: another profile, a scan that is not progressive, chroma other than 4:2:0,
@@ -656,13 +683,7 @@ type ParsedHEVCSPS = {
 function readHEVCSPSSyntax(nalUnit: Uint8Array, bounded: boolean): HEVCSPSSyntax {
     const RBSP = createRBSP(nalUnit);
     const reader = new BoundedBitReader(RBSP);
-    reader.skipBits(4, 'sps_video_parameter_set_id');
-    const maximumSubLayerIndex = reader.readBits(3, 'sps_max_sub_layers_minus1');
-    if (maximumSubLayerIndex > 6) {
-        throw new TypeError('The HEVC SPS has too many temporal sub-layers');
-    }
-    reader.skipBits(1, 'sps_temporal_id_nesting_flag');
-    const profileTierLevel = parseProfileTierLevel(reader, maximumSubLayerIndex);
+    const { maximumSubLayerIndex, profileTierLevel } = readSPSHead(reader);
     if (bounded && profileTierLevel.profileIDC !== 1 && profileTierLevel.profileIDC !== 2) {
         throw new TypeError('The HEVC SPS profile is unsupported');
     }
@@ -670,7 +691,6 @@ function readHEVCSPSSyntax(nalUnit: Uint8Array, bounded: boolean): HEVCSPSSyntax
         throw new TypeError('The HEVC SPS is not constrained to progressive pictures');
     }
 
-    reader.readUnsignedExpGolomb('sps_seq_parameter_set_id', 15);
     const chromaFormat = reader.readUnsignedExpGolomb('chroma_format_idc', CHROMA_FORMAT_444);
     if (bounded && chromaFormat !== CHROMA_FORMAT_420) {
         throw new TypeError('The HEVC SPS chroma format is not 4:2:0');
@@ -733,6 +753,15 @@ function parseHEVCSPSSyntax(nalUnit: Uint8Array): ParsedHEVCSPS {
 export function readHEVCSPSChroma(nalUnit: Uint8Array): HEVCSPSChroma {
     const { chromaFormat, VUI } = readHEVCSPSSyntax(nalUnit, false);
     return { chromaFormat, chromaSampleLocationType: VUI.chromaSampleLocationType };
+}
+
+/**
+ * Reads an SPS's ID and sps_max_sub_layers_minus1, the highest TemporalId of the pictures it describes, from any profile's SPS.
+ * Throws on syntax the specification does not allow.
+ */
+export function readHEVCSPSTemporalSubLayers(nalUnit: Uint8Array): HEVCSPSTemporalSubLayers {
+    const { maximumSubLayerIndex, sequenceParameterSetID } = readSPSHead(new BoundedBitReader(createRBSP(nalUnit)));
+    return { maximumSubLayerIndex, sequenceParameterSetID };
 }
 
 function writeBits(

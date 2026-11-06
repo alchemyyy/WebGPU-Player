@@ -108,18 +108,22 @@ The TypeScript modules are embedded in the bundle; the binary files are served o
 ## pipeline/
 
 - `CustomPlaybackController.ts` [main]: lifecycle, generations, the clock, the startup (20 s without progress, the source bytes read before readiness counting as progress, 60 s ceiling), stall (10 s), and lag (2 s) policy, the live audio output layout switch, the end-of-stream and ended-track drains, the presentation timing counters, and the fallback disposition.
+  It also holds the playback rate: live changes, the restart that crosses the audible range, the audio selection kept aside outside it, the presentation interval it hands the session above 1x, and the forward keyframe resync above 1x.
+- `CustomPlaybackRate.ts`: the playback rates custom playback takes, 1/16x to 16x, and the audible range, 0.25x to 4x.
 - `CustomPlaybackControllerTypes.ts`: states, events, fallback reasons, and dispositions.
-- `CustomPlaybackFrameLoop.ts` [main]: the frame loop a host runs per playback: each animation frame hands the presenter its timestamp and the clock's rate, then presents the controller's current frame, taken the presenter's lookahead ahead of the clock, and acknowledges its credit, or draws again from history when no frame is due, and a hidden page drains decoded video every 25 ms instead.
+- `CustomPlaybackFrameLoop.ts` [main]: the frame loop a host runs per playback: each animation frame hands the presenter its timestamp and the clock's rate, passes the presenter's measured refresh interval to the controller when it changes, then presents the controller's current frame, taken the presenter's lookahead ahead of the clock, and acknowledges its credit, or draws again from history when no frame is due, and a hidden page drains decoded video every 25 ms instead.
 - `CustomDecodeSession.ts` [main]: the session's one decode worker, which the first start takes from the page's idle worker or creates, each generation takes at once while the stopped runs unwind beside it, a failure, an unacknowledged stop, or too many unwinding runs replace, and `destroy` leaves idle for the page's next session for 30 s once its runs are over; `prefetchCustomDecodeSource`, which starts the next session's head read in the worker that session takes; and per generation, the frame queue, credits, raw buffer recycling, the frame-pool route's GPU decode feed, readiness, audio-only resync epochs, the decoded source format, and an ended audio track completing a start, a resync, or a native-media stream.
+  It also applies the playback rate to native-media audio bridges and scales the decoded PCM fill threshold by it, and keeps the video presentation interval for every later start.
 - `CustomDecode.worker.ts` [worker]: one current run, which a start replaces at once while the stopped run unwinds beside it, each ending with `stopped`: demux, decoder dispatch, raw copy, Dolby Vision and HDR metadata, decoded PCM as restartable audio attempts in its audio decode worker, fMP4 remux, and credit waits; between runs, the source prefetch and its release.
   On the frame-pool route it posts compressed packets, or the records of the package's parser, with their HDR10+ state, and the track's codec private data on `ready`; after a parser's recoverable failure it posts held packets up to the next key packet and restarts the parser there.
+  Above 1x it decimates video by the presentation interval, skips owned HEVC pictures that can never present, and resyncs video forward to the next keyframe on `resync-video` with `keyframe: 'next'`.
 - `CustomAudioDecode.worker.ts`, `AudioDecodeWorkerRuntime.ts` [worker]: the audio decode worker, which a decode worker spawns for its decoded PCM runs and keeps for its life, or until it is lost, when its next run spawns another.
   Each attempt has an audio decoder package's instance, or none for samples Mediabunny decoded, an output stage, and a `WorkletPCMProducer`; it renders one batch at a time under the producer's credit window and credits each batch back once rendered.
   A close shuts the attempt's worklet channel at once and is acknowledged once the attempt released the rest, and a failure reports the kind the page acts on.
 - `AudioDecodeWorkerClient.ts` [worker]: the decode worker's side: the audio decode worker's spawn, each attempt's open, input credits, outcome, and close, and the packet and sample batch builders.
   A worker that fails to start, throws, or answers out of contract fails every attempt as `audio-output-failed`.
 - `AudioDecodeWorkerProtocol.ts`: the messages between the two workers, their validators, the batch shapes and their transfers, the batch and credit constants (4 batches, 40 ms or 64 inputs), and the 1 MiB bound of the codec private data a package attempt carries.
-- `DecodeWorkerProtocol.ts`: messages, the source prefetch requests that belong to no generation, validators, credit constants (4 frames, 2 raw buffers, 8 GPU decode packets, 8 audio samples), and the backend and output literals.
+- `DecodeWorkerProtocol.ts`: messages, the source prefetch requests that belong to no generation, validators, credit constants (4 frames, 2 raw buffers, 8 GPU decode packets, 8 audio samples), and the backend and output literals; a start's and `set-video-presentation-interval`'s presentation interval, and `resync-video`'s forward keyframe choice.
 - `ConcurrentDecodeStreams.ts`: concurrent decode streams that cancel each other on the first failure and all drain before the worker reports that the generation stopped.
 - `MediaClock.ts` [main]: the generation-tagged clock; `synchronize` re-anchors it.
 
@@ -159,7 +163,7 @@ All worker code unless marked.
 ### demux/dolby-vision/
 
 - `DolbyVisionProfiles.ts` [main and worker]: the dual-layer profile set (P4, P7), and the 1 us tolerance within which a base and an enhancement layer timestamp pair, as packets and as decoded frames.
-- `DolbyVisionHEVCSplitter.ts`: NAL unit headers over `NALUnitFraming.ts`; the BL, RPU (62), and EL (63) split; RASL handling; in-band SPS neutralization; drops NAL units of layers above 0, the MV-HEVC second view.
+- `DolbyVisionHEVCSplitter.ts`: NAL unit headers over `NALUnitFraming.ts`, with their temporal ID; the BL, RPU (62), and EL (63) split; RASL handling; in-band SPS neutralization; drops NAL units of layers above 0, the MV-HEVC second view.
 - `DolbyVisionAV1Splitter.ts`: removes the Dolby Vision T.35 metadata OBUs from an AV1 temporal unit and returns their messages; other metadata, HDR10+ included, stays.
 - `DolbyVisionEncodedMetadata.ts`, `DolbyVisionEncodedMetadataProtocol.ts`: per-packet RPU parsing for HEVC and per-temporal-unit parsing for AV1, which removes the RPUs unparsed on a route without Dolby Vision, over one PTS-keyed window, and the transferable schema.
 - `DolbyVisionEncodedPacketPairer.ts`: BL and EL packet pairing, within the tolerance of `DolbyVisionProfiles.ts`.
@@ -177,7 +181,8 @@ All worker code unless marked.
 ### demux/hevc/
 
 - `HEVCDecoderConfiguration.ts`: reads an `hvcC` record: its profile, chroma format, bit depth, NAL length size, and its base layer's parameter sets.
-- `HEVCSEI.ts`, `HEVCSPSParser.ts`: SEI extraction and the alternative transfer characteristics value; SPS parsing within the progressive Main and Main 10 bounds, the VUI color mapping to WebCodecs names, and the VUI rewrite with its native HDR route check, and the chroma format and VUI chroma location of any profile's SPS.
+- `HEVCSEI.ts`, `HEVCSPSParser.ts`: SEI extraction and the alternative transfer characteristics value; SPS parsing within the progressive Main and Main 10 bounds, the VUI color mapping to WebCodecs names, and the VUI rewrite with its native HDR route check, and the chroma format, VUI chroma location, and temporal sub-layer count of any profile's SPS.
+- `HEVCTemporalSubLayers.ts`: the highest temporal sub-layer every SPS of a track declares, from its `hvcC` record and in band, and whether an access unit is a picture no later picture references.
 
 ### demux/mpeg/
 
@@ -209,6 +214,7 @@ The video modules are worker code unless marked.
 
 What both video routes share.
 
+- `VideoPresentationInterval.ts`: whether a frame presents on a presentation interval's grid: some multiple of the interval falls within it.
 - `RawVideoFrameCopy.ts`: copies a `VideoFrame` into aligned plane buffers (NV12, and I420 to I444P12).
   A Dolby Vision pair is a BL in any format from I420 to I444P12 and an I420P10 EL, in one compound buffer.
   It also names each format's bit depth and the BL formats Dolby Vision reconstruction samples, which the presenter and the host check.
@@ -221,7 +227,7 @@ What both video routes share.
 
 The owned WebCodecs paths.
 
-- `OwnedVideoDecodeStream.ts`: the codec-neutral state of one owned decode attempt: decoded outputs matched with their packets' metadata, the pre-start rule, BL and EL pairing, frame credits, and the packet pump, which waits briefly after each packet for the decoder's next output, and in a preroll for the GPU's decode of the batch before.
+- `OwnedVideoDecodeStream.ts`: the codec-neutral state of one owned decode attempt: decoded outputs matched with their packets' metadata, the pre-start rule, decimation by the presentation interval, BL and EL pairing, frame credits, and the packet pump, which waits briefly after each packet for the decoder's next output, skips packets a path marks as never presenting, and waits for the GPU's decode of the batch before once a preroll's or decimation's unshown frames fill a batch.
   It pairs a path's Dolby Vision and HDR10+ queues into the metadata its frames take (`createOwnedVideoFrameMetadataSource`).
   It also runs a single-layer attempt (`runOwnedSingleLayerVideoStream`), given a per-packet metadata step.
 - `VideoDecodeFence.ts`: the decode worker's fence over native frames, a WebGPU device of its own whose one-texel read of a frame completes once the GPU decoded it.
@@ -299,10 +305,11 @@ The package file that both halves share (see [Decoder packages](decoder-packages
 
 ### audio/output/
 
-- `AudioWorkletController.ts` [main], `AudioWorkletProcessorSource.ts` [worklet], `AudioWorkletProtocol.ts`: the worklet node, the inline processor (which renders silence from a flush up to the first chunk), and their messages.
+- `AudioWorkletController.ts` [main], `AudioWorkletProcessorSource.ts` [worklet], `AudioWorkletProtocol.ts`: the worklet node, the inline processor (which renders silence from a flush up to the first chunk, and plays the ring at the playback rate), and their messages, the rate among them.
+- `AudioWorkletTimeStretchSource.ts` [worklet]: the WSOLA time stretcher the processor inlines, which plays media-rate PCM at a playback rate with its pitch kept, allocating nothing as it renders.
 - `AudioOutputDevicePresence.ts` [main]: whether `enumerateDevices()` lists any audio output.
-- `BrowserAudioContextPool.ts`, `BrowserAudioContextPrewarm.ts`, `BrowserAudioWorkletPool.ts`, `BrowserAudioOperation.ts` [main]: the shared 48 kHz context (never pooled when created without an output device), the prewarm lease, the leased worklet node, and timeouts.
-- `BrowserCustomAudioOutput.ts` [main]: the production output: context, sink lease, worklet lease, the physical output time correction, in-place layout reconfiguration, and `sinkchange` reporting.
+- `BrowserAudioContextPool.ts`, `BrowserAudioContextPrewarm.ts`, `BrowserAudioWorkletPool.ts`, `BrowserAudioOperation.ts` [main]: the shared 48 kHz context (never pooled when created without an output device), the prewarm lease, the leased worklet node, which forwards the playback rate, and timeouts.
+- `BrowserCustomAudioOutput.ts` [main]: the production output: context, sink lease, worklet lease, the playback rate, the physical output time correction scaled to media time by the rate, in-place layout reconfiguration, and `sinkchange` reporting.
 - `CustomDecodeAudioBridge.ts` [main]: each generation's flush and its new channel for the producer, the producer's progress against the processor's consumption, which the end-of-stream drain reads, and the processor's overflow and stale-generation failures.
 - `WorkletPCMProducer.ts` [worker]: feeds one worklet processor over its own channel: it owns the credit window, checks each chunk's layout, bounds, and continuity before posting it, and passes the buffers the processor returns to the channel pool.
 - `WebGPUAudioOutputManager.ts`: the page-wide sink router (`setSinkId`), with its fallback chain, `devicechange` handling, output recovery poll and sink rebuild, picker, and UI snapshot.

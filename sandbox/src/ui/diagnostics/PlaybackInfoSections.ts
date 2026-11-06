@@ -126,6 +126,10 @@ export function describeClockSource(route: ActiveRoute | null, controller: Custo
     if (route === null) {
         return MISSING_VALUE_TEXT;
     }
+    // Outside the audible rates a generation plays without its audio track
+    if (controller.audioSuspendedForPlaybackRate) {
+        return 'media clock, without audio at this playback rate';
+    }
     const decode = controller.videoDecode;
     switch (route.audioOutputMode) {
         case 'native-media':

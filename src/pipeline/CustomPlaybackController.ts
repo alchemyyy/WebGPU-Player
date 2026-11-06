@@ -40,6 +40,12 @@ import {
 import { isCustomDecodeMediaSource } from '../demux/CustomDecodeMediaSource';
 import type { GPUVideoDecodeSessionFactory } from '../decode/video/gpu/GPUVideoDecodeFeed';
 import MediaClock from './MediaClock';
+import {
+    isAudibleCustomPlaybackRate,
+    isCustomPlaybackRate,
+    MAXIMUM_CUSTOM_PLAYBACK_RATE,
+    MINIMUM_CUSTOM_PLAYBACK_RATE
+} from './CustomPlaybackRate';
 import { hasRawVideoFrameCopyLayout } from '../decode/video/RawVideoFrameCopy';
 import { addMicroseconds, requireMicroseconds } from '../TimeMath';
 import { isTimingTraceActive, recordTimingEvent } from '../TimingTrace';
@@ -88,9 +94,16 @@ export const CUSTOM_PLAYBACK_VIDEO_CATCH_UP_TOLERANCE_MICROSECONDS = millisecond
 /** A clock re-anchor of at least one 60 Hz refresh can change which frame is shown, so telemetry counts it as a reset */
 export const CUSTOM_PLAYBACK_CLOCK_RESET_THRESHOLD_MICROSECONDS = millisecondsToMicroseconds(16);
 
-// A live layout switch resumes audio this far ahead, so decode fills it before the clock arrives
+// A live layout switch resumes audio this far ahead of the clock, times a rate above 1, so decode fills it before the clock arrives
 export const CUSTOM_PLAYBACK_AUDIO_OUTPUT_SWITCH_LEAD_MICROSECONDS = millisecondsToMicroseconds(250);
 export const CUSTOM_PLAYBACK_AUDIO_OUTPUT_SWITCH_TIMEOUT_MICROSECONDS = millisecondsToMicroseconds(5_000);
+// Above 1x, video lagging the clock by this much wall time, or by the decode lag bound when that is shorter, restarts at the next keyframe ahead
+// of the clock instead of decoding through
+export const CUSTOM_PLAYBACK_FORWARD_VIDEO_RESYNC_LAG_MICROSECONDS = millisecondsToMicroseconds(500);
+// A forward video resync restarts this much wall time ahead of the clock, so its keyframe decodes before the clock arrives
+export const CUSTOM_PLAYBACK_FORWARD_VIDEO_RESYNC_LEAD_MICROSECONDS = millisecondsToMicroseconds(250);
+// The display refresh a video presentation interval counts in until the frame loop measures one: 60 Hz
+const DEFAULT_DISPLAY_REFRESH_INTERVAL_MICROSECONDS = millisecondsToMicroseconds(16.667);
 
 const MINIMUM_CUSTOM_PLAYBACK_UNCORRELATED_AUDIO_DRAIN_GRACE_MICROSECONDS = millisecondsToMicroseconds(100);
 const CUSTOM_PLAYBACK_AUDIO_DRAIN_LATENCY_SAFETY_MICROSECONDS = millisecondsToMicroseconds(100);
@@ -119,6 +132,9 @@ type PendingStartup = {
 };
 
 type ClockStarvation = 'audio' | 'video';
+
+/** Where a video resync restarts: the keyframe preceding its target, or the first one at or after it */
+type VideoResyncKeyframe = 'next' | 'preceding';
 
 /** What re-anchored the clock, as the timing trace names it */
 type ClockSynchronizationReason =
@@ -393,17 +409,58 @@ function validatePlayOptions(options: CustomPlaybackPlayOptions): void {
     }
 }
 
+/** A play request's audio track and the options only its audio reads */
+type CustomPlaybackAudioSelection = Pick<
+    CustomPlaybackPlayOptions,
+    | 'audioDecoder'
+    | 'audioDownmixAlgorithm'
+    | 'audioDownmixSettings'
+    | 'audioMetadataLayout'
+    | 'audioOutputMode'
+    | 'audioRendersObjects'
+    | 'audioTrackIndex'
+    | 'binauralHeadphones'
+    | 'decodedAudioOutputLayout'
+>;
+
+function copyAudioSelection(selection: CustomPlaybackAudioSelection): CustomPlaybackAudioSelection {
+    return {
+        ...(selection.audioDecoder ? { audioDecoder: { ...selection.audioDecoder } } : {}),
+        audioDownmixAlgorithm: selection.audioDownmixAlgorithm,
+        audioDownmixSettings: selection.audioDownmixSettings ? { ...selection.audioDownmixSettings } : undefined,
+        audioMetadataLayout: selection.audioMetadataLayout ? { ...selection.audioMetadataLayout } : undefined,
+        audioOutputMode: selection.audioOutputMode,
+        audioRendersObjects: selection.audioRendersObjects,
+        audioTrackIndex: selection.audioTrackIndex,
+        binauralHeadphones: selection.binauralHeadphones,
+        decodedAudioOutputLayout: selection.decodedAudioOutputLayout
+    };
+}
+
+/** Returns a play request without its audio track or any option only audio reads, as a generation outside the audible rate range plays it. */
+function removeAudioSelection(options: CustomPlaybackPlayOptions): CustomPlaybackPlayOptions {
+    const videoOptions: CustomPlaybackPlayOptions = { ...options, audioTrackIndex: null };
+    delete videoOptions.audioDecoder;
+    delete videoOptions.audioDownmixAlgorithm;
+    delete videoOptions.audioDownmixSettings;
+    delete videoOptions.audioMetadataLayout;
+    delete videoOptions.audioOutputMode;
+    delete videoOptions.audioRendersObjects;
+    delete videoOptions.binauralHeadphones;
+    delete videoOptions.decodedAudioOutputLayout;
+    return videoOptions;
+}
+
+/** Reports whether a selection plays its track as decoded PCM to a stereo output, the route live downmix gains apply to. */
+function isDecodedStereoAudio(selection: CustomPlaybackAudioSelection): boolean {
+    return (selection.audioOutputMode ?? 'decoded-pcm') === 'decoded-pcm'
+        && selection.audioTrackIndex !== null
+        && (selection.decodedAudioOutputLayout ?? 'stereo') === 'stereo';
+}
+
 function copyPlayOptions(options: CustomPlaybackPlayOptions): CustomPlaybackPlayOptions {
     return {
-        ...(options.audioDecoder ? { audioDecoder: { ...options.audioDecoder } } : {}),
-        audioDownmixAlgorithm: options.audioDownmixAlgorithm,
-        audioDownmixSettings: options.audioDownmixSettings ? { ...options.audioDownmixSettings } : undefined,
-        audioMetadataLayout: options.audioMetadataLayout ? { ...options.audioMetadataLayout } : undefined,
-        audioOutputMode: options.audioOutputMode,
-        audioRendersObjects: options.audioRendersObjects,
-        audioTrackIndex: options.audioTrackIndex,
-        binauralHeadphones: options.binauralHeadphones,
-        decodedAudioOutputLayout: options.decodedAudioOutputLayout,
+        ...copyAudioSelection(options),
         durationMicroseconds: options.durationMicroseconds,
         dolbyVisionProfile: options.dolbyVisionProfile,
         ...(options.gpuVideoDecoder ? { gpuVideoDecoder: { ...options.gpuVideoDecoder } } : {}),
@@ -429,7 +486,6 @@ function getFallbackDisposition(reason: CustomPlaybackFallbackReason): CustomPla
         case 'audio-output-failed':
         case 'audio-output-unavailable':
         case 'lifecycle-failed':
-        case 'playback-rate-unsupported':
             return 'same-session-native';
         case 'decode-failed':
         case 'ended-before-ready':
@@ -486,6 +542,8 @@ export default class CustomPlaybackController {
     private audioOutputSwitch: AudioOutputSwitch | null = null;
     private audioOutputSwitchRevision = 0;
     private audioPath: CustomPlaybackTelemetry['audioPath'] = 'disabled';
+    /** The audio selection a generation outside the audible rate range plays without; seeks, track switches, and output requests keep it current */
+    private audioSetAsideForPlaybackRate: CustomPlaybackAudioSelection | null = null;
     private audioTelemetryUnsubscribe: (() => void) | null = null;
     private awaitingPostSeekVideoFrame = false;
     private readonly clock: CustomPlaybackClock;
@@ -496,6 +554,8 @@ export default class CustomPlaybackController {
     private destroyed = false;
     private discardedStaleVideoFrameCount = 0;
     private destroyPromise: Promise<void> | null = null;
+    /** The display's measured refresh interval, which a presentation interval above 1x counts in */
+    private displayRefreshIntervalMicroseconds: Microseconds | null = null;
     private readonly eventHandler: CustomPlaybackControllerEventHandler;
     private fallbackCount = 0;
     private fallbackGeneration: number | null = null;
@@ -523,6 +583,8 @@ export default class CustomPlaybackController {
     private readonly playbackStallTimeoutMicroseconds: Microseconds;
     private playbackStarvationStartedAtMicroseconds: Microseconds | null = null;
     private playCount = 0;
+    /** The rate every generation plays at, kept across seeks, track switches, and generations */
+    private requestedPlaybackRate = 1;
     private readonly startupTimeoutMicroseconds: Microseconds;
     private readonly startupCeilingMicroseconds: Microseconds;
     private startupDurationMicroseconds: Microseconds | null = null;
@@ -533,14 +595,16 @@ export default class CustomPlaybackController {
     private terminalAudioTailReleased = false;
     private readonly videoDecodeSession: CustomVideoDecodeSession;
     private videoPresentationPreparer: CustomPlaybackVideoPresentationPreparer | null = null;
+    /** The media time each presented frame covers above 1x, as the session last received it */
+    private videoPresentationIntervalMicroseconds: Microseconds | null = null;
     private readonly timeUpdateIntervalMicroseconds: Microseconds;
     private volume = 1;
     /** Drops late frames unpresented until video reaches the clock after a hidden period */
     private videoCatchUpActive = false;
     private videoDecodeLagWaitActive = false;
     private videoFrameMissStartedAtMicroseconds: Microseconds | null = null;
-    /** Set after a video resync until the first frame of the new epoch is taken */
-    private videoResyncPending = false;
+    /** The keyframe a requested video resync restarts from, set until the first frame of the new epoch is taken */
+    private pendingVideoResyncKeyframe: VideoResyncKeyframe | null = null;
     /** Set while the video decoder is released for a hidden page */
     private videoSuspended = false;
     private waitingForVideoFrame = false;
@@ -625,8 +689,9 @@ export default class CustomPlaybackController {
         return this.currentSource?.durationMicroseconds ?? null;
     }
 
+    /** Returns the requested playback rate, which every generation plays at. */
     public get playbackRate(): number {
-        return this.clock.rate;
+        return this.requestedPlaybackRate;
     }
 
     public get playbackState(): CustomPlaybackState {
@@ -709,7 +774,8 @@ export default class CustomPlaybackController {
     public seek(mediaTimeMicroseconds: Microseconds): Promise<CustomPlaybackStartResult> {
         this.requireUsable();
         requireMicroseconds(mediaTimeMicroseconds, 'Seek time');
-        if (!this.currentSource
+        const requestedSource = this.getRequestedSource();
+        if (!requestedSource
             || this.state === 'fallback'
             || this.state === 'idle'
             || this.state === 'stopping') {
@@ -719,7 +785,7 @@ export default class CustomPlaybackController {
         const desiredPlaying = this.state === 'playing'
             || this.pendingStartup?.desiredPlaying === true;
         const seekOptions: CustomPlaybackPlayOptions = {
-            ...this.currentSource,
+            ...requestedSource,
             startTimeMicroseconds: mediaTimeMicroseconds
         };
         return this.beginPlayback(seekOptions, desiredPlaying, 'seeking');
@@ -760,16 +826,26 @@ export default class CustomPlaybackController {
         this.applyOutputGain();
     }
 
-    /** Applies live gains only to an owned decoded multichannel stereo route. */
+    /**
+     * Applies live gains only to an owned decoded multichannel stereo route.
+     * While the playback rate sets audio aside, records them for the audio's return and returns false.
+     */
     public updateAudioDownmixSettings(settings: AudioDownmixSettings): boolean {
         this.requireUsable();
         assertValidAudioDownmixSettings(settings);
 
+        const audioSetAside = this.audioSetAsideForPlaybackRate;
+        if (audioSetAside) {
+            if (isDecodedStereoAudio(audioSetAside)) {
+                this.audioSetAsideForPlaybackRate = {
+                    ...audioSetAside,
+                    audioDownmixSettings: { ...settings }
+                };
+            }
+            return false;
+        }
         const currentSource = this.currentSource;
-        if (!currentSource
-            || (currentSource.audioOutputMode ?? 'decoded-pcm') !== 'decoded-pcm'
-            || currentSource.audioTrackIndex === null
-            || (currentSource.decodedAudioOutputLayout ?? 'stereo') !== 'stereo') {
+        if (!currentSource || !isDecodedStereoAudio(currentSource)) {
             return false;
         }
 
@@ -813,8 +889,9 @@ export default class CustomPlaybackController {
     ): Promise<CustomPlaybackStartResult> {
         this.requireUsable();
         validateTrackIndex(audioStreamIndex, 'Audio stream index');
-        const audioOutputMode = audioSwitch.audioOutputMode ?? this.currentSource?.audioOutputMode ?? 'decoded-pcm';
-        if (!this.currentSource || !this.isAudioOutputModeAvailable(audioOutputMode)) {
+        const requestedSource = this.getRequestedSource();
+        const audioOutputMode = audioSwitch.audioOutputMode ?? requestedSource?.audioOutputMode ?? 'decoded-pcm';
+        if (!requestedSource || !this.isAudioOutputModeAvailable(audioOutputMode)) {
             throw new Error('Client-side audio stream switching is unavailable');
         }
         if (this.state === 'fallback'
@@ -828,15 +905,15 @@ export default class CustomPlaybackController {
         const switchTimeMicroseconds = this.currentTimeMicroseconds;
         const decodedPCM = audioOutputMode === 'decoded-pcm';
         const switchOptions: CustomPlaybackPlayOptions = {
-            ...this.currentSource,
+            ...requestedSource,
             audioDecoder: decodedPCM ? audioSwitch.audioDecoder : undefined,
-            audioDownmixSettings: decodedPCM ? audioSwitch.audioDownmixSettings ?? this.currentSource.audioDownmixSettings : undefined,
+            audioDownmixSettings: decodedPCM ? audioSwitch.audioDownmixSettings ?? requestedSource.audioDownmixSettings : undefined,
             audioMetadataLayout: audioSwitch.audioMetadataLayout,
             audioOutputMode,
             audioRendersObjects: decodedPCM ? audioSwitch.audioRendersObjects ?? false : undefined,
             audioTrackIndex: audioStreamIndex,
-            binauralHeadphones: decodedPCM ? audioSwitch.binauralHeadphones ?? this.currentSource.binauralHeadphones : undefined,
-            decodedAudioOutputLayout: decodedPCM ? audioSwitch.decodedAudioOutputLayout ?? this.currentSource.decodedAudioOutputLayout : undefined,
+            binauralHeadphones: decodedPCM ? audioSwitch.binauralHeadphones ?? requestedSource.binauralHeadphones : undefined,
+            decodedAudioOutputLayout: decodedPCM ? audioSwitch.decodedAudioOutputLayout ?? requestedSource.decodedAudioOutputLayout : undefined,
             startTimeMicroseconds: switchTimeMicroseconds
         };
         return this.beginPlayback(switchOptions, desiredPlaying, 'seeking');
@@ -869,6 +946,30 @@ export default class CustomPlaybackController {
         }
     }
 
+    /** Returns the source as requested: the generation's options with any audio selection the playback rate set aside. */
+    private getRequestedSource(): CustomPlaybackPlayOptions | null {
+        const currentSource = this.currentSource;
+        const audioSetAside = this.audioSetAsideForPlaybackRate;
+        return currentSource && audioSetAside ? { ...currentSource, ...audioSetAside } : currentSource;
+    }
+
+    /** Records an output request for decoded audio the playback rate set aside, which the audio's return plays with. */
+    private recordSetAsideAudioOutput(options: CustomPlaybackAudioOutputOptions): void {
+        const audioSetAside = this.audioSetAsideForPlaybackRate;
+        if (!audioSetAside || (audioSetAside.audioOutputMode ?? 'decoded-pcm') !== 'decoded-pcm') {
+            return;
+        }
+        this.audioSetAsideForPlaybackRate = {
+            ...audioSetAside,
+            audioDownmixAlgorithm: options.audioDownmixAlgorithm ?? audioSetAside.audioDownmixAlgorithm,
+            audioDownmixSettings: options.audioDownmixSettings ?
+                { ...options.audioDownmixSettings } :
+                audioSetAside.audioDownmixSettings,
+            binauralHeadphones: options.binauralHeadphones ?? audioSetAside.binauralHeadphones,
+            decodedAudioOutputLayout: options.decodedAudioOutputLayout
+        };
+    }
+
     /** Returns how many channels the active decoded output's device accepts. */
     public getAudioOutputMaximumChannelCount(): number | null {
         return this.audioOutput?.getMaximumChannelCount?.() ?? null;
@@ -882,10 +983,15 @@ export default class CustomPlaybackController {
      * - 6.1 and 7.1 use a 7.1 output or fold into a 5.1 one;
      * - anything else mixes down to stereo.
      * Resolves false when the live switch is unavailable or did not start.
+     * While the playback rate sets audio aside, a request for decoded audio is recorded for the audio's return, and resolves false.
      */
     public async reconfigureAudioOutput(options: CustomPlaybackAudioOutputOptions): Promise<boolean> {
         this.requireUsable();
         validateAudioOutputOptions(options);
+        if (this.audioSetAsideForPlaybackRate) {
+            this.recordSetAsideAudioOutput(options);
+            return false;
+        }
         const generation = this.activeGeneration;
         const previousSource = this.currentSource;
         const binding = this.audioBinding;
@@ -1021,22 +1127,44 @@ export default class CustomPlaybackController {
         }
     }
 
-    /** Changes clock rate when the active audio adapter can supply rate-adjusted PCM. */
-    public setPlaybackRate(playbackRate: number): boolean {
+    /**
+     * Sets the playback rate, from MINIMUM_CUSTOM_PLAYBACK_RATE through MAXIMUM_CUSTOM_PLAYBACK_RATE, which every later generation keeps; an idle
+     * controller only records it. Audio plays time-stretched with its pitch kept within the audible range; outside it, a generation plays without
+     * audio and keeps the requested track aside.
+     * Returns null when the rate applies live, or the start of the generation that restarts at the current time when the rate crosses the audible
+     * range's boundary while the source has an audio track.
+     */
+    public setPlaybackRate(playbackRate: number): Promise<CustomPlaybackStartResult> | null {
         this.requireUsable();
-        if (!Number.isFinite(playbackRate) || playbackRate <= 0) {
-            throw new RangeError('Custom playback rate must be finite and greater than zero');
+        if (!isCustomPlaybackRate(playbackRate)) {
+            throw new RangeError(
+                `Custom playback rate must be from ${MINIMUM_CUSTOM_PLAYBACK_RATE} through ${MAXIMUM_CUSTOM_PLAYBACK_RATE}`
+            );
+        }
+        const previousPlaybackRate = this.requestedPlaybackRate;
+        if (playbackRate === previousPlaybackRate) {
+            return null;
         }
 
-        const generation = this.activeGeneration;
-        const hasAudio = typeof this.currentSource?.audioTrackIndex === 'number';
-        if (hasAudio && playbackRate !== 1) {
-            this.activateFallback(
-                generation,
-                'playback-rate-unsupported',
-                'The custom audio path cannot produce rate-adjusted PCM'
-            );
-            return false;
+        this.requestedPlaybackRate = playbackRate;
+        this.videoDecodeSession.setPlaybackRate?.(playbackRate);
+        this.updateVideoPresentationInterval();
+        if (isAudibleCustomPlaybackRate(playbackRate)) {
+            this.audioOutput?.setPlaybackRate?.(playbackRate);
+        }
+        const requestedSource = this.getRequestedSource();
+        if (requestedSource
+            && requestedSource.audioTrackIndex !== null
+            && this.state !== 'fallback'
+            && this.state !== 'idle'
+            && this.state !== 'stopping'
+            && isAudibleCustomPlaybackRate(playbackRate) !== isAudibleCustomPlaybackRate(previousPlaybackRate)) {
+            const desiredPlaying = this.state === 'playing'
+                || this.pendingStartup?.desiredPlaying === true;
+            return this.beginPlayback({
+                ...requestedSource,
+                startTimeMicroseconds: this.currentTimeMicroseconds
+            }, desiredPlaying, 'seeking');
         }
 
         this.clock.setPlaybackRate(playbackRate);
@@ -1045,7 +1173,41 @@ export default class CustomPlaybackController {
             this.videoStarvationAnchorMonotonicTimeMicroseconds = this.readMonotonicTime();
         }
         this.emitTimeUpdate();
-        return true;
+        return null;
+    }
+
+    /** Takes the display's measured refresh interval, or null before a measurement, which a presentation interval above 1x counts in. */
+    public setDisplayRefreshInterval(intervalMicroseconds: Microseconds | null): void {
+        if (intervalMicroseconds !== null) {
+            requireMicroseconds(intervalMicroseconds, 'Display refresh interval');
+            if (intervalMicroseconds <= 0) {
+                throw new RangeError('Display refresh interval must be positive');
+            }
+        }
+        if (this.destroyed) {
+            return;
+        }
+        this.displayRefreshIntervalMicroseconds = intervalMicroseconds;
+        this.updateVideoPresentationInterval();
+    }
+
+    /**
+     * Hands the session the media time one presented frame covers above 1x, the rate times the display refresh, since the display shows at most
+     * one frame per refresh; null at or below 1x. The session keeps it for later generations, so only a change reaches it.
+     */
+    private updateVideoPresentationInterval(): void {
+        const playbackRate = this.requestedPlaybackRate;
+        const intervalMicroseconds = playbackRate > 1 ?
+            requireMicroseconds(
+                Math.round(playbackRate * (this.displayRefreshIntervalMicroseconds ?? DEFAULT_DISPLAY_REFRESH_INTERVAL_MICROSECONDS)),
+                'Video presentation interval'
+            ) :
+            null;
+        if (intervalMicroseconds === this.videoPresentationIntervalMicroseconds) {
+            return;
+        }
+        this.videoPresentationIntervalMicroseconds = intervalMicroseconds;
+        this.videoDecodeSession.setVideoPresentationInterval?.(intervalMicroseconds);
     }
 
     /**
@@ -1111,14 +1273,20 @@ export default class CustomPlaybackController {
         if (!presentationFrame && this.state === 'playing') {
             this.handleMissingVideoFrame(generation, addMicroseconds(targetTimeMicroseconds, lookaheadMicroseconds));
         } else if (presentationFrame) {
-            // The session drops replaced epochs, so any frame completes a resync
-            this.videoResyncPending = false;
+            // A forward resync's key frame presents even when it arrives late, so every jump shows a picture and ends the wait; a later frame
+            // that still lags jumps again
+            const forwardResyncKeyFrame = this.pendingVideoResyncKeyframe === 'next';
+            this.pendingVideoResyncKeyframe = null;
             if (
-                this.discardLateCatchUpFrame(presentationFrame, targetTimeMicroseconds, generation)
-                || this.handleExcessivelyLaggingVideoFrame(
-                    presentationFrame,
-                    targetTimeMicroseconds,
-                    generation
+                !forwardResyncKeyFrame
+                && (
+                    this.discardFrameForForwardVideoResync(presentationFrame, targetTimeMicroseconds, generation)
+                    || this.discardLateCatchUpFrame(presentationFrame, targetTimeMicroseconds, generation)
+                    || this.handleExcessivelyLaggingVideoFrame(
+                        presentationFrame,
+                        targetTimeMicroseconds,
+                        generation
+                    )
                 )
             ) {
                 return null;
@@ -1190,7 +1358,7 @@ export default class CustomPlaybackController {
         }
         const targetTimeMicroseconds = this.getCurrentPresentationTargetTime();
         if (this.videoSuspended
-            || (!this.videoResyncPending && this.isVideoDecodeBehind(
+            || (this.pendingVideoResyncKeyframe === null && this.isVideoDecodeBehind(
                 targetTimeMicroseconds,
                 this.maximumVideoDecodeLagMicroseconds
             ))) {
@@ -1227,14 +1395,14 @@ export default class CustomPlaybackController {
             && this.canSuspendBackgroundVideo()
             && this.videoDecodeSession.suspendVideo?.()) {
             this.videoSuspended = true;
-            this.videoResyncPending = false;
+            this.pendingVideoResyncKeyframe = null;
             this.completeEndedPlaybackIfDrained(generation);
             return;
         }
 
         const presentationFrame = this.videoDecodeSession.takeFrame(this.getCurrentPresentationTargetTime());
         if (presentationFrame) {
-            this.videoResyncPending = false;
+            this.pendingVideoResyncKeyframe = null;
             this.recordDrainedVideoFrameEnd(presentationFrame);
             if (!this.discardStaleVideoFrame(presentationFrame)) {
                 this.activateFallback(
@@ -1308,6 +1476,7 @@ export default class CustomPlaybackController {
             audioOutput: this.audioOutput?.getTelemetry() ?? null,
             audioOutputSwitchPending: this.audioOutputSwitch !== null,
             audioPath: this.audioPath,
+            audioSuspendedForPlaybackRate: this.audioSetAsideForPlaybackRate !== null,
             clock: this.clock.snapshot(),
             currentTimeMicroseconds,
             discardedStaleVideoFrameCount: this.discardedStaleVideoFrameCount,
@@ -1332,7 +1501,7 @@ export default class CustomPlaybackController {
             startupDurationMicroseconds: this.startupDurationMicroseconds,
             state: this.state,
             videoDecode: this.videoDecodeSession.getTelemetry(),
-            videoResyncPending: this.videoResyncPending,
+            videoResyncPending: this.pendingVideoResyncKeyframe !== null,
             videoSuspended: this.videoSuspended,
             volume: this.volume
         };
@@ -1365,11 +1534,15 @@ export default class CustomPlaybackController {
     ): Promise<CustomPlaybackStartResult> {
         this.requireUsable();
         validatePlayOptions(options);
+        // Outside the audible range the generation plays without audio, and keeps the requested selection for seeks, track switches, and its return
+        const audioSetAside = options.audioTrackIndex !== null && !isAudibleCustomPlaybackRate(this.requestedPlaybackRate);
+        const generationOptions = audioSetAside ? removeAudioSelection(options) : options;
         const generation = this.advanceGeneration();
         this.supersedePendingStartup();
         this.clearAudioOutputSwitch();
         this.activeGeneration = generation;
-        this.currentSource = copyPlayOptions(options);
+        this.currentSource = copyPlayOptions(generationOptions);
+        this.audioSetAsideForPlaybackRate = audioSetAside ? copyAudioSelection(options) : null;
         this.nativeAudioClockGeneration = null;
         this.nativeAudioClockTimeMicroseconds = null;
         this.fallbackGeneration = null;
@@ -1387,15 +1560,16 @@ export default class CustomPlaybackController {
         this.videoFrameTakenInGeneration = false;
         this.resetDrainAndStarvationState();
         this.playCount += 1;
-        this.audioPath = options.audioTrackIndex === null ? 'disabled' : 'pending';
+        this.audioPath = generationOptions.audioTrackIndex === null ? 'disabled' : 'pending';
         this.clock.reset(options.startTimeMicroseconds);
+        this.clock.setPlaybackRate(this.requestedPlaybackRate);
         this.setState(phase, generation);
         this.emitEvent({ generation, reason: 'startup', type: 'waiting' });
         this.emitTimeUpdate();
 
         const pendingStartup = this.createPendingStartup(generation, desiredPlaying, phase);
         this.pendingStartup = pendingStartup;
-        void this.prepareGeneration(generation, options);
+        void this.prepareGeneration(generation, generationOptions);
         return pendingStartup.promise;
     }
 
@@ -1656,7 +1830,7 @@ export default class CustomPlaybackController {
     private handleVideoInterrupted(): void {
         if (this.pageHidden && this.canSuspendBackgroundVideo() && !this.pendingStartup) {
             this.videoSuspended = true;
-            this.videoResyncPending = false;
+            this.pendingVideoResyncKeyframe = null;
             return;
         }
         this.requestVideoResync(this.getCurrentPresentationTargetTime());
@@ -2258,6 +2432,9 @@ export default class CustomPlaybackController {
         try {
             binding.output.setVolume(this.getOutputGain());
             binding.output.setMuted(this.muted);
+            if (isAudibleCustomPlaybackRate(this.requestedPlaybackRate)) {
+                binding.output.setPlaybackRate?.(this.requestedPlaybackRate);
+            }
             await this.waitBounded(
                 Promise.resolve(binding.output.setPlaying(false)),
                 'Custom audio initialization suspension exceeded its bound'
@@ -2289,7 +2466,7 @@ export default class CustomPlaybackController {
             && typeof this.currentSource?.audioTrackIndex === 'number';
     }
 
-    /** Resumes a running clock's switch ahead of it, clamped to the end of the media */
+    /** Resumes a running clock's switch ahead of it by the lead, times a rate above 1, clamped to the end of the media */
     private getAudioOutputSwitchTarget(): Microseconds {
         const currentTimeMicroseconds = this.clock.mediaTimeMicroseconds;
         // A paused or audio-starved clock waits for the new audio, so it needs no lead
@@ -2298,7 +2475,7 @@ export default class CustomPlaybackController {
         }
         const targetTimeMicroseconds = addMicroseconds(
             currentTimeMicroseconds,
-            CUSTOM_PLAYBACK_AUDIO_OUTPUT_SWITCH_LEAD_MICROSECONDS
+            this.scaleWallTimeToMedia(CUSTOM_PLAYBACK_AUDIO_OUTPUT_SWITCH_LEAD_MICROSECONDS)
         );
         const durationMicroseconds = this.durationMicroseconds;
         return durationMicroseconds !== null && targetTimeMicroseconds >= durationMicroseconds ?
@@ -2359,9 +2536,10 @@ export default class CustomPlaybackController {
             this.startSwitchedAudioOutput(revision);
             return;
         }
+        // The clock covers the delay's media time at its rate
         audioOutputSwitch.startTimer = globalThis.setTimeout((): void => {
             this.startSwitchedAudioOutput(revision);
-        }, microsecondsToMilliseconds(delayMicroseconds));
+        }, microsecondsToMilliseconds(delayMicroseconds) / this.clock.rate);
     }
 
     private startSwitchedAudioOutput(revision: number): void {
@@ -2611,6 +2789,13 @@ export default class CustomPlaybackController {
             this.endVideoFrameWait(generation);
             return;
         }
+        // Above 1x, decode that fell this far behind restarts ahead of the clock instead of waiting
+        const forwardResyncLagMicroseconds = this.getForwardVideoResyncLagMicroseconds();
+        if (forwardResyncLagMicroseconds !== null
+            && this.isVideoDecodeBehind(targetTimeMicroseconds, forwardResyncLagMicroseconds)
+            && this.requestForwardVideoResync(targetTimeMicroseconds)) {
+            return;
+        }
 
         const decodeTelemetry = this.videoDecodeSession.getTelemetry();
         if (
@@ -2649,11 +2834,13 @@ export default class CustomPlaybackController {
      * target by more than the decode lag bound, and the page holds every video credit of the route, so the worker decodes nothing that would present sooner.
      * Such a queue waits for the clock to reach it, which a gap the audio renders as silence may let run for minutes, so the miss counts as starvation.
      * Once a frame presented, a frame that far ahead is a real gap in the video, such as a still, and the queue holds the wait off as before.
+     * A forward resync's queue starts ahead of the clock by design, so it never strands.
      */
     private isVideoQueueStranded(decodeTelemetry: CustomDecodeSessionTelemetry, targetTimeMicroseconds: Microseconds): boolean {
         const earliestQueuedFrameMediaTimeMicroseconds = decodeTelemetry.earliestQueuedFrameMediaTimeMicroseconds;
         const videoOutputMode = this.currentSource?.videoOutputMode;
-        if ((this.videoFrameTakenInGeneration && !this.videoResyncPending)
+        if (this.pendingVideoResyncKeyframe === 'next'
+            || (this.videoFrameTakenInGeneration && this.pendingVideoResyncKeyframe === null)
             || earliestQueuedFrameMediaTimeMicroseconds === null
             || videoOutputMode === undefined
             || earliestQueuedFrameMediaTimeMicroseconds - targetTimeMicroseconds <= this.maximumVideoDecodeLagMicroseconds) {
@@ -2685,7 +2872,8 @@ export default class CustomPlaybackController {
         const videoDecodeLag = this.getExcessiveVideoDecodeLag(
             presentationFrame,
             targetTimeMicroseconds,
-            generation
+            generation,
+            this.maximumVideoDecodeLagMicroseconds
         );
         if (!videoDecodeLag) {
             return false;
@@ -2707,6 +2895,54 @@ export default class CustomPlaybackController {
             targetTimeMicroseconds
         });
         this.handleStaleVideoFrame(generation, videoDecodeLag);
+        this.emitTimeUpdateIfDue();
+        this.completeEndedPlaybackIfDrained(generation);
+        return true;
+    }
+
+    /**
+     * Above 1x, drops a frame lagging the target past the forward resync lag and restarts video at the next keyframe ahead of the clock, since decode
+     * that fell that far behind a fast clock does not catch up by decoding through. Returns whether the frame was dropped.
+     */
+    private discardFrameForForwardVideoResync(
+        presentationFrame: DecodedPresentationFrame,
+        targetTimeMicroseconds: Microseconds,
+        generation: number
+    ): boolean {
+        const forwardResyncLagMicroseconds = this.getForwardVideoResyncLagMicroseconds();
+        if (forwardResyncLagMicroseconds === null) {
+            return false;
+        }
+        const videoDecodeLag = this.getExcessiveVideoDecodeLag(
+            presentationFrame,
+            targetTimeMicroseconds,
+            generation,
+            forwardResyncLagMicroseconds
+        );
+        if (!videoDecodeLag) {
+            return false;
+        }
+        if (!this.discardStaleVideoFrame(presentationFrame)) {
+            this.activateFallback(
+                generation,
+                'lifecycle-failed',
+                'A stale custom video frame could not be released'
+            );
+            return true;
+        }
+
+        recordTimingEvent('frame-discarded', {
+            mediaTimeMicroseconds: presentationFrame.mediaTimeMicroseconds,
+            reason: 'decode-lag',
+            targetTimeMicroseconds
+        });
+        if (this.requestForwardVideoResync(targetTimeMicroseconds)) {
+            this.lastVideoDecodeLag = { ...videoDecodeLag };
+            this.discardedStaleVideoFrameCount += 1;
+        } else {
+            // A session that declines the resync leaves the bounded starvation policy
+            this.handleStaleVideoFrame(generation, videoDecodeLag);
+        }
         this.emitTimeUpdateIfDue();
         this.completeEndedPlaybackIfDrained(generation);
         return true;
@@ -2873,7 +3109,8 @@ export default class CustomPlaybackController {
     private getExcessiveVideoDecodeLag(
         presentationFrame: DecodedPresentationFrame,
         targetTimeMicroseconds: Microseconds,
-        generation: number
+        generation: number,
+        maximumLagMicroseconds: Microseconds
     ): CustomPlaybackVideoDecodeLagTelemetry | null {
         const frameEndMicroseconds = addMicroseconds(
             presentationFrame.mediaTimeMicroseconds,
@@ -2885,7 +3122,7 @@ export default class CustomPlaybackController {
             targetTimeMicroseconds - frameEndMicroseconds,
             'Video decode lag'
         );
-        if (gapMicroseconds <= this.maximumVideoDecodeLagMicroseconds) {
+        if (gapMicroseconds <= maximumLagMicroseconds) {
             return null;
         }
 
@@ -2941,19 +3178,67 @@ export default class CustomPlaybackController {
             && targetTimeMicroseconds - lastFrameEndMediaTimeMicroseconds > toleranceMicroseconds;
     }
 
-    /** Restarts video alone at the target while audio and the clock continue. */
-    private requestVideoResync(targetTimeMicroseconds: Microseconds): boolean {
+    /** Restarts video alone at the target, from the keyframe preceding it or the first one at or after it, while audio and the clock continue. */
+    private requestVideoResync(targetTimeMicroseconds: Microseconds, keyframe: VideoResyncKeyframe = 'preceding'): boolean {
         this.videoSuspended = false;
-        if (!this.videoDecodeSession.resyncVideo?.(targetTimeMicroseconds)) {
+        const resynced = keyframe === 'next' ?
+            this.videoDecodeSession.resyncVideo?.(targetTimeMicroseconds, 'next') :
+            this.videoDecodeSession.resyncVideo?.(targetTimeMicroseconds);
+        if (!resynced) {
             return false;
         }
 
-        this.videoCatchUpActive = true;
-        this.videoResyncPending = true;
+        // The next keyframe presents first, so a forward resync leaves no backlog to skip
+        this.videoCatchUpActive = keyframe === 'preceding';
+        this.pendingVideoResyncKeyframe = keyframe;
         this.awaitingPostSeekVideoFrame = true;
         this.videoDecodeLagWaitActive = false;
         this.videoFrameMissStartedAtMicroseconds = null;
         return true;
+    }
+
+    /**
+     * Restarts video alone at the next keyframe at or after the forward resync lead, as media time at the rate, past the target, clamped to the
+     * duration, and records the jump in the timing trace; a pending resync is left to finish. Returns whether a resync was requested.
+     */
+    private requestForwardVideoResync(targetTimeMicroseconds: Microseconds): boolean {
+        if (this.pendingVideoResyncKeyframe !== null) {
+            return false;
+        }
+        const leadTargetMicroseconds = addMicroseconds(
+            targetTimeMicroseconds,
+            this.scaleWallTimeToMedia(CUSTOM_PLAYBACK_FORWARD_VIDEO_RESYNC_LEAD_MICROSECONDS)
+        );
+        const durationMicroseconds = this.durationMicroseconds;
+        const resyncTimeMicroseconds = durationMicroseconds !== null && leadTargetMicroseconds > durationMicroseconds ?
+            durationMicroseconds :
+            leadTargetMicroseconds;
+        if (!this.requestVideoResync(resyncTimeMicroseconds, 'next')) {
+            return false;
+        }
+        recordTimingEvent('video-resync', {
+            keyframe: 'next',
+            resyncTimeMicroseconds,
+            targetTimeMicroseconds
+        });
+        return true;
+    }
+
+    /** Returns how far video may lag the target above 1x before it restarts ahead of the clock; null at or below 1x, or without video resyncs. */
+    private getForwardVideoResyncLagMicroseconds(): Microseconds | null {
+        if (this.requestedPlaybackRate <= 1 || !this.videoDecodeSession.resyncVideo) {
+            return null;
+        }
+        const lagMicroseconds = this.scaleWallTimeToMedia(CUSTOM_PLAYBACK_FORWARD_VIDEO_RESYNC_LAG_MICROSECONDS);
+        return lagMicroseconds < this.maximumVideoDecodeLagMicroseconds ? lagMicroseconds : this.maximumVideoDecodeLagMicroseconds;
+    }
+
+    /** Returns the media time a wall-time duration covers at a rate above 1; at or below 1, the duration itself. */
+    private scaleWallTimeToMedia(durationMicroseconds: Microseconds): Microseconds {
+        return requireMicroseconds(
+            Math.round(durationMicroseconds * Math.max(1, this.requestedPlaybackRate)),
+            'Rate-scaled duration'
+        );
     }
 
     /** Drops a frame the clock already passed while video catches up after a hidden period, so the backlog is skipped instead of shown fast-forward. */
@@ -3122,6 +3407,7 @@ export default class CustomPlaybackController {
         }).then((): void => {
             if (this.currentGeneration === controlGeneration) {
                 this.currentSource = null;
+                this.audioSetAsideForPlaybackRate = null;
                 this.audioPath = 'disabled';
                 this.waitingForVideoFrame = false;
                 this.setState('idle', controlGeneration);
@@ -3255,7 +3541,7 @@ export default class CustomPlaybackController {
         this.terminalAudioDrainGeneration = null;
         this.terminalAudioTailReleased = false;
         this.videoCatchUpActive = false;
-        this.videoResyncPending = false;
+        this.pendingVideoResyncKeyframe = null;
         this.videoSuspended = false;
     }
 

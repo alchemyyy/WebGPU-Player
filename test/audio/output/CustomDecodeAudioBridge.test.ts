@@ -109,6 +109,7 @@ function createTelemetry(
         outputFrames: 0,
         overflowEvents: 0,
         overflowFrames: 0,
+        playbackRate: 1,
         playing: true,
         queuedFrames: 0,
         reason: 'periodic',

@@ -27,6 +27,7 @@ type ControllerHarness = {
     onTelemetry: Mock
     seek: Mock
     setMuted: Mock
+    setPlaybackRate: Mock
     setPlaying: Mock
     setVolume: Mock
     telemetryListeners: Set<AudioTelemetryListener>
@@ -75,6 +76,7 @@ function createControllerHarness(
     });
     const seek = vi.fn((): number => 3);
     const setMuted = vi.fn();
+    const setPlaybackRate = vi.fn();
     const setPlaying = vi.fn();
     const setVolume = vi.fn();
     const controller = {
@@ -90,6 +92,7 @@ function createControllerHarness(
         onTelemetry,
         seek,
         setMuted,
+        setPlaybackRate,
         setPlaying,
         setVolume
     } as unknown as AudioWorkletController;
@@ -104,6 +107,7 @@ function createControllerHarness(
         onTelemetry,
         seek,
         setMuted,
+        setPlaybackRate,
         setPlaying,
         setVolume,
         telemetryListeners
@@ -160,6 +164,8 @@ describe('BrowserAudioWorkletPool', () => {
         const producerPort = {} as MessagePort;
         staleOutput.attachProducer(producerPort);
         expect(harness.attachProducer).toHaveBeenCalledExactlyOnceWith(producerPort);
+        staleOutput.setPlaybackRate(2);
+        expect(harness.setPlaybackRate).toHaveBeenCalledExactlyOnceWith(2);
 
         expect(staleOutput).not.toBe(harness.controller);
         const release = firstLease.release();
@@ -182,6 +188,8 @@ describe('BrowserAudioWorkletPool', () => {
         expect(() => staleOutput.onTelemetry(vi.fn())).toThrow('no longer active');
         expect(() => staleOutput.seek(secondsToMicroseconds(0))).toThrow('no longer active');
         expect(() => staleOutput.setMuted(true)).toThrow('no longer active');
+        expect(() => staleOutput.setPlaybackRate(0.5)).toThrow('no longer active');
+        expect(harness.setPlaybackRate).toHaveBeenCalledOnce();
         expect(() => staleOutput.setPlaying(true)).toThrow('no longer active');
         expect(() => staleOutput.setVolume(0.5)).toThrow('no longer active');
 

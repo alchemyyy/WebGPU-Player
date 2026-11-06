@@ -112,6 +112,7 @@ class BrowserCustomAudioOutput implements CustomAudioOutput {
     private outputGeneration = 0;
     private outputTelemetryUnsubscribe: () => void;
     private physicalCorrelationGeneration: number | null = null;
+    private playbackRate = 1;
     private playing = false;
     private reconfigurationTail: Promise<void> = Promise.resolve();
     private resumePromise: Promise<void> | null = null;
@@ -217,6 +218,7 @@ class BrowserCustomAudioOutput implements CustomAudioOutput {
         this.outputActive = true;
         this.output.setVolume(this.volume);
         this.output.setMuted(this.muted);
+        this.output.setPlaybackRate(this.playbackRate);
         this.output.setPlaying(this.playing);
         this.output.setSignalAnalysis(this.signalAnalysis);
         this.outputTelemetryUnsubscribe = this.output.onTelemetry(this.handleOutputTelemetry);
@@ -289,6 +291,16 @@ class BrowserCustomAudioOutput implements CustomAudioOutput {
         if (this.outputActive) {
             this.output.setMuted(muted);
         }
+    }
+
+    /** Time-stretches the output to a rate, keeping its pitch; a reconfiguration's new worklet takes it too. */
+    public setPlaybackRate(playbackRate: number): void {
+        if (this.outputActive) {
+            this.output.setPlaybackRate(playbackRate);
+        } else if (!Number.isFinite(playbackRate) || playbackRate <= 0) {
+            throw new RangeError('Audio output playback rate must be finite and greater than zero');
+        }
+        this.playbackRate = playbackRate;
     }
 
     public setPlaying(playing: boolean): Promise<void> {
@@ -451,8 +463,9 @@ class BrowserCustomAudioOutput implements CustomAudioOutput {
 
         let physicalMediaTimeMicroseconds: Microseconds;
         try {
+            // The correction is context time, over which media time advanced at the rate the processor rendered at
             physicalMediaTimeMicroseconds = requireMicroseconds(
-                telemetry.mediaTimeMicroseconds - correctionMicroseconds,
+                telemetry.mediaTimeMicroseconds - Math.round(correctionMicroseconds * telemetry.playbackRate),
                 'Physical audio output media time'
             );
         } catch {
