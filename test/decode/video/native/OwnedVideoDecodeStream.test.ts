@@ -384,6 +384,7 @@ function createHeldDecodeFence(): HeldDecodeFence {
             completions.shift()?.();
         },
         fence: {
+            destroy: vi.fn(),
             prewarm,
             wait: (frame: VideoFrame): Promise<void> => {
                 const fakeFrame = frame as unknown as FakeStreamVideoFrame;

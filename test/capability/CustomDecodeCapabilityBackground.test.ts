@@ -148,6 +148,23 @@ function countOutputProbes(harness: ProbeHarness, codec: string): number {
     )).length;
 }
 
+/** Counts every decoder call the probes made, so a task can tell whether one ran after it started. */
+function countProbeCalls(harness: ProbeHarness): number {
+    return harness.audioProbe.mock.calls.length
+        + harness.videoProbe.mock.calls.length
+        + harness.nativeAudioOutputProbe.mock.calls.length
+        + harness.nativeVideoOutputProbe.mock.calls.length;
+}
+
+/** A promise the test resolves; the ES2022 lib has no Promise.withResolvers. */
+function createDeferred(): { promise: Promise<void>, resolve: () => void } {
+    let resolve = (): void => undefined;
+    const promise = new Promise<void>((resolvePromise) => {
+        resolve = resolvePromise;
+    });
+    return { promise, resolve };
+}
+
 describe('capability probe warm-up', () => {
     beforeEach(() => {
         vi.useFakeTimers();
@@ -272,6 +289,150 @@ describe('capability probe warm-up', () => {
 
         vi.stubGlobal('navigator', { hardwareConcurrency: 2 });
         expect(warmCustomDecodeCapabilities()).toBe(false);
+    });
+});
+
+describe('a host\'s background task', () => {
+    beforeEach(() => {
+        vi.useFakeTimers();
+    });
+
+    afterEach(() => {
+        vi.useRealTimers();
+    });
+
+    it('waits until the warm-up\'s probes are done and an idle period comes, then runs', async () => {
+        const harness = createHarness();
+        const idleGate = createIdleGate();
+        const probe = createProbe(harness, { waitForIdle: idleGate.waitForIdle });
+        probe.warmUp();
+        let probeCallsAtTask = -1;
+        const task = vi.fn(async (): Promise<void> => {
+            probeCallsAtTask = countProbeCalls(harness);
+        });
+        const ran = probe.runInBackground(task);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(task).not.toHaveBeenCalled();
+
+        // Each idle period lets one background step run; the task takes the one after the last probe's
+        while (task.mock.calls.length === 0) {
+            expect(idleGate.release()).toBe(true);
+            await vi.advanceTimersByTimeAsync(0);
+        }
+
+        await expect(ran).resolves.toBe(true);
+        await vi.runAllTimersAsync();
+        expect(probeCallsAtTask).toBeGreaterThan(0);
+        expect(countProbeCalls(harness)).toBe(probeCallsAtTask);
+        expect(task).toHaveBeenCalledOnce();
+    });
+
+    it('waits for an idle period even with no probe queued', async () => {
+        const idleGate = createIdleGate();
+        const probe = createProbe(createHarness(), { waitForIdle: idleGate.waitForIdle });
+        const task = vi.fn(() => Promise.resolve());
+        const ran = probe.runInBackground(task);
+
+        await vi.advanceTimersByTimeAsync(10 * BACKGROUND_PROBE_RECHECK_MILLISECONDS);
+        expect(task).not.toHaveBeenCalled();
+
+        expect(idleGate.release()).toBe(true);
+        await expect(ran).resolves.toBe(true);
+        expect(task).toHaveBeenCalledOnce();
+    });
+
+    it('does not run while media plays, and runs once it stops', async () => {
+        let playing = true;
+        const probe = createProbe(createHarness(), { isPlaybackActive: () => playing });
+        const task = vi.fn(() => Promise.resolve());
+        const ran = probe.runInBackground(task);
+
+        await vi.advanceTimersByTimeAsync(10 * BACKGROUND_PROBE_RECHECK_MILLISECONDS);
+        expect(task).not.toHaveBeenCalled();
+
+        playing = false;
+        await vi.advanceTimersByTimeAsync(BACKGROUND_PROBE_RECHECK_MILLISECONDS);
+        expect(task).toHaveBeenCalledOnce();
+        await expect(ran).resolves.toBe(true);
+    });
+
+    it('is held while a negotiation runs and for the hold after it settles', async () => {
+        const harness = createHarness();
+        // The negotiation's audio decodes wait for the test, well within a probe's timeout
+        const decodes = createDeferred();
+        harness.audioProbe.mockImplementation(async (config: AudioDecoderConfig): Promise<AudioDecoderSupport> => {
+            await decodes.promise;
+            return { config, supported: true };
+        });
+        const probe = createProbe(harness);
+        const negotiation = probe.probe(MPEG2_ITEM);
+        const task = vi.fn(() => Promise.resolve());
+        const ran = probe.runInBackground(task);
+
+        await vi.advanceTimersByTimeAsync(CAPABILITY_PROBE_TIMEOUT_MILLISECONDS / 2);
+        expect(task).not.toHaveBeenCalled();
+
+        decodes.resolve();
+        await negotiation;
+        await vi.advanceTimersByTimeAsync(BACKGROUND_PROBE_NEGOTIATION_HOLD_MILLISECONDS - BACKGROUND_PROBE_RECHECK_MILLISECONDS);
+        expect(task).not.toHaveBeenCalled();
+
+        await vi.advanceTimersByTimeAsync(2 * BACKGROUND_PROBE_RECHECK_MILLISECONDS);
+        expect(task).toHaveBeenCalledOnce();
+        await expect(ran).resolves.toBe(true);
+    });
+
+    it('runs one at a time, in the order the tasks came', async () => {
+        const probe = createProbe(createHarness());
+        const firstCompile = createDeferred();
+        const first = vi.fn(() => firstCompile.promise);
+        const second = vi.fn(() => Promise.resolve());
+        const firstRan = probe.runInBackground(first);
+        const secondRan = probe.runInBackground(second);
+
+        await vi.advanceTimersByTimeAsync(10 * BACKGROUND_PROBE_RECHECK_MILLISECONDS);
+        expect(first).toHaveBeenCalledOnce();
+        expect(second).not.toHaveBeenCalled();
+
+        firstCompile.resolve();
+        await expect(firstRan).resolves.toBe(true);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(second).toHaveBeenCalledOnce();
+        await expect(secondRan).resolves.toBe(true);
+    });
+
+    it('counts a task that rejects as run, and runs the next', async () => {
+        const probe = createProbe(createHarness());
+        const failing = vi.fn(() => Promise.reject(new Error('compile failed')));
+        const next = vi.fn(() => Promise.resolve());
+        const failingRan = probe.runInBackground(failing);
+        const nextRan = probe.runInBackground(next);
+
+        await vi.runAllTimersAsync();
+
+        await expect(failingRan).resolves.toBe(true);
+        await expect(nextRan).resolves.toBe(true);
+        expect(failing).toHaveBeenCalledOnce();
+        expect(next).toHaveBeenCalledOnce();
+    });
+
+    it('is dropped without running once a background timeout halts the background, as is a later one', async () => {
+        const harness = createHarness();
+        // The first AAC decode never finishes, so the warm-up times out ahead of the task
+        harness.nativeAudioOutputProbe.mockImplementationOnce(() => new Promise<boolean>(() => undefined));
+        const probe = createProbe(harness);
+        probe.warmUp();
+        const task = vi.fn(() => Promise.resolve());
+        const ran = probe.runInBackground(task);
+
+        await vi.advanceTimersByTimeAsync(CAPABILITY_PROBE_TIMEOUT_MILLISECONDS);
+        await vi.advanceTimersByTimeAsync(10 * BACKGROUND_PROBE_RECHECK_MILLISECONDS);
+
+        await expect(ran).resolves.toBe(false);
+        const later = vi.fn(() => Promise.resolve());
+        await expect(probe.runInBackground(later)).resolves.toBe(false);
+        expect(task).not.toHaveBeenCalled();
+        expect(later).not.toHaveBeenCalled();
     });
 });
 

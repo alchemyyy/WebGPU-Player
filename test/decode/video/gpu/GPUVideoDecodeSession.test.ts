@@ -517,7 +517,7 @@ function requireFrame(frame: GPUDecodedFrame | null): GPUDecodedFrame {
     return frame;
 }
 
-async function getCreateError(promise: Promise<GPUVideoDecodeSession>): Promise<GPUVideoDecodeError> {
+async function getCreateError(promise: Promise<unknown>): Promise<GPUVideoDecodeError> {
     try {
         await promise;
     } catch (error) {
@@ -915,6 +915,35 @@ describe('GPUVideoDecodeSession', () => {
             await createPackageSession(device, manifest, OUTPUT_FORMAT, REBUILT_PACKAGE_VERSION);
 
             expect(device.shaderModuleCodes).toHaveLength(2);
+        });
+
+        it('precompiles a package\'s decoder before the stream is known, and a session created meanwhile joins that compile', async () => {
+            const device = new MockGPUDevice();
+            const manifest = createManifest({ output: BOTH_OUTPUT_FORMATS });
+
+            const precompiled = GPUVideoDecodeSession.precompile({ decoderPackage: PACKAGE_VERSION, device: device.asDevice(), format: OUTPUT_FORMAT, manifest });
+            const session = await createPackageSession(device, manifest, OUTPUT_FORMAT);
+            await precompiled;
+            await createPackageSession(device, manifest, OUTPUT_FORMAT);
+
+            expect(device.shaderModuleCodes).toEqual([ ...getEntryPointModuleCodes(manifest, OUTPUT_FORMAT).values() ]);
+            expect(device.pipelines.map(pipeline => pipeline.entryPoint)).toEqual([ COPY_ENTRY_POINT ]);
+            session.queuePacket(createPacket(SMALL_PACKET_BYTE_LENGTH, 0, true));
+            expect(session.submitPendingDecodeWork()).toBe(true);
+        });
+
+        it('refuses to precompile an output format the decoder does not list, and compiles nothing', async () => {
+            const device = new MockGPUDevice();
+
+            const error = await getCreateError(GPUVideoDecodeSession.precompile({
+                decoderPackage: PACKAGE_VERSION,
+                device: device.asDevice(),
+                format: TEN_BIT_OUTPUT_FORMAT,
+                manifest: createManifest()
+            }));
+
+            expect(error.failure.code).toBe('format-unsupported');
+            expect(device.shaderModuleCodes).toHaveLength(0);
         });
 
         it('compiles again after a failed compile, and for every session without a package', async () => {

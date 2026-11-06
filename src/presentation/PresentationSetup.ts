@@ -1,9 +1,11 @@
 // How a playback presents: its presentation input, the authorizations that gate the eligibility's presentation routes, and the presenter's color pipeline for the route the eligibility chose.
 // A host calls these around the engine's eligibility; they keep no state, so the host's play options, eligibility, and generations stay its own.
+import { CUSTOM_PACKAGE_VIDEO_CODECS, runCustomDecodeBackgroundTask } from '../capability/CustomDecodeCapabilities';
 import {
     getDolbyVisionReconstructionRawFrameFormat,
     getGPUVideoDecodeTarget,
     getRawVideoPresentationRouteKey,
+    predictGPUVideoDecoder,
     type CustomPlaybackEligibility,
     type CustomPlaybackEligibilityOptions
 } from '../capability/CustomPlaybackEligibility';
@@ -48,7 +50,7 @@ import type {
     GPUVideoDecodeSessionFactory,
     GPUVideoDecodeSessionRequest
 } from '../decode/video/gpu/GPUVideoDecodeFeed';
-import { isGPUDecoderOutputFormat } from '../decode/video/gpu/GPUDecodeFormats';
+import { isGPUDecoderOutputFormat, type GPUDecoderOutputFormat } from '../decode/video/gpu/GPUDecodeFormats';
 import type { VideoDecoderPackage } from '../decode/packages/DecoderPackage';
 import { describeGPUDecoderErrorWord } from '../decode/video/gpu/GPUDecoderManifest';
 import { selectGPUDecodeSessionStream } from '../decode/video/gpu/GPUDecoderStreamFit';
@@ -789,6 +791,97 @@ export function createGPUVideoDecodeSessionFactory(presenter: WebGPUPresenter, o
             session
         };
     };
+}
+
+/** How compiling a decoder ahead of its sessions ended. */
+type GPUVideoDecoderPrecompileResult = 'compiled' | 'device-unavailable' | 'failed';
+
+/**
+ * Compiles a package's decoder for an output format on the presenter's device, which keeps it for the frame-pool route's sessions.
+ * Never rejects: a decoder that fails to compile fails its session the same way, which reports it.
+ */
+async function precompileGPUVideoDecoderPackage(
+    presenter: WebGPUPresenter,
+    decoderPackage: VideoDecoderPackage,
+    format: GPUDecoderOutputFormat
+): Promise<GPUVideoDecoderPrecompileResult> {
+    try {
+        const device = await presenter.getGPUVideoDecodeDevice();
+        if (!device) {
+            return 'device-unavailable';
+        }
+        await GPUVideoDecodeSession.precompile({ decoderPackage, device, format, manifest: decoderPackage.manifest });
+        return 'compiled';
+    } catch {
+        return 'failed';
+    }
+}
+
+/**
+ * Starts compiling the GPU decoder an eligibility chose for the frame-pool route, for its output format on the presenter's device, which keeps it for the route's sessions.
+ * The route creates its session only once the worker has opened the file and described the track, and the session waits for every pipeline of its decoder,
+ * so a host that calls this as soon as it has the eligibility hides that much of a compile the browser has not cached. Any other route compiles nothing.
+ * Resolves once the compile settles, and never rejects: a decoder that fails to compile fails its session the same way, which reports it.
+ */
+export async function precompileGPUVideoDecoder(presenter: WebGPUPresenter, eligibility: CustomPlaybackEligibility): Promise<void> {
+    if (!eligibility.eligible || eligibility.videoOutputMode !== 'frame-pool' || !eligibility.gpuVideoDecoder) {
+        return;
+    }
+    const format = eligibility.rawVideoFrameFormat;
+    if (format === null || !isGPUDecoderOutputFormat(format)) {
+        return;
+    }
+    await precompileGPUVideoDecoderPackage(presenter, eligibility.gpuVideoDecoder.package, format);
+}
+
+/**
+ * Starts compiling the GPU decoder that predictGPUVideoDecoder predicts a direct play of the options takes among the offers, while the host still negotiates the playback.
+ * It starts before the playback's eligibility, whose precompileGPUVideoDecoder then joins the compile; a stream without a prediction compiles nothing.
+ * Resolves once the compile settles, and never rejects.
+ */
+export async function precompilePredictedGPUVideoDecoder(
+    presenter: WebGPUPresenter,
+    offers: readonly GPUVideoDecoderOffer[],
+    options: unknown
+): Promise<void> {
+    const predicted = predictGPUVideoDecoder(options, offers);
+    if (predicted) {
+        await precompileGPUVideoDecoderPackage(presenter, predicted.decoder.package, predicted.format);
+    }
+}
+
+/**
+ * Compiles in the background, on the presenter's device, the GPU decoders later playbacks take from the packages, listed in the order a host offers them.
+ * The device keeps them for the page's sessions, and the browser's shader cache keeps their compiled shaders across page loads, so a later page's session compiles them quickly.
+ * Only codecs no browser decodes are compiled, since no native route comes before their packages: for each such codec and output format, the first package that writes it.
+ * Each package's format compiles as a background task of the page's capability probes, one at a time; the warm-up ends when a task is dropped or the device has no frame pool,
+ * and a package that fails to compile is skipped. Resolves once it ends, and never rejects.
+ */
+export async function warmGPUVideoDecoders(presenter: WebGPUPresenter, decoderPackages: readonly VideoDecoderPackage[]): Promise<void> {
+    const packageVideoCodecs: readonly string[] = CUSTOM_PACKAGE_VIDEO_CODECS;
+    const takenRoutes = new Set<string>();
+    for (const decoderPackage of decoderPackages) {
+        const codecs = decoderPackage.manifest.accepts.codecs.filter((codec: string): boolean => packageVideoCodecs.includes(codec));
+        for (const format of decoderPackage.manifest.outputFormats) {
+            const routes = codecs.map((codec: string): string => `${codec}:${format}`).filter((route: string): boolean => !takenRoutes.has(route));
+            if (routes.length === 0) {
+                continue;
+            }
+            for (const route of routes) {
+                takenRoutes.add(route);
+            }
+            const outcome: { result: GPUVideoDecoderPrecompileResult } = { result: 'device-unavailable' };
+            const ran = await runCustomDecodeBackgroundTask(async (): Promise<void> => {
+                outcome.result = await precompileGPUVideoDecoderPackage(presenter, decoderPackage, format);
+            });
+            if (!ran || outcome.result === 'device-unavailable') {
+                return;
+            }
+            if (outcome.result === 'failed') {
+                break;
+            }
+        }
+    }
 }
 
 /**

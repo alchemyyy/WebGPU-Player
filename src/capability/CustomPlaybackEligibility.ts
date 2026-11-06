@@ -1928,7 +1928,7 @@ function getGPUDecodeOutputFormat(
  * Without a fitting offer, a summary that takes the stream selects the route without a decoder, which only negotiation passes.
  */
 function selectGPUVideoOutput(
-    eligibilityOptions: CustomPlaybackEligibilityOptions,
+    eligibilityOptions: Pick<CustomPlaybackEligibilityOptions, 'allowFramePoolHDR' | 'gpuVideoDecoders'>,
     videoCodec: CustomVideoCodec,
     videoStream: MediaStream,
     colorMetadata: InputColorMetadata,
@@ -1968,7 +1968,7 @@ function selectGPUVideoOutput(
  * when a summary decodes the codec into the format, else null.
  */
 function selectGPUVideoDecoder(
-    eligibilityOptions: CustomPlaybackEligibilityOptions,
+    eligibilityOptions: Pick<CustomPlaybackEligibilityOptions, 'gpuVideoDecoders'>,
     videoCodec: CustomVideoCodec,
     videoStream: MediaStream,
     route: Extract<VideoOutputSelection, { status: 'selected' }> & { maximumCodedHeight: number; maximumCodedWidth: number; rawVideoFrameFormat: GPUDecoderOutputFormat },
@@ -2572,6 +2572,83 @@ export function getGPUVideoDecodeTarget(options: unknown): GPUVideoDecodeTarget 
     }
     const format = getGPUDecodeOutputFormat(videoCodec, selectedVideo.stream, colorMetadata);
     return format ? { codec: videoCodec, format } : null;
+}
+
+/** The GPU decoder a playback is predicted to take, and the output format it decodes into. */
+export type PredictedGPUVideoDecoder = Readonly<{
+    decoder: GPUVideoDecoderSelection
+    format: GPUDecoderOutputFormat
+}>;
+
+type PackageVideoStream = Readonly<{
+    codec: CustomPackageVideoCodec
+    colorMetadata: InputColorMetadata
+    stream: MediaStream
+}>;
+
+/**
+ * Returns the options' presented video stream when only a decoder package decodes its codec, so no native route comes before one,
+ * in a container the engine plays that carries the codec, with color metadata, and with a scan and rotation a route presents.
+ */
+function selectPackageVideoStream(options: unknown): PackageVideoStream | null {
+    const mediaSource = options && typeof options === 'object' ? (options as PlaybackOptions).mediaSource : undefined;
+    if (!mediaSource || typeof mediaSource !== 'object') {
+        return null;
+    }
+    const containerTokens = getContainerTokens(mediaSource.Container);
+    if (!containerTokens.some(isCustomPlaybackContainer)) {
+        return null;
+    }
+    const selectedVideo = selectVideoStream(options, getStreams(mediaSource));
+    if (selectedVideo.status === 'invalid') {
+        return null;
+    }
+    const stream = selectedVideo.stream;
+    const codec = VIDEO_CODEC_ALIASES[normalizeMetadataValue(stream.Codec) ?? ''];
+    const colorMetadata = getPresentationInputColorMetadata(options);
+    if (
+        !codec
+        || !isCustomPackageVideoCodec(codec)
+        || !colorMetadata
+        || !supportsCustomContainerCodecCombination(containerTokens, codec, null)
+        || hasUnsupportedRotation(stream)
+        || codesInterlacedFieldsApart(codec, stream)
+    ) {
+        return null;
+    }
+    return { codec, colorMetadata, stream };
+}
+
+/**
+ * Returns the codec and output format of the GPU decoder a direct play of the options is predicted to take, before the host has what eligibility judges:
+ * a video stream of a codec only a decoder package decodes, in a container the engine plays that carries it, which no native route can take first.
+ * Null for any other stream. A host loads only the packages that decode the target before it predicts the decoder with predictGPUVideoDecoder.
+ */
+export function predictGPUVideoDecodeTarget(options: unknown): GPUVideoDecodeTarget | null {
+    const packageVideo = selectPackageVideoStream(options);
+    if (!packageVideo) {
+        return null;
+    }
+    const format = getGPUDecodeOutputFormat(packageVideo.codec, packageVideo.stream, packageVideo.colorMetadata);
+    return format ? { codec: packageVideo.codec, format } : null;
+}
+
+/**
+ * Returns the GPU decoder and output format a direct play of the options takes among the offers, as eligibility chooses them, for a stream
+ * predictGPUVideoDecodeTarget predicts; null for any other stream, and when no offer decodes the stream and fits the device.
+ * The audio, the play method, and the presentation are not judged, so a playback they refuse has a prediction it never uses.
+ * An HDR stream has none, since the host's tone mapping decides whether a frame pool presents it.
+ */
+export function predictGPUVideoDecoder(options: unknown, gpuVideoDecoders: readonly GPUVideoDecoderOffer[]): PredictedGPUVideoDecoder | null {
+    const packageVideo = selectPackageVideoStream(options);
+    if (!packageVideo) {
+        return null;
+    }
+    const route = selectGPUVideoOutput({ gpuVideoDecoders }, packageVideo.codec, packageVideo.stream, packageVideo.colorMetadata, []);
+    if (route?.status !== 'selected' || !route.gpuVideoDecoder || route.rawVideoFrameFormat === null || !isGPUDecoderOutputFormat(route.rawVideoFrameFormat)) {
+        return null;
+    }
+    return { decoder: route.gpuVideoDecoder, format: route.rawVideoFrameFormat };
 }
 
 /**

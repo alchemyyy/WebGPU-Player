@@ -218,6 +218,18 @@ The `config` binding holds what the decode worker reads from the track for its c
   A playback's session of a kept decoder compiles nothing, sessions created at once share one compile, and a failed compile is not kept.
   A package's new version replaces every decoder its old one compiled, while sessions of the old one keep their own pipelines; nothing else drops a decoder.
   A self-test vector's check compiles a decoder of its own.
+- A session is created only once the worker has opened the file and described the track, and it waits for every pipeline of its decoder, since every packet dispatches every entry point.
+  `GPUVideoDecodeSession.precompile` compiles a package's decoder for an output format into that same cache before the stream is known, so a session created later compiles nothing and one created meanwhile joins the compile.
+  A failed compile is left to the session, which fails the same way.
+  Three calls in `src/presentation/PresentationSetup.ts` start it, earliest first:
+  - `warmGPUVideoDecoders(presenter, videoPackages)` compiles, in the background, the decoders later playbacks would take from packages the host already holds.
+    Only codecs no browser decodes count, since no native route comes before their packages, and each such codec and output format takes the first package that writes it, in the host's order.
+    Each package format is one `runCustomDecodeBackgroundTask`, so it waits behind the background probes, for an idle period, for no negotiation near, and for no playback; the warm-up ends at a dropped task or a device without a frame pool, and skips the rest of a package that fails to compile.
+    Beyond the device's own cache, it leaves the browser's shader cache warm, so a later page's session compiles in milliseconds.
+  - `precompilePredictedGPUVideoDecoder(presenter, offers, options)` compiles the decoder `predictGPUVideoDecoder(options, offers)` in `src/capability/CustomPlaybackEligibility.ts` predicts while the host still negotiates the playback.
+    It predicts only a stream of a codec no browser decodes, in a container the engine plays that carries the codec, with an SDR color and a scan and rotation a route presents, and takes the first offer that decodes and fits it, as eligibility would; `predictGPUVideoDecodeTarget(options)` gives its codec and format first, so a host loads only the packages that match.
+    The audio and the presentation are not judged, so a playback they refuse has compiled a decoder it never uses.
+  - `precompileGPUVideoDecoder(presenter, eligibility)` compiles only the frame-pool route's chosen decoder, as soon as the host has the eligibility.
 - Sizes and counts evaluate once per session, from the stream facts; nothing evaluates per packet, and a picture's own repeat counts only lower a repeat's count.
 - A first session's stream facts come from the container's size, or from the larger of it and the largest picture the parser read in the codec private data, such as an AV1 sequence header's maximum frame size, when the decoder's `accepts` takes that picture size and the device holds its pool, state, scratch buffers, and packet ring; a stream whose frames grow past the container's size, as AV1 resolution changes do, then fits the pool.
   `selectGPUDecodeSessionStream` in `src/decode/video/gpu/GPUDecoderStreamFit.ts` decides, and eligibility checks the container's size the same way, so a stream never becomes ineligible for its declared maximum.
@@ -532,6 +544,8 @@ A block with objects passes through the output stage's peak limiter, since the p
   A 4:0:0 pixel format, `gray`, `gray9`, `gray10`, or `gray12` in either byte order, takes the 4:2:0 format of its depth, and only a decoder whose header declares `monochrome` is offered it.
   A JPEG 2000 stream in `xyz12le` takes I444P12, which a JPEG 2000 decoder writes as limited-range BT.709 Y'CbCr of FFmpeg's conversion of its X'Y'Z' to R'G'B'.
 - The controller takes `gpuVideoDecodeSessionFactory: createGPUVideoDecodeSessionFactory(presenter, { slicing })`, where `slicing` is the host's choice of sliced decode submits, and `play()` takes the eligibility's `gpuVideoDecoder` and `audioDecoder`.
+- The host calls `precompilePredictedGPUVideoDecoder(presenter, offers, options)` without waiting as its negotiation starts, and `precompileGPUVideoDecoder(presenter, eligibility)` without waiting before the rest of its setup, so the decoder compiles while the negotiation, the presentation, the controller, and the worker's open of the file proceed.
+- A host may call `warmGPUVideoDecoders(presenter, videoPackages)` after its background probe warm-up with the packages it already holds; it downloads nothing.
 - An audio track switch passes the new track's `audioDecoder` from its own eligibility to `setAudioStreamIndex`, with its `audioMetadataLayout` (`getAudioMetadataLayout`); the previous track's package and layout never carry over.
 
 ### Verifying a package

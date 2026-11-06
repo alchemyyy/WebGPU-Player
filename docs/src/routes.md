@@ -143,6 +143,9 @@ Each call replaces the previous configuration; `refreshAfterUse`, which defaults
 - A background step that times out marks only its run and halts the background for the page: no later background step runs, and the run's result, like any background result with a `probe-timeout` part, is discarded rather than kept as the page's result.
   A negotiation that needs the probe runs it again.
 - A background run of a probe that holds suspect steps runs after the others; see [Probes that stop the page](#probes-that-stop-the-page).
+- `runCustomDecodeBackgroundTask(task)` runs a host's own work in the same background: after every background probe queued ahead of it, one task at a time, each at a turn a probe step would take.
+  No negotiation promotes a task, a task that rejects counts as run, and the promise resolves whether the task ran; a page whose background halted drops it.
+  `warmGPUVideoDecoders` runs its compiles this way; see [Decoder packages](decoder-packages.md).
 
 ### Stored verdicts
 

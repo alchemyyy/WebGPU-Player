@@ -324,18 +324,21 @@ The backing size is the CSS size times the device pixel ratio, capped by `maxTex
   A new `start` goes out right behind the previous run's `stop`, and the worker starts it at once, while the stopped run unwinds beside it; `session.stop()` does not wait for `stopped` either.
   A stop closes the run's decoders and audio attempt and cancels its reads, and the next run's parser pipeline replaces the stopped run's on the coordinator worker, so the next run never waits on the stopped one.
   A run's `stopped` waits until the audio decode worker released the run's decoded PCM attempts, and the page drops a retired run's frames, packets, and audio as stale.
-  A worker is replaced, never reused, after a generation fails, a message fails validation, or the worker crashes; a start on another video decoder backend also gets a new worker.
+  A worker is replaced, never reused, after a generation fails, a message fails validation, or the worker crashes; a session's start on another video decoder backend also gets a new worker, since the session's earlier runs may still unwind in the old one.
   A retired run that does not post `stopped` within 10 s, or a retired run's failure, replaces the worker at the next start, and such a worker terminates once it holds no run; a start that would leave more than 4 retired runs unwinding in the worker takes a new one.
   A lost audio decode worker fails its run's decoded PCM as `audio-output-failed`, and the decode worker spawns another for its next run.
 - Stop: `controller.destroy` stops the generation, releases the worklet and the sink lease (1.5 s cap), and ends the presenter session.
   Once the stopped run posted `stopped`, the decode worker, with its parser coordinator, parse workers, and audio decode worker, waits for the page's next session, as the next item of a queue starts one, and terminates if none takes it within 30 s (`releaseIdleCustomDecodeWorker` ends the wait at once).
+  A session on either video decoder backend takes it.
+  The worker's first run on another backend than its last run's ends what that backend set up in the worker: the parser coordinator and its parse workers for the GPU decoder, or the decode fence's device for the native one.
   A worker unfit for another generation terminates instead.
 - Source prefetch: a host that knows the URL its next session will play, before it starts the session, calls `prefetchCustomDecodeSource(source)` (`pipeline/CustomDecodeSession.ts`), so the media's first range read overlaps whatever comes before the start, such as the host's own negotiation.
-  The prefetch goes to the worker that session takes: the idle one, or, while a session still holds a worker, that worker once it parks, or else a new worker, whose startup it overlaps too and which a session on any video decoder backend takes.
-  In the worker, `prefetch-source` retains a `UrlSource` for the URL and starts its first read, the read at byte 0 that any run's input begins with; a worker that holds a run ignores it.
+  The prefetch goes to the worker that session takes: the idle one, or a session's worker, which waits for the prefetch until the session is destroyed and takes it then, behind its runs' `stop`, or else a new worker, whose startup it overlaps too.
+  A session on any video decoder backend takes that worker once it holds no run.
+  In the worker, `prefetch-source` retains a `UrlSource` for the URL and starts its first read, the read at byte 0 that any run's input begins with; a worker whose run still holds it ignores it, but a stopped run, whose reads were canceled, does not hold it while it unwinds.
   The session's first run over the same URL and pattern acquires that source and continues on its response, so it sends no second request for the head.
   A run over another URL releases it, as does `release-prefetch` with the prefetch's ID, which the handle's `cancel` posts and which the worker ignores once a run took the source over; no run ever reads another URL's bytes.
-  A source no run takes within 5 s is released, a failed read releases it at once, a later prefetch replaces an earlier one, a prefetch that waits 5 s for a session's worker to park gives up, and a session that takes no idle worker ends the prefetch at once.
+  A source no run takes within 5 s is released, a failed read releases it at once, a later prefetch replaces an earlier one, a prefetch that waits 5 s for a session to be destroyed gives up, and a session that takes no idle worker, as one that starts before the destroyed session's worker parks, ends the prefetch at once.
 
 ## Fallback and renegotiation
 
@@ -376,6 +379,7 @@ Every stale callback is dropped by a generation or revision check:
 - Every seek, audio switch, and paused repaint starts a new run in the session's worker, and each run opens its input again, over the last run's URL source when it reads the same URL (`demux/URLSourceRetention.ts`).
   The source keeps its cache, with the container's header pinned in it and its index once read, and its open responses, so a seek reads the header and index from memory and reads on near where the last run stopped.
   Matroska Cues are read at the first lookup past the start, so a run that starts at 0 never reads the end of the file.
+  An MP4 or MOV movie box is read without the sample tables of a large track other than the first video and audio track, which that track reads at its first lookup and pins like the Cues, unless the source only reads forward.
   A run's stop cancels the reads its input still waits for; a failed run's source, or one no run takes within 5 s, is released, and only by the run, or the prefetch, that took it last.
   After the first preparation over a source, its read-ahead holds 5 s of media and its cache 15 s, at the media's size over its duration, within 8 to 64 MiB and 32 to 192 MiB; a file's cache stays 32 MiB.
 - Decoded PCM gain (volume cubed times normalization) is applied after the limiter and is not capped, so a boost can clip; clipping is counted.

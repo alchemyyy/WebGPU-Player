@@ -248,4 +248,29 @@ describe('the playback worker over a prefetched source', () => {
         expect(getErrorResponses(workerScope)).toEqual([]);
         expect(fetchProbe.getRequestCount()).toBe(1);
     });
+
+    it('takes a prefetch once its run got stop, while the run still unwinds, and the next run continues on its response', async () => {
+        const workerScope = await startDecodeWorker(MEDIA_FILES);
+        const fetchProbe = probeFetches();
+
+        // The stopped run's read waits, so the run is still current, though stopped, when the prefetch arrives in the same task as its stop
+        workerScope.dispatchRequest(createRequest(FIRST_GENERATION, 0));
+        await vi.waitFor(() => {
+            expect(fetchProbe.getRequestCount()).toBe(1);
+        });
+        workerScope.dispatchRequest({ generation: FIRST_GENERATION, type: 'stop' });
+        workerScope.dispatchRequest(createPrefetchRequest(FIRST_PREFETCH_ID, OTHER_MEDIA_FILE_NAME));
+        await vi.waitFor(() => {
+            expect(fetchProbe.getRequestCount()).toBe(2);
+        });
+        expect(fetchProbe.requests[1].url).toBe(getServedURL(OTHER_MEDIA_FILE_NAME));
+        fetchProbe.release();
+        // The stopped run's release leaves the source the prefetch acquired after it
+        await workerScope.waitForStopped(FIRST_GENERATION);
+        const responses = await decodeToEnd(workerScope, createWorkerStartRequest(OTHER_MEDIA_FILE_NAME, { generation: FIRST_GENERATION + 1 }));
+
+        expect(getErrorResponses(workerScope)).toEqual([]);
+        expect(getFrameResponses(responses)).toHaveLength(VP9_HDR10_PLUS_EXPECTATIONS.frames.length);
+        expect(fetchProbe.getRequestCount()).toBe(2);
+    });
 });

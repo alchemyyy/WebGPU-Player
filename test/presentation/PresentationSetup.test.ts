@@ -1,7 +1,11 @@
-import { describe, expect, it, vi, type Mock } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock, type MockInstance } from 'vitest';
 
 import type { CustomPlaybackEligibility, EligibleCustomPlayback } from 'webgpu-player/capability/CustomPlaybackEligibility';
+import type { VideoDecoderPackage } from 'webgpu-player/decode/packages/DecoderPackage';
+import type { GPUDecoderOutputFormat } from 'webgpu-player/decode/video/gpu/GPUDecodeFormats';
 import { GPU_DECODE_SLICE_DISPATCH_COUNT } from 'webgpu-player/decode/video/gpu/GPUDecodeLimits';
+import { createGPUVideoDecoderOffer } from 'webgpu-player/decode/video/gpu/GPUVideoDecoderCatalog';
+import GPUVideoDecodeSession from 'webgpu-player/decode/video/gpu/GPUVideoDecodeSession';
 import type { GPUDecodePacket } from 'webgpu-player/decode/video/gpu/GPUDecodeTypes';
 import {
     alignPresentationInputBitDepth,
@@ -12,7 +16,9 @@ import {
     getFirstUseRawSDRRouteKey,
     getStaticHDRRenderSettings,
     isWebGPUPresentationInput,
+    precompilePredictedGPUVideoDecoder,
     readPresentationInput,
+    warmGPUVideoDecoders,
     type ColorPipelineRequest,
     type HDRRenderConfiguration,
     type PresentationAuthorizationRequest
@@ -30,6 +36,15 @@ import {
     TEST_DECODER_ENTRY_POINT,
     TEST_DECODER_OUTPUT_FORMAT
 } from '../helpers/decoderPackages';
+
+// The page's background tasks, which each test runs at once or holds
+const backgroundTaskMocks = vi.hoisted(() => ({
+    runCustomDecodeBackgroundTask: vi.fn<(task: () => Promise<void>) => Promise<boolean>>()
+}));
+vi.mock('webgpu-player/capability/CustomDecodeCapabilities', async (importOriginal) => ({
+    ...await importOriginal<typeof import('webgpu-player/capability/CustomDecodeCapabilities')>(),
+    runCustomDecodeBackgroundTask: backgroundTaskMocks.runCustomDecodeBackgroundTask
+}));
 
 const GENERATION = 7;
 const DOLBY_VISION_INPUT_PEAK_NITS = 4_000;
@@ -112,6 +127,15 @@ const SLICING_STREAM_SIZE = 64;
 const SLICING_STREAM_BIT_DEPTH = 8;
 const SLICING_PACKET_BYTE_LENGTH = 16;
 const SLICING_FRAME_DURATION_MICROSECONDS = 40_000;
+// Packages a host offers for the warm-up: one of codecs a browser decodes, one of VC-1 and WMV3 in two formats, a later one of VC-1 alone, and one of MPEG-2 and HEVC
+const NATIVE_CODECS_PACKAGE = createVideoDecoderPackageForTest(createVideoDecoderSource({ codecs: [ 'hevc', 'av1' ], id: 'native-codecs', outputFormats: [ 'I420', 'I420P10' ] }));
+const VC1_PACKAGE = createVideoDecoderPackageForTest(createVideoDecoderSource({ codecs: [ 'vc1', 'wmv3' ], id: 'vc1', outputFormats: [ 'I420', 'I420P10' ] }));
+const LATER_VC1_PACKAGE = createVideoDecoderPackageForTest(createVideoDecoderSource({ codecs: [ 'vc1' ], id: 'later-vc1', outputFormats: [ 'I420' ] }));
+const MPEG2_PACKAGE = createVideoDecoderPackageForTest(createVideoDecoderSource({ codecs: [ 'mpeg2video', 'hevc' ], id: 'mpeg2', outputFormats: [ 'I420' ] }));
+const H264_PACKAGE = createVideoDecoderPackageForTest(createVideoDecoderSource({ codecs: [ 'h264' ], id: 'h264', outputFormats: [ 'I420' ] }));
+const LARGE_FRAME_POOL_BYTE_LIMIT = 2 ** 31;
+const VC1_SDR_STREAM = { ...SDR_STREAM, Codec: 'vc1', Height: 1_080, Profile: 'Advanced', Width: 1_920 };
+const DECODE_DEVICE = { label: 'decode device' } as unknown as GPUDevice;
 
 type FakePresenter = {
     configureColorPipeline: Mock
@@ -202,6 +226,27 @@ function createAuthorizationRequest(
 /** An eligibility that chose a route; only the route fields matter here. */
 function createEligibility(route: Partial<EligibleCustomPlayback>): CustomPlaybackEligibility {
     return { dolbyVisionProfile: null, eligible: true, nativeHDRTransfer: undefined, neutralizeHDRColorMetadata: false, ...route } as unknown as CustomPlaybackEligibility;
+}
+
+type DecodePresenter = { getGPUVideoDecodeDevice: Mock<() => Promise<GPUDevice | null>> };
+
+/** A presenter whose decode device is the given one, or none. */
+function createDecodePresenter(device: GPUDevice | null): DecodePresenter {
+    return { getGPUVideoDecodeDevice: vi.fn(() => Promise.resolve(device)) };
+}
+
+function asDecodePresenter(presenter: DecodePresenter): WebGPUPresenter {
+    return presenter as unknown as WebGPUPresenter;
+}
+
+/** A direct play of a stream in Matroska, which the engine plays VC-1 and H.264 in. */
+function createMatroskaOptions(stream: Readonly<Record<string, unknown>>): unknown {
+    return { mediaSource: { Container: 'mkv', MediaStreams: [ stream ] } };
+}
+
+/** Each compile's package and format, in the order they started. */
+function readCompiles(precompile: MockInstance<typeof GPUVideoDecodeSession.precompile>): Array<[ VideoDecoderPackage, GPUDecoderOutputFormat ]> {
+    return precompile.mock.calls.map(([ options ]): [ VideoDecoderPackage, GPUDecoderOutputFormat ] => [ options.decoderPackage as VideoDecoderPackage, options.format ]);
 }
 
 describe('PresentationSetup', () => {
@@ -641,6 +686,130 @@ describe('PresentationSetup', () => {
             } finally {
                 restoreWebGPUGlobals();
             }
+        });
+    });
+
+    describe('warmGPUVideoDecoders', () => {
+        let precompile: MockInstance<typeof GPUVideoDecodeSession.precompile>;
+
+        beforeEach(() => {
+            backgroundTaskMocks.runCustomDecodeBackgroundTask.mockReset().mockImplementation(async (task: () => Promise<void>): Promise<boolean> => {
+                await task();
+                return true;
+            });
+            precompile = vi.spyOn(GPUVideoDecodeSession, 'precompile').mockResolvedValue(undefined);
+        });
+
+        afterEach(() => {
+            precompile.mockRestore();
+        });
+
+        it('compiles each codec only a package decodes into each format, from the first package that writes it', async () => {
+            await warmGPUVideoDecoders(asDecodePresenter(createDecodePresenter(DECODE_DEVICE)), [ NATIVE_CODECS_PACKAGE, VC1_PACKAGE, LATER_VC1_PACKAGE, MPEG2_PACKAGE ]);
+
+            // HEVC and AV1 have native routes first, and the later package writes only a codec and format the VC-1 package took
+            expect(readCompiles(precompile)).toEqual([ [ VC1_PACKAGE, 'I420' ], [ VC1_PACKAGE, 'I420P10' ], [ MPEG2_PACKAGE, 'I420' ] ]);
+            expect(precompile).toHaveBeenNthCalledWith(1, { decoderPackage: VC1_PACKAGE, device: DECODE_DEVICE, format: 'I420', manifest: VC1_PACKAGE.manifest });
+            expect(backgroundTaskMocks.runCustomDecodeBackgroundTask).toHaveBeenCalledTimes(3);
+        });
+
+        it('compiles each format as its own background task, queuing the next only once one has run', async () => {
+            const heldTasks: Array<() => Promise<void>> = [];
+            backgroundTaskMocks.runCustomDecodeBackgroundTask.mockImplementation((task: () => Promise<void>): Promise<boolean> => new Promise<boolean>((resolve) => {
+                heldTasks.push(async (): Promise<void> => {
+                    await task();
+                    resolve(true);
+                });
+            }));
+            const expectedCompiles: Array<[ VideoDecoderPackage, GPUDecoderOutputFormat ]> = [ [ VC1_PACKAGE, 'I420' ], [ VC1_PACKAGE, 'I420P10' ], [ MPEG2_PACKAGE, 'I420' ] ];
+            const warmUp = warmGPUVideoDecoders(asDecodePresenter(createDecodePresenter(DECODE_DEVICE)), [ VC1_PACKAGE, MPEG2_PACKAGE ]);
+
+            for (const [ index, compile ] of expectedCompiles.entries()) {
+                await vi.waitFor(() => expect(heldTasks).toHaveLength(index + 1));
+                // Nothing compiles outside its task, and no later task is queued before this one runs
+                expect(precompile).toHaveBeenCalledTimes(index);
+                await heldTasks[index]();
+                expect(readCompiles(precompile)[index]).toEqual(compile);
+            }
+
+            await expect(warmUp).resolves.toBeUndefined();
+            expect(heldTasks).toHaveLength(expectedCompiles.length);
+        });
+
+        it('stops once the page drops a task', async () => {
+            backgroundTaskMocks.runCustomDecodeBackgroundTask.mockResolvedValueOnce(false);
+            const presenter = createDecodePresenter(DECODE_DEVICE);
+
+            await warmGPUVideoDecoders(asDecodePresenter(presenter), [ VC1_PACKAGE, MPEG2_PACKAGE ]);
+
+            expect(backgroundTaskMocks.runCustomDecodeBackgroundTask).toHaveBeenCalledOnce();
+            expect(presenter.getGPUVideoDecodeDevice).not.toHaveBeenCalled();
+            expect(precompile).not.toHaveBeenCalled();
+        });
+
+        it('stops when the presenter has no decode device', async () => {
+            const presenter = createDecodePresenter(null);
+
+            await warmGPUVideoDecoders(asDecodePresenter(presenter), [ VC1_PACKAGE, MPEG2_PACKAGE ]);
+
+            expect(backgroundTaskMocks.runCustomDecodeBackgroundTask).toHaveBeenCalledOnce();
+            expect(presenter.getGPUVideoDecodeDevice).toHaveBeenCalledOnce();
+            expect(precompile).not.toHaveBeenCalled();
+        });
+
+        it('skips the rest of a package that fails to compile, and goes on with the next package', async () => {
+            precompile.mockRejectedValueOnce(new Error('compile failed'));
+
+            await expect(warmGPUVideoDecoders(asDecodePresenter(createDecodePresenter(DECODE_DEVICE)), [ VC1_PACKAGE, MPEG2_PACKAGE ])).resolves.toBeUndefined();
+
+            expect(readCompiles(precompile)).toEqual([ [ VC1_PACKAGE, 'I420' ], [ MPEG2_PACKAGE, 'I420' ] ]);
+            expect(backgroundTaskMocks.runCustomDecodeBackgroundTask).toHaveBeenCalledTimes(2);
+        });
+    });
+
+    describe('precompilePredictedGPUVideoDecoder', () => {
+        let precompile: MockInstance<typeof GPUVideoDecodeSession.precompile>;
+
+        beforeEach(() => {
+            backgroundTaskMocks.runCustomDecodeBackgroundTask.mockReset();
+            precompile = vi.spyOn(GPUVideoDecodeSession, 'precompile').mockResolvedValue(undefined);
+        });
+
+        afterEach(() => {
+            precompile.mockRestore();
+        });
+
+        it('compiles the predicted decoder\'s package for its format at once, outside the background', async () => {
+            // The first offer writes a format the stream does not take, so the prediction passes it for the second
+            const offers = ([ 'I420P10', 'I420' ] as const).map((format: GPUDecoderOutputFormat) => createGPUVideoDecoderOffer(VC1_PACKAGE, format, LARGE_FRAME_POOL_BYTE_LIMIT));
+
+            await precompilePredictedGPUVideoDecoder(asDecodePresenter(createDecodePresenter(DECODE_DEVICE)), offers, createMatroskaOptions(VC1_SDR_STREAM));
+
+            expect(precompile).toHaveBeenCalledExactlyOnceWith({ decoderPackage: VC1_PACKAGE, device: DECODE_DEVICE, format: 'I420', manifest: VC1_PACKAGE.manifest });
+            expect(backgroundTaskMocks.runCustomDecodeBackgroundTask).not.toHaveBeenCalled();
+        });
+
+        it('compiles nothing for an H.264 stream, which a native route takes first', async () => {
+            const presenter = createDecodePresenter(DECODE_DEVICE);
+
+            await precompilePredictedGPUVideoDecoder(
+                asDecodePresenter(presenter),
+                [ createGPUVideoDecoderOffer(H264_PACKAGE, 'I420', LARGE_FRAME_POOL_BYTE_LIMIT) ],
+                createMatroskaOptions({ ...SDR_STREAM, Height: 1_080, Profile: 'High', Width: 1_920 })
+            );
+
+            expect(presenter.getGPUVideoDecodeDevice).not.toHaveBeenCalled();
+            expect(precompile).not.toHaveBeenCalled();
+        });
+
+        it('never rejects when the compile fails or the presenter has no decode device', async () => {
+            const offers = [ createGPUVideoDecoderOffer(VC1_PACKAGE, 'I420', LARGE_FRAME_POOL_BYTE_LIMIT) ];
+            const options = createMatroskaOptions(VC1_SDR_STREAM);
+            precompile.mockRejectedValueOnce(new Error('compile failed'));
+
+            await expect(precompilePredictedGPUVideoDecoder(asDecodePresenter(createDecodePresenter(DECODE_DEVICE)), offers, options)).resolves.toBeUndefined();
+            await expect(precompilePredictedGPUVideoDecoder(asDecodePresenter(createDecodePresenter(null)), offers, options)).resolves.toBeUndefined();
+            expect(precompile).toHaveBeenCalledOnce();
         });
     });
 });

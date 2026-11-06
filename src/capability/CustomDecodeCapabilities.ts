@@ -3203,6 +3203,12 @@ type BackgroundProbe = Readonly<{
     run: BackgroundCapabilityProbeRun
 }>;
 
+/** A host's background task, which waits behind the page's background probes, and whose promise settles whether it ran. */
+type BackgroundTask = Readonly<{
+    settle: (ran: boolean) => void
+    task: () => Promise<void>
+}>;
+
 /** Resolves after a delay, or as soon as `cancel` settles. */
 function waitForDelay(milliseconds: number, cancel: Promise<void>): Promise<void> {
     return new Promise<void>((resolve) => {
@@ -3240,6 +3246,8 @@ export default class CustomDecodeCapabilityProbe {
     private backgroundDriverActive = false;
     private readonly backgroundProbes = new Map<CustomDecodeProbe, BackgroundProbe>();
     private readonly backgroundQueue = new Map<CustomDecodeProbe, BackgroundProbeKind>();
+    // Host tasks run one at a time, each once the probes queued before its turn are done
+    private readonly backgroundTasks: BackgroundTask[] = [];
     private environment: WebCodecsCapabilityEnvironment | null;
     private isPlaybackActive: () => boolean;
     private negotiationCount = 0;
@@ -3327,6 +3335,18 @@ export default class CustomDecodeCapabilityProbe {
             });
         }
         return this.session;
+    }
+
+    /**
+     * Runs a task in the background once every background probe queued ahead of its turn is done, at a turn the probes would take:
+     * an idle period with no negotiation under way or just settled and no media playing. Tasks run one at a time, in the order they came.
+     * Resolves whether it ran; a task that rejects counts as run. A page whose background halted, after a background timeout or once its probing stopped, drops it.
+     */
+    public runInBackground(task: () => Promise<void>): Promise<boolean> {
+        return new Promise<boolean>((resolve) => {
+            this.backgroundTasks.push({ settle: resolve, task });
+            this.startBackgroundDriver();
+        });
     }
 
     private getEnvironment(): WebCodecsCapabilityEnvironment {
@@ -3544,6 +3564,10 @@ export default class CustomDecodeCapabilityProbe {
                 this.backgroundQueue.set(probe, kind);
             }
         }
+        this.startBackgroundDriver();
+    }
+
+    private startBackgroundDriver(): void {
         if (!this.backgroundDriverActive) {
             this.backgroundDriverActive = true;
             void this.runBackgroundQueue();
@@ -3551,24 +3575,44 @@ export default class CustomDecodeCapabilityProbe {
     }
 
     /**
-     * Runs the background probes one after another, so at most one is ever behind a negotiation's probes in the manager.
+     * Runs the background probes one after another, so at most one is ever behind a negotiation's probes in the manager,
+     * and then the host's tasks, each after the probes queued by its turn.
      * A probe that had a suspect step in flight runs after every other, so the serial round that retries the suspects comes last.
      */
     private async runBackgroundQueue(): Promise<void> {
         try {
             const session = this.getSession();
             await session.readQuarantine();
-            while (this.backgroundQueue.size > 0 && !session.manager.isBackgroundHalted) {
+            while ((this.backgroundQueue.size > 0 || this.backgroundTasks.length > 0) && !session.manager.isBackgroundHalted) {
                 const queued = [ ...this.backgroundQueue ];
-                const [ probe, kind ] = queued.find(([ queuedProbe ]): boolean => !session.holdsSuspectSteps(queuedProbe)) ?? queued[0];
-                this.backgroundQueue.delete(probe);
-                await this.runBackgroundProbe(probe, kind);
+                if (queued.length > 0) {
+                    const [ probe, kind ] = queued.find(([ queuedProbe ]): boolean => !session.holdsSuspectSteps(queuedProbe)) ?? queued[0];
+                    this.backgroundQueue.delete(probe);
+                    await this.runBackgroundProbe(probe, kind);
+                } else {
+                    await this.runBackgroundTask(this.backgroundTasks[0]);
+                    this.backgroundTasks.shift();
+                }
             }
             // After a background timeout only negotiations probe, so the work it left is never joined by more
             this.backgroundQueue.clear();
+            for (const backgroundTask of this.backgroundTasks.splice(0)) {
+                backgroundTask.settle(false);
+            }
         } finally {
             this.backgroundDriverActive = false;
         }
+    }
+
+    private async runBackgroundTask(backgroundTask: BackgroundTask): Promise<void> {
+        // No negotiation promotes a host's task, so only a background turn starts it
+        await new BackgroundCapabilityProbeRun(this.waitForBackgroundTurn).waitForTurn();
+        try {
+            await backgroundTask.task();
+        } catch {
+            // The task reports its own failures
+        }
+        backgroundTask.settle(true);
     }
 
     private async runBackgroundProbe(probe: CustomDecodeProbe, kind: BackgroundProbeKind): Promise<void> {
@@ -3756,4 +3800,12 @@ export function warmCustomDecodeCapabilities(): boolean {
     }
     defaultCapabilityProbe.warmUp();
     return true;
+}
+
+/**
+ * Runs a task in the background of the page's capability probes, after the probes queued ahead of it, at a turn they would take:
+ * an idle period with no negotiation near and no media playing. One task runs at a time; resolves whether it ran.
+ */
+export function runCustomDecodeBackgroundTask(task: () => Promise<void>): Promise<boolean> {
+    return defaultCapabilityProbe.runInBackground(task);
 }
