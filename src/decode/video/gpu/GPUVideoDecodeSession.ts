@@ -311,6 +311,19 @@ function requireVisibleRectangle(stream: GPUDecodeStreamFacts): void {
     }
 }
 
+/** Requires the decoder's features and a device that binds every storage buffer of the decoder's bind group layout, which its compile needs whatever the stream. */
+function requireDeviceBindings(device: GPUDevice, manifest: GPUDecoderManifest, layoutEntries: readonly GPUBindGroupLayoutEntry[]): void {
+    const missingFeatures = manifest.requiredFeatures.filter(feature => !device.features.has(feature));
+    if (missingFeatures.length > 0) {
+        throw new GPUVideoDecodeError({ code: 'feature-missing', detail: missingFeatures.join(', ') });
+    }
+    const storageBufferCount = layoutEntries.filter(entry => entry.buffer !== undefined && entry.buffer.type !== 'uniform').length;
+    const storageBufferLimit = device.limits.maxStorageBuffersPerShaderStage;
+    if (storageBufferCount > storageBufferLimit) {
+        throw new GPUVideoDecodeError({ code: 'storage-buffer-count', detail: `${storageBufferCount} > ${storageBufferLimit}` });
+    }
+}
+
 /**
  * Requires the decoder's features, a device that binds every storage buffer of the decoder's bind group layout,
  * and buffer and binding limits that hold the state, each scratch buffer, and the packet ring whole.
@@ -321,15 +334,7 @@ function requireDeviceSupport(
     sizes: GPUDecoderBufferSizes,
     layoutEntries: readonly GPUBindGroupLayoutEntry[]
 ): void {
-    const missingFeatures = manifest.requiredFeatures.filter(feature => !device.features.has(feature));
-    if (missingFeatures.length > 0) {
-        throw new GPUVideoDecodeError({ code: 'feature-missing', detail: missingFeatures.join(', ') });
-    }
-    const storageBufferCount = layoutEntries.filter(entry => entry.buffer !== undefined && entry.buffer.type !== 'uniform').length;
-    const storageBufferLimit = device.limits.maxStorageBuffersPerShaderStage;
-    if (storageBufferCount > storageBufferLimit) {
-        throw new GPUVideoDecodeError({ code: 'storage-buffer-count', detail: `${storageBufferCount} > ${storageBufferLimit}` });
-    }
+    requireDeviceBindings(device, manifest, layoutEntries);
     const failure = findGPUDecoderBufferLimitFailure(manifest, sizes, getGPUFramePoolByteLimit(device.limits));
     if (failure) {
         throw new GPUVideoDecodeError(failure);
@@ -648,6 +653,26 @@ export default class GPUVideoDecodeSession {
         const session = await GPUVideoDecodeSession.allocate(options, { bindGroupLayout, dispatchRuns, pipelines, sizes });
         session.observeDeviceLoss();
         return session;
+    }
+
+    /**
+     * Compiles a package's decoder for an output format on a device ahead of its first session, which the stream's facts need not wait for.
+     * The device keeps it under the package, so a session created later compiles nothing, and one created meanwhile joins this compile.
+     * Rejects with the GPUVideoDecodeError create would raise for the format, the device's features or bindings, or the compile.
+     */
+    static async precompile(options: Readonly<{
+        decoderPackage: DecoderPackageVersion
+        device: GPUDevice
+        format: GPUDecoderOutputFormat
+        manifest: GPUDecoderManifest
+    }>): Promise<void> {
+        const { decoderPackage, device, format, manifest } = options;
+        if (!manifest.outputFormats.includes(format)) {
+            throw new GPUVideoDecodeError({ code: 'format-unsupported', detail: `${format} not in ${manifest.outputFormats.join(', ')}` });
+        }
+        const layoutEntries = createGPUDecoderBindGroupLayoutEntries(manifest.buffers.length);
+        requireDeviceBindings(device, manifest, layoutEntries);
+        await getCompiledGPUDecoder(device, decoderPackage, format, (): Promise<GPUDecoderCompiledPipelines> => compileDecoder(device, manifest, format, layoutEntries));
     }
 
     /** Constructs a session inside out-of-memory and validation scopes, so a refused allocation fails the session instead of presentation. */

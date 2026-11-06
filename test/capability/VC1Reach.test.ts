@@ -10,7 +10,9 @@ import CustomDecodeCapabilityProbe, {
 import {
     getCustomPlaybackEligibility,
     getGPUVideoDecodeTarget,
-    hasPotentialCustomPlaybackVideoRoute
+    hasPotentialCustomPlaybackVideoRoute,
+    predictGPUVideoDecoder,
+    predictGPUVideoDecodeTarget
 } from 'webgpu-player/capability/CustomPlaybackEligibility';
 import type { CustomPlaybackRuntimeAvailability } from 'webgpu-player/capability/CustomPlaybackRuntime';
 import type { VideoDecoderPackage } from 'webgpu-player/decode/packages/DecoderPackage';
@@ -93,6 +95,11 @@ const SANDBOX_SOURCE_ID = 'local/media.mkv';
 const VC1_DECODER_PROJECT = 'vc1';
 const VC1_PROJECT_PACKAGE = createVideoDecoderPackageForTest(readDecoderProjectSource(VC1_DECODER_PROJECT));
 const ADVANCED_ONLY_PACKAGE = createVideoDecoderPackageForTest(createVideoDecoderSource({ codecs: [ 'vc1' ], name: 'VC-1 Advanced', outputFormats: [ 'I420' ] }));
+// A package that writes VC-1 only in a 10-bit format, a package of codecs a browser decodes, and a frame pool limit no 1080p pool fits
+const TEN_BIT_ONLY_PACKAGE = createVideoDecoderPackageForTest(createVideoDecoderSource({ codecs: [ 'vc1' ], id: 'vc1-ten-bit', outputFormats: [ 'I420P10' ] }));
+const NATIVE_CODECS_PACKAGE = createVideoDecoderPackageForTest(createVideoDecoderSource({ codecs: [ 'h264', 'hevc' ], id: 'native-codecs', outputFormats: [ 'I420' ] }));
+const SMALL_FRAME_POOL_BYTE_LIMIT = 2 ** 20;
+const ADVANCED_VC1_FIELDS = Object.freeze({ Codec: 'vc1', Height: VC1_HEIGHT, Profile: 'Advanced', Width: VC1_WIDTH });
 
 type StreamFields = Readonly<Record<string, unknown>>;
 
@@ -245,5 +252,107 @@ describe('VC-1 and WMV3 reach', () => {
         });
 
         expect(eligibility).toMatchObject({ eligible: true, gpuVideoDecoder: { codec: 'vc1' }, videoOutputMode: 'frame-pool' });
+    });
+});
+
+describe('predicted GPU video decoders', () => {
+    describe('predictGPUVideoDecodeTarget', () => {
+        it('predicts an Advanced profile VC-1 stream in Matroska decodes as vc1 into I420, and Matroska WMV3 as wmv3', () => {
+            expect(predictGPUVideoDecodeTarget(createPlaybackOptions(ADVANCED_VC1_FIELDS, MATROSKA_CONTAINER))).toEqual({ codec: 'vc1', format: 'I420' });
+            expect(predictGPUVideoDecodeTarget(createPlaybackOptions({ Codec: 'wmv3', Profile: 'Main' }, MATROSKA_CONTAINER))).toEqual({ codec: 'wmv3', format: 'I420' });
+        });
+
+        it.each([
+            [ 'H.264', { Codec: 'h264', Profile: 'High' } ],
+            [ 'HEVC', { Codec: 'hevc', Profile: 'Main' } ]
+        ])('predicts nothing for %s, which a native route takes before any package', (_label: string, fields: StreamFields) => {
+            const options = createPlaybackOptions(fields, MATROSKA_CONTAINER);
+
+            expect(predictGPUVideoDecodeTarget(options)).toBeNull();
+            expect(predictGPUVideoDecoder(options, createOffers(NATIVE_CODECS_PACKAGE))).toBeNull();
+        });
+
+        it.each([
+            [ 'a container the engine does not play', ADVANCED_VC1_FIELDS, 'rmvb' ],
+            [ 'an ISO base media file, which carries no WMV3', { Codec: 'wmv3', Profile: 'Main' }, ISO_BASE_MEDIA_CONTAINER ],
+            [ 'an MPEG transport stream, which carries no WMV3', { Codec: 'wmv3', Profile: 'Main' }, TRANSPORT_STREAM_CONTAINER ]
+        ])('predicts nothing for a stream in %s', (_label: string, fields: StreamFields, container: string) => {
+            expect(predictGPUVideoDecodeTarget(createPlaybackOptions(fields, container))).toBeNull();
+            expect(predictGPUVideoDecoder(createPlaybackOptions(fields, container), createOffers(VC1_PROJECT_PACKAGE))).toBeNull();
+        });
+
+        it('predicts nothing without a media source', () => {
+            expect(predictGPUVideoDecodeTarget({ ...createPlaybackOptions(ADVANCED_VC1_FIELDS, MATROSKA_CONTAINER), mediaSource: undefined })).toBeNull();
+            expect(predictGPUVideoDecodeTarget(null)).toBeNull();
+        });
+
+        it('predicts nothing for a rotated stream, which no route presents', () => {
+            expect(predictGPUVideoDecodeTarget(createPlaybackOptions({ ...ADVANCED_VC1_FIELDS, Rotation: 90 }, MATROSKA_CONTAINER))).toBeNull();
+            expect(predictGPUVideoDecodeTarget(createPlaybackOptions({ ...ADVANCED_VC1_FIELDS, Rotation: 0 }, MATROSKA_CONTAINER))).toEqual({ codec: 'vc1', format: 'I420' });
+        });
+
+        it('keeps interlaced VC-1, which the deinterlacing pass presents, and predicts nothing for interlaced JPEG 2000, which codes its fields apart', () => {
+            const jpeg2000Fields = { BitDepth: 12, Codec: 'jpeg2000', PixelFormat: 'yuv444p12le' };
+
+            expect(predictGPUVideoDecodeTarget(createPlaybackOptions({ ...ADVANCED_VC1_FIELDS, IsInterlaced: true }, MATROSKA_CONTAINER)))
+                .toEqual({ codec: 'vc1', format: 'I420' });
+            expect(predictGPUVideoDecodeTarget(createPlaybackOptions(jpeg2000Fields, 'mj2'))).not.toBeNull();
+            expect(predictGPUVideoDecodeTarget(createPlaybackOptions({ ...jpeg2000Fields, IsInterlaced: true }, 'mj2'))).toBeNull();
+        });
+    });
+
+    describe('predictGPUVideoDecoder', () => {
+        const options = createPlaybackOptions(ADVANCED_VC1_FIELDS, MATROSKA_CONTAINER);
+
+        it('picks the first offer that decodes the stream, as eligibility does', async () => {
+            const offers = [ ...createOffers(NATIVE_CODECS_PACKAGE), ...createOffers(ADVANCED_ONLY_PACKAGE), ...createOffers(VC1_PROJECT_PACKAGE) ];
+
+            const predicted = predictGPUVideoDecoder(options, offers);
+            const eligibility = getCustomPlaybackEligibility(options, await probeCapabilitiesWithoutWebCodecs(), {
+                allowRawHDR: false,
+                gpuVideoDecoders: offers,
+                runtimeAvailability: AVAILABLE_RUNTIME
+            });
+
+            expect(predicted).toEqual({ decoder: { codec: 'vc1', decoderId: ADVANCED_ONLY_PACKAGE.id, package: ADVANCED_ONLY_PACKAGE }, format: 'I420' });
+            expect(eligibility).toMatchObject({ eligible: true, gpuVideoDecoder: predicted?.decoder, rawVideoFrameFormat: predicted?.format });
+        });
+
+        it('skips an offer whose frame pool the device cannot hold, and one in another output format', () => {
+            const offers = [
+                createGPUVideoDecoderOffer(ADVANCED_ONLY_PACKAGE, 'I420', SMALL_FRAME_POOL_BYTE_LIMIT),
+                ...createOffers(TEN_BIT_ONLY_PACKAGE),
+                ...createOffers(VC1_PROJECT_PACKAGE)
+            ];
+
+            expect(predictGPUVideoDecoder(options, offers)).toEqual({
+                decoder: { codec: 'vc1', decoderId: VC1_PROJECT_PACKAGE.id, package: VC1_PROJECT_PACKAGE },
+                format: 'I420'
+            });
+        });
+
+        it('predicts nothing without an offer, or without one that decodes the codec', () => {
+            expect(predictGPUVideoDecoder(options, [])).toBeNull();
+            expect(predictGPUVideoDecoder(options, createOffers(TEN_BIT_ONLY_PACKAGE))).toBeNull();
+            expect(predictGPUVideoDecoder(createPlaybackOptions({ Codec: 'wmv3', Profile: 'Main' }, MATROSKA_CONTAINER), createOffers(ADVANCED_ONLY_PACKAGE))).toBeNull();
+        });
+
+        it('predicts nothing for an HDR stream, whose frame pool the host\'s tone mapping decides', () => {
+            const tenBitFields = { ...ADVANCED_VC1_FIELDS, BitDepth: 10 };
+            const hdrOptions = createPlaybackOptions({
+                ...tenBitFields,
+                ColorPrimaries: 'bt2020',
+                ColorSpace: 'bt2020nc',
+                ColorTransfer: 'smpte2084',
+                VideoRange: 'HDR',
+                VideoRangeType: 'HDR10'
+            }, MATROSKA_CONTAINER);
+
+            // The same offer decodes the stream's SDR counterpart, so only the HDR keeps the prediction away
+            expect(predictGPUVideoDecoder(createPlaybackOptions(tenBitFields, MATROSKA_CONTAINER), createOffers(TEN_BIT_ONLY_PACKAGE)))
+                .toMatchObject({ decoder: { package: TEN_BIT_ONLY_PACKAGE }, format: 'I420P10' });
+            expect(predictGPUVideoDecodeTarget(hdrOptions)).toEqual({ codec: 'vc1', format: 'I420P10' });
+            expect(predictGPUVideoDecoder(hdrOptions, createOffers(TEN_BIT_ONLY_PACKAGE))).toBeNull();
+        });
     });
 });

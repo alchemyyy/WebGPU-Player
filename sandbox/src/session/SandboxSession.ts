@@ -44,6 +44,7 @@ import {
     getGPUVideoDecoderOffers,
     getStaticHDRRenderSettings,
     isWebGPUPresentationInput,
+    precompileGPUVideoDecoder,
     readPresentationInput,
     type GPUVideoDecodeSessionFactoryOptions,
     type HDRRenderConfiguration,
@@ -602,6 +603,8 @@ export function createSandboxSession(options: SandboxSessionOptions): SandboxSes
         if (!eligibility.eligible) {
             throw failCommand('session', 'ineligible', eligibility.reason);
         }
+        // The frame-pool route's session compiles its decoder only once the worker has opened the file, so the compile starts now, alongside the setup
+        void precompileGPUVideoDecoder(presenter, eligibility);
         const unmetOverride = describeUnmetRouteOverride(override, eligibility);
         if (unmetOverride !== null) {
             recordFailure('session', 'route-override-unmet', unmetOverride);
