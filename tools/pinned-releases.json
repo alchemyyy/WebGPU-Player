@@ -1,7 +1,7 @@
 {
   "decoders": {
     "repository": "alchemyyy/webgpu-player-decoders",
-    "tag": "v0.1.0",
+    "tag": "v0.1.1",
     "files": {
       "av1.wasm": "97f835047debc9c1f44d764691c9820f4019c4991dddc231e0bd9dfdb02f42cf",
       "dts.wasm": "cc8454c5a6c7672f47c3a4b6ef7e2e4bf412805ab11491687d6f8fbc2bc005db",
@@ -12,7 +12,7 @@
       "mpeg4.wasm": "e2f7a52f98ab89983a6dd7a14c797841baa4f640caf2908d1274e0c2bb82c5c9",
       "truehd.wasm": "af594a327e706205d3da60050398d34e0cfa0d45c9de809c648c6661df3d8273",
       "uncompressed.wasm": "493ce5cc0d1b9fa49410e679d71c6af8c896870cb2fc3e75b643e548a51016e1",
-      "vc1.wasm": "f9dab604910142553072d384df44b5e746884a87af862211a24ccd4ff3d1db73",
+      "vc1.wasm": "e8582f18b79ff9bc7382fed7ce37d05dbda763433a9dfbd988933da49b479e04",
       "wma.wasm": "42c7d0ed7a9d110c3fdbded1a6e9a1cb45c99fddb84c32d5cdfb7ae174f7ffea"
     }
   },
