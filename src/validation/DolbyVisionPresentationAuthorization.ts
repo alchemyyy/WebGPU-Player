@@ -31,12 +31,10 @@ import type {
     RawDolbyVisionFrameFormat
 } from '../presentation/passes/PassTypes';
 import type { PresentationExecutor } from '../presentation/passes/PresentationExecutor';
-import { VALIDATION_ERROR_FILTER } from '../presentation/WebGPUConstants';
 import type { DolbyVisionReconstructionProfile } from '../presentation/PresentationInput';
 import { createDolbyVisionAuthorizationRPUVector } from '../capability/vectors/DolbyVisionAuthorizationVector';
 import GPUAuthorizationDeadline from './GPUAuthorizationDeadline';
 import { GPUCanvasPixelReader } from './GPUCanvasReadback';
-import { discardErrorScope } from './GPUErrorScope';
 import {
     calculateRawHDRAuthorizationOutputDither,
     createAuthorizationExecutor,
@@ -45,14 +43,15 @@ import {
     describeAuthorizationDecision,
     describeAuthorizationError,
     describeReadbackFailure,
-    encodeAuthorizationFrame,
     evaluateRawHDRVectorObservations,
     getAuthorizationTargetUsage,
     isAuthorizationTargetFormat,
+    isRetriedAuthorizationDecision,
     RAW_HDR_AUTHORIZATION_VECTOR_HEIGHT,
     RAW_HDR_AUTHORIZATION_VECTOR_SAMPLES,
     RAW_HDR_AUTHORIZATION_VECTOR_WIDTH,
     sampleRawI420P10Frame,
+    submitAuthorizationFrames,
     type AuthorizationReferencePlan,
     type AuthorizationStep,
     type RawHDRAuthorizationRouteKey,
@@ -700,7 +699,6 @@ export class DolbyVisionPresentationAuthorizationRunner {
         let targetTexture: GPUTexture | null = null;
         let executor: PresentationExecutor | null = null;
         let pixelReader: GPUCanvasPixelReader | null = null;
-        let errorScopePushed = false;
         let step: AuthorizationStep = 'executor';
         const deadline = new GPUAuthorizationDeadline(device);
         try {
@@ -732,19 +730,14 @@ export class DolbyVisionPresentationAuthorizationRunner {
                 const scenario = scenarios[scenarioIndex];
                 step = 'render';
                 executor.writeDolbyVisionRPU(scenario.packedRPUData);
-                device.pushErrorScope(VALIDATION_ERROR_FILTER);
-                errorScopePushed = true;
-                device.queue.submit([ encodeAuthorizationFrame(
-                    device,
+                const submission = submitAuthorizationFrames(device, [ {
                     executor,
-                    { enhancementFrame: scenario.enhancementFrame, frame: scenario.frame, kind: 'planes' },
-                    targetTexture,
-                    'WebGPU Dolby Vision authorization commands'
-                ) ]);
+                    label: 'WebGPU Dolby Vision authorization commands',
+                    source: { enhancementFrame: scenario.enhancementFrame, frame: scenario.frame, kind: 'planes' },
+                    targetTexture
+                } ]);
                 await deadline.wait(waitForGPUCompletion(device, device.queue.onSubmittedWorkDone()));
-                const validationPromise = device.popErrorScope();
-                errorScopePushed = false;
-                const validationError = await deadline.wait(validationPromise);
+                const validationError = await deadline.wait(submission);
                 if (validationError) {
                     return createRejectedDecision(
                         probe,
@@ -804,9 +797,6 @@ export class DolbyVisionPresentationAuthorizationRunner {
             return createRejectedDecision(probe, classifyFailure(error), describeAuthorizationError(step, error));
         } finally {
             deadline.destroy();
-            if (errorScopePushed) {
-                discardErrorScope(device);
-            }
             pixelReader?.destroy();
             executor?.destroy();
             targetTexture?.destroy();
@@ -841,11 +831,11 @@ export class DolbyVisionPresentationAuthorizationRegistry {
         }
     }
 
-    /** Returns the decision for one device and target format, starting a probe only when none is cached. */
+    /** Returns the decision for one device and target format, starting a probe only when none is cached or the cached one's deadline cancelled it. */
     public authorize(device: GPUDevice, targetFormat: GPUTextureFormat): Promise<DolbyVisionAuthorizationDecision> {
         const deviceCache = this.getDeviceCache(device);
         const cachedProbe = deviceCache.probes.get(targetFormat);
-        if (cachedProbe) {
+        if (cachedProbe && !isRetriedAuthorizationDecision(cachedProbe.decision)) {
             return cachedProbe.promise;
         }
 

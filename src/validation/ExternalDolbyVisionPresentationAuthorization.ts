@@ -23,14 +23,14 @@ import type {
     PresentationFrameSource
 } from '../presentation/passes/PassTypes';
 import type { PresentationExecutor } from '../presentation/passes/PresentationExecutor';
-import { INTERMEDIATE_TEXTURE_FORMAT, VALIDATION_ERROR_FILTER } from '../presentation/WebGPUConstants';
+import { INTERMEDIATE_TEXTURE_FORMAT } from '../presentation/WebGPUConstants';
 import { createDolbyVisionAuthorizationRPUVector } from '../capability/vectors/DolbyVisionAuthorizationVector';
+import { canHoldVideoFrameFormat } from '../capability/VideoFrameFormatSupport';
 import GPUAuthorizationDeadline from './GPUAuthorizationDeadline';
 import {
     GPUCanvasPixelReader,
     type GPUCanvasPixelsReadbackResult
 } from './GPUCanvasReadback';
-import { discardErrorScope } from './GPUErrorScope';
 import {
     calculateRawHDRAuthorizationOutputDither,
     createAuthorizationExecutor,
@@ -39,14 +39,15 @@ import {
     describeAuthorizationDecision,
     describeAuthorizationError,
     describeReadbackFailure,
-    encodeAuthorizationFrame,
     evaluateRawHDRVectorObservations,
     getAuthorizationTargetUsage,
     isAuthorizationTargetFormat,
+    isRetriedAuthorizationDecision,
     RAW_HDR_AUTHORIZATION_VECTOR_HEIGHT,
     RAW_HDR_AUTHORIZATION_VECTOR_SAMPLES,
     RAW_HDR_AUTHORIZATION_VECTOR_WIDTH,
     READBACK_CODE_SCALE,
+    submitAuthorizationFrames,
     type AuthorizationReferencePlan,
     type AuthorizationStep,
     type RawHDRVectorObservation
@@ -73,6 +74,8 @@ const EXTERNAL_AUTHORIZATION_TOLERANCE = 8 / READBACK_CODE_SCALE;
 // A float target keeps the recovered 10-bit codes exact through the readback
 const EXTERNAL_INPUT_PROBE_TARGET_FORMAT: GPUTextureFormat = INTERMEDIATE_TEXTURE_FORMAT;
 const EXTERNAL_INPUT_SIGNAL_TOLERANCE = 8 / MAXIMUM_10_BIT_CODE;
+// The format of the frame the probe imports, a software-backed 10-bit frame
+const EXTERNAL_AUTHORIZATION_FRAME_FORMAT = 'I420P10';
 
 /**
  * The input probe's signal step: the browser's BT.709 limited-range texture back to the vector's 10-bit codes, normalized.
@@ -109,7 +112,7 @@ const EXTERNAL_INPUT_PROBE_CHAIN: BuiltinChain = {
 };
 
 type ExtendedVideoFrameBufferInit = Omit<VideoFrameBufferInit, 'format'> & {
-    format: 'I420P10'
+    format: typeof EXTERNAL_AUTHORIZATION_FRAME_FORMAT
 };
 
 type CachedProbe = {
@@ -321,9 +324,6 @@ export function createExternalDolbyVisionShaderSignature(
 
 /** Builds the exact software-backed 10-bit BT.709 frame imported by the probe. */
 export function createExternalDolbyVisionAuthorizationFrame(): VideoFrame {
-    if (typeof VideoFrame === 'undefined') {
-        throw new Error('video-frame-api-unavailable');
-    }
     const sourceFrame = createRawHDRAuthorizationVector('I420P10:bt2020-ncl:bt2020:limited:pq');
     const frameInit: ExtendedVideoFrameBufferInit = {
         codedHeight: sourceFrame.codedHeight,
@@ -336,7 +336,7 @@ export function createExternalDolbyVisionAuthorizationFrame(): VideoFrame {
         },
         displayHeight: sourceFrame.displayHeight,
         displayWidth: sourceFrame.displayWidth,
-        format: 'I420P10',
+        format: EXTERNAL_AUTHORIZATION_FRAME_FORMAT,
         layout: sourceFrame.planes.map(plane => ({
             offset: plane.byteOffset,
             stride: plane.bytesPerRow
@@ -357,8 +357,6 @@ function classifyFailure(
             return 'device-lost';
         case 'timeout':
             return 'timeout';
-        case 'video-frame-api-unavailable':
-            return 'gpu-api-unavailable';
         default:
             break;
     }
@@ -468,6 +466,10 @@ export class ExternalDolbyVisionPresentationAuthorizationRunner {
                 plans.output.failure ?? plans.inputProbe.failure ?? routeKey
             );
         }
+        // Shipping Safari holds no 10-bit format in a VideoFrame, so the frame could never be built; compile nothing for it
+        if (!canHoldVideoFrameFormat(EXTERNAL_AUTHORIZATION_FRAME_FORMAT)) {
+            return createRejectedDecision(probe, 'video-frame-creation-failed', `${EXTERNAL_AUTHORIZATION_FRAME_FORMAT} unsupported`);
+        }
 
         let targetTexture: GPUTexture | null = null;
         let inputProbeTexture: GPUTexture | null = null;
@@ -476,7 +478,6 @@ export class ExternalDolbyVisionPresentationAuthorizationRunner {
         let pixelReader: GPUCanvasPixelReader | null = null;
         let inputPixelReader: GPUCanvasPixelReader | null = null;
         let frame: VideoFrame | null = null;
-        let errorScopePushed = false;
         let step: AuthorizationStep = 'executor';
         const deadline = new GPUAuthorizationDeadline(device);
         try {
@@ -513,31 +514,23 @@ export class ExternalDolbyVisionPresentationAuthorizationRunner {
                 usage: targetUsage.usage
             });
 
-            device.pushErrorScope(VALIDATION_ERROR_FILTER);
-            errorScopePushed = true;
             // Each executor imports the frame while it encodes, so an encode failure is an import failure
             step = 'import';
             const source: PresentationFrameSource = { kind: 'external', source: frame };
-            const inputProbeCommandBuffer = encodeAuthorizationFrame(
-                device,
-                inputProbeExecutor,
+            const submission = submitAuthorizationFrames(device, [ {
+                executor: inputProbeExecutor,
+                label: 'WebGPU external Dolby Vision authorization input probe commands',
                 source,
-                inputProbeTexture,
-                'WebGPU external Dolby Vision authorization input probe commands'
-            );
-            const commandBuffer = encodeAuthorizationFrame(
-                device,
+                targetTexture: inputProbeTexture
+            }, {
                 executor,
+                label: 'WebGPU external Dolby Vision authorization commands',
                 source,
-                targetTexture,
-                'WebGPU external Dolby Vision authorization commands'
-            );
+                targetTexture
+            } ]);
             step = 'render';
-            device.queue.submit([ inputProbeCommandBuffer, commandBuffer ]);
             await deadline.wait(waitForGPUCompletion(device, device.queue.onSubmittedWorkDone()));
-            const validationPromise = device.popErrorScope();
-            errorScopePushed = false;
-            const validationError = await deadline.wait(validationPromise);
+            const validationError = await deadline.wait(submission);
             if (validationError) {
                 return createRejectedDecision(probe, 'gpu-validation-failed', validationError.message);
             }
@@ -647,9 +640,6 @@ export class ExternalDolbyVisionPresentationAuthorizationRunner {
             return createRejectedDecision(probe, classifyFailure(error, step), describeAuthorizationError(step, error));
         } finally {
             deadline.destroy();
-            if (errorScopePushed) {
-                discardErrorScope(device);
-            }
             frame?.close();
             inputPixelReader?.destroy();
             pixelReader?.destroy();
@@ -685,14 +675,14 @@ export class ExternalDolbyVisionPresentationAuthorizationRegistry {
         }
     }
 
-    /** Returns a deduplicated decision for one exact device and target. */
+    /** Returns a deduplicated decision for one exact device and target, probing again when the cached probe's deadline cancelled it. */
     public authorize(
         device: GPUDevice,
         targetFormat: GPUTextureFormat
     ): Promise<ExternalDolbyVisionAuthorizationDecision> {
         const deviceCache = this.getDeviceCache(device);
         const cachedProbe = deviceCache.probes.get(targetFormat);
-        if (cachedProbe) {
+        if (cachedProbe && !isRetriedAuthorizationDecision(cachedProbe.decision)) {
             return cachedProbe.promise;
         }
 

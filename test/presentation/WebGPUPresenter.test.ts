@@ -2948,6 +2948,22 @@ describe('WebGPUPresenter', () => {
         expect(presenter.getDolbyVisionAuthorizationTelemetry('profile4-fel', 'I444P12').status).toBe('rejected');
     });
 
+    it('starts the external HDR probes on first use, never with the device', async () => {
+        webSettingsMockState.hdrToneMappingEnabled = true;
+        installGPU(createGPUHarness().gpu);
+        const presenter = new WebGPUPresenter(vi.fn());
+
+        // Creating the device prewarms the Dolby Vision routes once HDR tone mapping reads enabled; the external HDR probes stay unstarted
+        await presenter.prewarmRawSDRPresentationAuthorization();
+        await vi.waitFor(() => {
+            expect(new Set(dolbyVisionAuthorizationMockState.prewarmRouteNames)).toEqual(new Set(DEFAULT_PREWARMED_DOLBY_VISION_ROUTE_NAMES));
+        });
+        expect(externalHDRAuthorizationMockState.prewarmCalls).toHaveLength(0);
+
+        await presenter.waitForExternalHDRAuthorizationPrewarm();
+        expect(externalHDRAuthorizationMockState.prewarmCalls).toHaveLength(1);
+    });
+
     it.each([
         [ 7, 'I422P10', [ 'I422P10:profile7-base', 'I422P10:profile7-fel' ] ],
         [ 4, 'I444P12', [ 'I444P12:profile4-base', 'I444P12:profile4-fel' ] ],

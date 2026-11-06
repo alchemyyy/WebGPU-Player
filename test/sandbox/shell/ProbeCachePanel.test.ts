@@ -4,7 +4,8 @@ import {
     CAPABILITY_PROBE_STORE_KEY,
     clearStoredCapabilityProbeVerdicts,
     configureCapabilityProbeStore,
-    getDefaultCapabilityProbeStore
+    getDefaultCapabilityProbeStore,
+    type CapabilityProbeCeiling
 } from 'webgpu-player/capability/CapabilityProbeStore';
 
 import { createProbeCachePanel, describeStoredProbeVerdicts } from '../../../sandbox/src/ui/panels/ProbeCachePanel';
@@ -42,12 +43,15 @@ describe('ProbeCachePanel', () => {
     it('shows each probe that stopped a page with the steps it had in flight', () => {
         const text = describeStoredProbeVerdicts({
             ageMilliseconds: 0,
+            blockedSteps: [],
+            ceiling: null,
             crashedProbes: [
                 { probe: 'h264-profiles', steps: [] },
                 { probe: 'native-audio', steps: [ 'check mp4a.40.2', 'decode aac' ] }
             ],
             fingerprint: { adapter: null, buildKey: BUILD_KEY, userAgent: 'Mozilla/5.0', userAgentData: null },
             probes: [],
+            suspectSteps: [],
             writtenAtMilliseconds: 0
         });
 
@@ -55,5 +59,40 @@ describe('ProbeCachePanel', () => {
             'crashed h264-profiles',
             'crashed native-audio (check mp4a.40.2, decode aac)'
         ]));
+        expect(text).not.toMatch(/^(blocked|suspect|ceiling)/mu);
+    });
+
+    it('shows the blocked steps, the suspect steps, and the concurrency ceiling', () => {
+        const text = describeStoredProbeVerdicts({
+            ageMilliseconds: 0,
+            blockedSteps: [ 'decode mp4a.40.2 6ch 48000Hz' ],
+            ceiling: { bytes: 1024, decoders: 2 },
+            crashedProbes: [],
+            fingerprint: { adapter: null, buildKey: BUILD_KEY, userAgent: 'Mozilla/5.0', userAgentData: null },
+            probes: [],
+            suspectSteps: [ 'decode hvc1.2.4.L153.B0 3840x2160 prefer-hardware' ],
+            writtenAtMilliseconds: 0
+        });
+        const lines = text.split('\n');
+
+        expect(lines.filter((line) => line.startsWith('blocked'))).toEqual([ expect.stringContaining('decode mp4a.40.2 6ch 48000Hz') ]);
+        expect(lines.filter((line) => line.startsWith('suspect'))).toEqual([ expect.stringContaining('decode hvc1.2.4.L153.B0 3840x2160 prefer-hardware') ]);
+        expect(lines.filter((line) => line.startsWith('ceiling'))).toEqual([ expect.stringMatching(/1024.*2/u) ]);
+    });
+
+    it('shows only the capped dimensions of the ceiling', () => {
+        const describeCeiling = (ceiling: CapabilityProbeCeiling): string[] => describeStoredProbeVerdicts({
+            ageMilliseconds: 0,
+            blockedSteps: [],
+            ceiling,
+            crashedProbes: [],
+            fingerprint: { adapter: null, buildKey: BUILD_KEY, userAgent: 'Mozilla/5.0', userAgentData: null },
+            probes: [],
+            suspectSteps: [],
+            writtenAtMilliseconds: 0
+        }).split('\n').filter((line) => line.startsWith('ceiling'));
+
+        expect(describeCeiling({ bytes: null, decoders: 47 })).toEqual([ 'ceiling 47 decoders' ]);
+        expect(describeCeiling({ bytes: 1_048_575, decoders: null })).toEqual([ 'ceiling 1048575 bytes' ]);
     });
 });

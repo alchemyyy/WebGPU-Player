@@ -411,6 +411,88 @@ export function createWebGPUDeviceHarness(options: WebGPUDeviceHarnessOptions = 
     return harness;
 }
 
+/** A submitted command buffer as the error-scope stack sees it: the textures its render passes drew into and its copies read. */
+export type ScopedCommandBuffer = {
+    copiedTextures: readonly MockGPUTexture[]
+    renderedTextures: readonly MockGPUTexture[]
+};
+
+/** Returns the validation message a submission raises, or null for a valid one. */
+export type SubmissionValidation = (commandBuffers: readonly ScopedCommandBuffer[]) => string | null;
+
+/** The device's error-scope stack, for a test to check that every scope pushed was popped. */
+export type ErrorScopeStack = {
+    readonly openScopeCount: number
+};
+
+type ErrorScope = {
+    error: GPUError | null
+    filter: GPUErrorFilter
+};
+
+/**
+ * Gives a harness's device WebGPU's one error-scope stack: a push opens a scope, a submission's validation error lands in the innermost
+ * validation scope open when it is submitted, else is uncaptured, and a pop settles with the popped scope's first error; popping an empty stack rejects.
+ * Its command buffers carry the textures they rendered and copied, which `validateSubmission` judges.
+ */
+export function installErrorScopeStack(harness: WebGPUDeviceHarness, validateSubmission: SubmissionValidation): ErrorScopeStack {
+    const scopes: ErrorScope[] = [];
+    const createCommandEncoder = harness.device.createCommandEncoder as unknown as MockFunction;
+    const createRecordingEncoder = createCommandEncoder.getMockImplementation();
+    if (!createRecordingEncoder) {
+        throw new Error('The harness command encoder has no implementation');
+    }
+    createCommandEncoder.mockImplementation((descriptor?: GPUCommandEncoderDescriptor) => {
+        const encoder = createRecordingEncoder(descriptor) as Record<string, MockFunction>;
+        const commandBuffer = { copiedTextures: [] as MockGPUTexture[], renderedTextures: [] as MockGPUTexture[] };
+        const beginRenderPass = encoder.beginRenderPass;
+        const copyTextureToBuffer = encoder.copyTextureToBuffer;
+        encoder.beginRenderPass = vi.fn((passDescriptor: GPURenderPassDescriptor) => {
+            for (const attachment of passDescriptor.colorAttachments) {
+                if (attachment) {
+                    commandBuffer.renderedTextures.push((attachment.view as unknown as MockGPUTextureView).texture);
+                }
+            }
+            return beginRenderPass(passDescriptor);
+        });
+        encoder.copyTextureToBuffer = vi.fn((source: GPUTexelCopyTextureInfo, destination: GPUTexelCopyBufferInfo): void => {
+            commandBuffer.copiedTextures.push(source.texture as unknown as MockGPUTexture);
+            copyTextureToBuffer(source, destination);
+        });
+        encoder.finish = vi.fn(() => commandBuffer);
+        return encoder;
+    });
+    harness.pushErrorScope.mockImplementation((filter: GPUErrorFilter): void => {
+        scopes.push({ error: null, filter });
+    });
+    harness.popErrorScope.mockImplementation((): Promise<GPUError | null> => {
+        const scope = scopes.pop();
+        return scope ?
+            Promise.resolve(scope.error) :
+            Promise.reject(new DOMException('The error scope stack is empty', 'OperationError'));
+    });
+    harness.queueSubmit.mockImplementation((commandBuffers: readonly ScopedCommandBuffer[]): void => {
+        const message = validateSubmission(commandBuffers);
+        if (message === null) {
+            return;
+        }
+        const error = { message } as GPUError;
+        // The innermost scope is the last pushed
+        const scope = [ ...scopes ].reverse().find((openScope: ErrorScope): boolean => openScope.filter === 'validation');
+        if (!scope) {
+            harness.dispatchUncapturedError(error);
+        } else if (!scope.error) {
+            // A scope keeps its first error
+            scope.error = error;
+        }
+    });
+    return {
+        get openScopeCount(): number {
+            return scopes.length;
+        }
+    };
+}
+
 /** Returns the writes to the buffers with a label, in queue order. */
 export function getBufferWrites(harness: WebGPUDeviceHarness, label: string): RecordedBufferWrite[] {
     return harness.bufferWrites.filter((write: RecordedBufferWrite): boolean => write.buffer.label === label);

@@ -50,14 +50,17 @@ import {
 } from 'webgpu-player/validation/RawHDRPresentationAuthorization';
 
 import {
+    createDeferred,
     createWebGPUDeviceHarness,
     DEFAULT_MAXIMUM_TEXTURE_DIMENSION,
     getBufferWrites,
     getBuffers,
     getShaderCodes,
+    installErrorScopeStack,
     installWebGPUGlobals,
     type MockGPUTexture,
     type ReadbackTexel,
+    type ScopedCommandBuffer,
     type WebGPUDeviceHarness
 } from '../helpers/webGPUDeviceHarness';
 
@@ -65,6 +68,9 @@ const PQ_ROUTE_KEY: RawHDRAuthorizationRouteKey = 'I420P10:bt2020-ncl:bt2020:lim
 const TARGET_FORMAT: GPUTextureFormat = 'bgra8unorm';
 const UNREADABLE_TARGET_FORMAT: GPUTextureFormat = 'rgba16float';
 const OTHER_TARGET_FORMAT: GPUTextureFormat = 'rgba8unorm';
+// The target whose render the scope stack rejects, while the probe rendering into TARGET_FORMAT beside it is valid
+const FAULTY_TARGET_FORMAT: GPUTextureFormat = OTHER_TARGET_FORMAT;
+const CONCURRENT_PROBE_COUNT = 2;
 // The authorization joins a reference plan's pass modules with this separator before signing them
 const PLAN_SHADER_CODE_SEPARATOR = '\u0000';
 const SUPERSEDED_REFERENCE_SHADER_CODE = 'superseded reference shader';
@@ -550,6 +556,62 @@ describe('RawHDRPresentationAuthorization', () => {
         expect(getBuffers(harness, READBACK_BUFFER_LABEL)).toEqual([]);
         expect(harness.textures.filter((texture: MockGPUTexture): boolean => texture.label === TARGET_TEXTURE_LABEL)).toHaveLength(1);
         expectEveryResourceDestroyed(harness);
+    });
+
+    it('gives concurrent probes each their own validation scope, rejecting a faulty route and authorizing a healthy one', async () => {
+        const harness = createDeviceHarness(createRouteObservations(PQ_ROUTE_KEY));
+        const scopes = installErrorScopeStack(harness, (commandBuffers: readonly ScopedCommandBuffer[]): string | null => (
+            commandBuffers.some((commandBuffer: ScopedCommandBuffer): boolean => commandBuffer.renderedTextures.some(
+                (texture: MockGPUTexture): boolean => texture.format === FAULTY_TARGET_FORMAT
+            )) ? SIMULATED_VALIDATION_ERROR : null
+        ));
+        // No render completes before both are submitted, so a scope held across that wait would be open across the other probe's submission
+        const allSubmitted = createDeferred<undefined>();
+        let completionCount = 0;
+        harness.queueOnSubmittedWorkDone.mockImplementation((): Promise<undefined> => {
+            completionCount += 1;
+            if (completionCount === CONCURRENT_PROBE_COUNT) {
+                allSubmitted.resolve(undefined);
+            }
+            return allSubmitted.promise;
+        });
+        const runner = new RawHDRPresentationAuthorizationRunner();
+
+        const [ faultyDecision, healthyDecision ] = await Promise.all([
+            runner.validate(harness.device, FAULTY_TARGET_FORMAT, PQ_ROUTE_KEY),
+            runner.validate(harness.device, TARGET_FORMAT, PQ_ROUTE_KEY)
+        ]);
+
+        expect(faultyDecision).toMatchObject({
+            failureDetail: SIMULATED_VALIDATION_ERROR,
+            failureReason: 'gpu-validation-failed',
+            status: 'rejected',
+            targetFormat: FAULTY_TARGET_FORMAT
+        });
+        expect(healthyDecision).toMatchObject({ failureReason: null, status: 'authorized', targetFormat: TARGET_FORMAT });
+        expect(completionCount).toBe(CONCURRENT_PROBE_COUNT);
+        expect(scopes.openScopeCount).toBe(0);
+    });
+
+    it('probes a route again after its deadline cancelled the probe, reporting the timeout until then', async () => {
+        vi.useFakeTimers();
+        vi.mocked(PresentationExecutor.create).mockImplementationOnce(() => new Promise<PresentationExecutor>(() => undefined));
+        const harness = createDeviceHarness(createRouteObservations(PQ_ROUTE_KEY));
+        const registry = new RawHDRPresentationAuthorizationRegistry();
+        const metadata = createPQColorMetadata();
+        const timedOut = registry.authorize(harness.device, TARGET_FORMAT, PQ_ROUTE_KEY);
+
+        await vi.advanceTimersByTimeAsync(AUTHORIZATION_TIMEOUT_MILLISECONDS);
+
+        await expect(timedOut).resolves.toMatchObject({ failureReason: 'timeout', status: 'rejected' });
+        expect(registry.getAuthorizationFailure(harness.device, TARGET_FORMAT, metadata, 'I420P10')).toBe(`timeout: ${PQ_ROUTE_KEY} executor`);
+        const retried = registry.authorize(harness.device, TARGET_FORMAT, PQ_ROUTE_KEY);
+        expect(retried).not.toBe(timedOut);
+        await expect(retried).resolves.toMatchObject({ failureReason: null, status: 'authorized' });
+        expect(registry.isAuthorized(harness.device, TARGET_FORMAT, metadata, 'I420P10')).toBe(true);
+        // A decision the probe reached is kept
+        expect(registry.authorize(harness.device, TARGET_FORMAT, PQ_ROUTE_KEY)).toBe(retried);
+        expect(PresentationExecutor.create).toHaveBeenCalledTimes(2);
     });
 
     it('rejects a bounded executor creation timeout and destroys the late executor', async () => {

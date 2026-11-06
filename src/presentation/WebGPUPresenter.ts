@@ -3574,10 +3574,10 @@ export default class WebGPUPresenter {
             null;
         this.installExecutor(result, revision);
         this.rawHDRAuthorization.prewarmSDR(device, canvasFormat);
+        // The external HDR probes decode a Main 10 frame, so they start on first use, at an HDR negotiation or playback, never with the device
         void isHDRToneMappingEnabled().then((enabled: boolean): void => {
             if (enabled && this.device === device && this.canvasFormat === canvasFormat) {
                 this.rawHDRAuthorization.prewarm(device, canvasFormat);
-                this.externalHDRAuthorization.prewarm(device, canvasFormat);
                 this.externalDolbyVisionAuthorization.prewarm(device, canvasFormat);
                 for (const authorization of this.getPrewarmedDolbyVisionAuthorizations(null)) {
                     authorization.prewarm(device, canvasFormat);

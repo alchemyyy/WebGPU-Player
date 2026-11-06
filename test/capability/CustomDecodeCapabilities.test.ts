@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi, type Mock } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 
 import CustomDecodeCapabilityProbe, {
     createNativeAudioOutputProbe,
@@ -26,6 +26,13 @@ import CustomDecodeCapabilityProbe, {
 } from 'webgpu-player/capability/CustomDecodeCapabilities';
 import { createNativeSevenPointOneAudioCapabilityVector } from 'webgpu-player/capability/vectors/NativeSevenPointOneAudioCapabilityVectors';
 
+import {
+    CAPABILITY_PROBE_TIMEOUT_MILLISECONDS,
+    createRecordingStore,
+    UNAFFECTED_BROWSER,
+    type RecordingStore
+} from '../helpers/capabilityProbeSession';
+
 type CapabilityEnvironmentHarness = {
     audioProbe: Mock
     environment: WebCodecsCapabilityEnvironment
@@ -46,7 +53,6 @@ type NativeSurroundAudioSupport = Readonly<{
     }>
 }>;
 
-const CAPABILITY_PROBE_TIMEOUT_MILLISECONDS = 2_000;
 // The fingerprint of a zero-filled 4K I420P10 copy in its tight plane layout
 const ZERO_UHD_I420P10_FRAME_FINGERPRINT = 667_501_752;
 const UHD_I420P10_ALLOCATION_SIZE = 24_883_200;
@@ -133,6 +139,8 @@ function createEnvironment(
         audioProbe,
         environment: {
             audioDecoder: { isConfigSupported: audioProbe },
+            browserIdentity: UNAFFECTED_BROWSER,
+            canHoldVideoFrameFormat: () => true,
             nativeAudioOutputProbe,
             nativeDolbyVisionVideoOutputProbe,
             nativeHDRVideoOutputProbe,
@@ -153,99 +161,6 @@ describe('CustomDecodeCapabilityProbe', () => {
     afterEach(() => {
         vi.useRealTimers();
         vi.unstubAllGlobals();
-    });
-
-    it('serializes decoder-backed output probes', async () => {
-        const harness = createEnvironment(new Set<string>(), new Set<string>());
-        let activeHeavyProbeCount = 0;
-        let heavyProbeInvocationCount = 0;
-        let maximumActiveHeavyProbeCount = 0;
-        const observeHeavyProbe = async <Value>(value: Value): Promise<Value> => {
-            activeHeavyProbeCount += 1;
-            heavyProbeInvocationCount += 1;
-            maximumActiveHeavyProbeCount = Math.max(maximumActiveHeavyProbeCount, activeHeavyProbeCount);
-            try {
-                await Promise.resolve();
-                return value;
-            } finally {
-                activeHeavyProbeCount -= 1;
-            }
-        };
-        harness.environment.audioDecoder = {
-            isConfigSupported: vi.fn(async (config: AudioDecoderConfig) => ({
-                config,
-                supported: true
-            }))
-        };
-        harness.environment.videoDecoder = {
-            isConfigSupported: vi.fn(async (config: VideoDecoderConfig) => ({
-                config,
-                supported: true
-            }))
-        };
-        harness.environment.nativeAudioOutputProbe = vi.fn(() => observeHeavyProbe(true));
-        harness.environment.nativeDolbyVisionVideoOutputProbe = vi.fn(
-            () => observeHeavyProbe({
-                outputSupported: true
-            })
-        );
-        harness.environment.nativeHDRVideoOutputProbe = vi.fn(
-            () => observeHeavyProbe({
-                outputSupported: true
-            })
-        );
-        harness.environment.nativeVideoOutputProbe = vi.fn(() => observeHeavyProbe(true));
-        harness.environment.rawHDRVideoOutputProbe = vi.fn(
-            () => observeHeavyProbe({
-                outputCopySupported: true
-            })
-        );
-
-        await new CustomDecodeCapabilityProbe(harness.environment).probe();
-
-        expect(heavyProbeInvocationCount).toBeGreaterThan(20);
-        expect(maximumActiveHeavyProbeCount).toBe(1);
-    });
-
-    it('does not start queued heavy probes after the active probe times out', async () => {
-        vi.useFakeTimers();
-        const supportedAudioCodecs = new Set([
-            'mp4a.40.2',
-            'opus',
-            'flac',
-            'mp3',
-            'vorbis'
-        ]);
-        const harness = createEnvironment(new Set<string>(), supportedAudioCodecs);
-        const nativeAudioOutputProbe = vi.fn((probeRequest: {
-            configuration: AudioDecoderConfig
-        }): Promise<boolean> => {
-            if (probeRequest.configuration.codec === 'mp4a.40.2') {
-                return new Promise<boolean>(() => undefined);
-            }
-            return Promise.resolve(true);
-        });
-        harness.environment.h264ProfileProbe = null;
-        harness.environment.nativeAudioOutputProbe = nativeAudioOutputProbe;
-        const probePromise = new CustomDecodeCapabilityProbe(harness.environment).probe();
-
-        await vi.advanceTimersByTimeAsync(0);
-        expect(nativeAudioOutputProbe).toHaveBeenCalledOnce();
-        expect(nativeAudioOutputProbe.mock.calls[0][0].configuration.codec).toBe('mp4a.40.2');
-
-        await vi.advanceTimersByTimeAsync(CAPABILITY_PROBE_TIMEOUT_MILLISECONDS);
-        const capabilities = await probePromise;
-
-        expect(nativeAudioOutputProbe).toHaveBeenCalledOnce();
-        expect(capabilities.audio.aac).toMatchObject({
-            reason: 'probe-timeout',
-            status: 'unknown'
-        });
-        expect(capabilities.audio.opus).toMatchObject({
-            reason: 'probe-timeout',
-            status: 'unknown'
-        });
-        expect(capabilities.audio.flac.reason).toBe('probe-timeout');
     });
 
     it('does not create a native audio output probe without both WebCodecs APIs', () => {
@@ -647,7 +562,8 @@ describe('CustomDecodeCapabilityProbe', () => {
             const sevenPointOneRequests = harness.nativeAudioOutputProbe.mock.calls.filter(
                 call => call[0].configuration.numberOfChannels === 8
             );
-            expect(sevenPointOneRequests).toHaveLength(1);
+            // The refused decode ran beside the other probes' calls, so it decoded once more alone before it counted
+            expect(sevenPointOneRequests).toHaveLength(2);
             const request = sevenPointOneRequests[0][0];
             expect(request).toMatchObject({
                 codec,
@@ -888,11 +804,16 @@ describe('CustomDecodeCapabilityProbe', () => {
         ));
         const probePromise = new CustomDecodeCapabilityProbe({
             audioDecoder: { isConfigSupported: audioProbe },
+            browserIdentity: UNAFFECTED_BROWSER,
+            canHoldVideoFrameFormat: () => true,
+            hardwareConcurrency: 1,
             rawHDRVideoOutputProbe,
             videoDecoder: { isConfigSupported: videoProbe }
         }).probe();
 
-        await vi.advanceTimersByTimeAsync(CAPABILITY_PROBE_TIMEOUT_MILLISECONDS);
+        // A call that never settles keeps its decoder, so once it outlives another timeout the manager stops the page's probing,
+        // and every step still waiting reads as timed out
+        await vi.advanceTimersByTimeAsync(2 * CAPABILITY_PROBE_TIMEOUT_MILLISECONDS);
         const capabilities = await probePromise;
 
         expect(capabilities.video.h264).toMatchObject({
@@ -1262,9 +1183,10 @@ describe('CustomDecodeCapabilityProbe', () => {
                         const audioData = {
                             close: closeAudioData,
                             copyTo: (destination: AllowSharedBufferSource): void => {
-                                (destination as Float32Array).fill(output.sampleValue);
+                                new Float32Array((destination as Uint8Array).buffer).fill(output.sampleValue);
                             },
                             duration: output.duration,
+                            format: 'f32',
                             numberOfChannels: output.numberOfChannels,
                             numberOfFrames: output.numberOfFrames,
                             sampleRate: output.sampleRate,
@@ -1337,6 +1259,7 @@ describe('CustomDecodeCapabilityProbe', () => {
                         throw new DOMException('Copy failed', 'OperationError');
                     },
                     duration: 21_333,
+                    format: 'f32-planar',
                     numberOfChannels: 2,
                     numberOfFrames: 1_024,
                     sampleRate: 48_000,
@@ -1373,18 +1296,72 @@ describe('CustomDecodeCapabilityProbe', () => {
         expect(closeAudioData).toHaveBeenCalledOnce();
     });
 
+    it('qualifies interleaved 5.1 silence without asking for another sample format', async () => {
+        const channelCount = 6;
+        const frameCount = 1_024;
+        const copyFormats: (AudioSampleFormat | undefined)[] = [];
+        class FakeAudioDecoder {
+            public state: CodecState = 'unconfigured';
+
+            public constructor(private readonly callbacks: AudioDecoderInit) {}
+
+            public close(): void {
+                this.state = 'closed';
+            }
+
+            public configure(): void {
+                this.state = 'configured';
+            }
+
+            public decode(): void {
+                this.callbacks.output({
+                    close: vi.fn(),
+                    copyTo: (destination: AllowSharedBufferSource, options: AudioDataCopyToOptions): void => {
+                        copyFormats.push(options.format);
+                        expect(destination.byteLength).toBe(frameCount * channelCount * Float32Array.BYTES_PER_ELEMENT);
+                    },
+                    duration: 21_333,
+                    format: 'f32',
+                    numberOfChannels: channelCount,
+                    numberOfFrames: frameCount,
+                    sampleRate: 48_000,
+                    timestamp: 0
+                } as unknown as AudioData);
+            }
+
+            public flush(): Promise<void> {
+                return Promise.resolve();
+            }
+        }
+        class FakeEncodedAudioChunk {}
+        vi.stubGlobal('AudioDecoder', FakeAudioDecoder);
+        vi.stubGlobal('EncodedAudioChunk', FakeEncodedAudioChunk);
+
+        await expect(createNativeAudioOutputProbe()?.({
+            codec: 'aac',
+            configuration: { codec: 'mp4a.40.2', numberOfChannels: channelCount, sampleRate: 48_000 },
+            encodedChunks: [ { data: new Uint8Array([ 1 ]), duration: 21_333, timestamp: 0 } ],
+            expectedNumberOfChannels: channelCount,
+            expectedNumberOfFrames: frameCount,
+            expectedSampleRate: 48_000,
+            expectedTimestamp: 0
+        })).resolves.toBe(true);
+        expect(copyFormats).toEqual([ 'f32' ]);
+    });
+
     it.each([
         { name: 'WAVE 7.1 order', order: [ 0, 1, 2, 3, 4, 5, 6, 7 ], supported: true },
         { name: 'Vorbis and Opus order', order: [ 0, 2, 1, 6, 7, 4, 5, 3 ], supported: false },
         { name: '7.1(wide) order', order: [ 0, 1, 2, 3, 6, 7, 4, 5 ], supported: false },
         { name: 'six channels', order: [ 0, 1, 2, 3, 4, 5 ], supported: false },
         { name: 'silence', order: [ -1, -1, -1, -1, -1, -1, -1, -1 ], supported: false }
-    ])('qualifies native 7.1 tone output across AudioData outputs: $name', async ({ order, supported }) => {
+    ])('qualifies interleaved native 7.1 tone output across AudioData outputs: $name', async ({ order, supported }) => {
         const sampleRate = 48_000;
         const framesPerOutput = 1_024;
         const outputCount = 4;
         const tones = createNativeSevenPointOneAudioCapabilityVector('aac').channelTones;
         const closeAudioData = vi.fn();
+        const copyFormats: (AudioSampleFormat | undefined)[] = [];
         class FakeAudioDecoder {
             public state: CodecState = 'unconfigured';
 
@@ -1408,15 +1385,19 @@ describe('CustomDecodeCapabilityProbe', () => {
                     this.callbacks.output({
                         close: closeAudioData,
                         copyTo: (destination: AllowSharedBufferSource, options: AudioDataCopyToOptions): void => {
-                            const samples = destination as Float32Array;
-                            const sourceChannel = order[options.planeIndex];
-                            for (let frame = 0; frame < samples.length; frame += 1) {
-                                samples[frame] = sourceChannel < 0 ?
-                                    0 :
-                                    0.25 * Math.sin((2 * Math.PI * tones[sourceChannel].frequency * (firstFrame + frame)) / sampleRate);
+                            copyFormats.push(options.format);
+                            const samples = new Float32Array((destination as Uint8Array).buffer);
+                            for (let frame = 0; frame < framesPerOutput; frame += 1) {
+                                for (let channel = 0; channel < order.length; channel += 1) {
+                                    const sourceChannel = order[channel];
+                                    samples[(frame * order.length) + channel] = sourceChannel < 0 ?
+                                        0 :
+                                        0.25 * Math.sin((2 * Math.PI * tones[sourceChannel].frequency * (firstFrame + frame)) / sampleRate);
+                                }
                             }
                         },
                         duration: 21_333,
+                        format: 'f32',
                         numberOfChannels: order.length,
                         numberOfFrames: framesPerOutput,
                         sampleRate,
@@ -1440,6 +1421,7 @@ describe('CustomDecodeCapabilityProbe', () => {
             expectedSampleRate: sampleRate
         })).resolves.toBe(supported);
         expect(closeAudioData).toHaveBeenCalledTimes(outputCount);
+        expect(copyFormats.every(format => format === 'f32')).toBe(true);
     });
 
     it('closes a native audio decoder whose flush never settles', async () => {
@@ -2382,11 +2364,14 @@ describe('CustomDecodeCapabilityProbe', () => {
         expect(copyOptions).toEqual([ undefined ]);
     });
 
-    it('closes an owned raw frame when copyTo never settles', async () => {
+    it('keeps a raw frame open until its pending copy settles on timeout, and settles the probe after it', async () => {
         vi.useFakeTimers();
         const closeDecoder = vi.fn();
         const closeFrame = vi.fn();
-        const copyFrame = vi.fn(() => new Promise<readonly PlaneLayout[]>(() => undefined));
+        const copyFinishers: Array<(layouts: readonly PlaneLayout[]) => void> = [];
+        const copyFrame = vi.fn(() => new Promise<readonly PlaneLayout[]>(resolve => {
+            copyFinishers.push(resolve);
+        }));
         class FakeVideoFrame {
             public readonly codedHeight = 2_160;
             public readonly codedWidth = 3_840;
@@ -2449,12 +2434,23 @@ describe('CustomDecodeCapabilityProbe', () => {
             expectedFormat: 'I420P10'
         });
 
+        let probeSettled = false;
+        void probePromise?.finally(() => {
+            probeSettled = true;
+        });
         await vi.advanceTimersByTimeAsync(CAPABILITY_PROBE_TIMEOUT_MILLISECONDS);
 
-        await expect(probePromise).resolves.toEqual({ outputCopySupported: false });
         expect(copyFrame).toHaveBeenCalledOnce();
-        expect(closeFrame).toHaveBeenCalledOnce();
         expect(closeDecoder).toHaveBeenCalledOnce();
+        expect(closeFrame).not.toHaveBeenCalled();
+        expect(probeSettled).toBe(false);
+
+        for (const finishCopy of copyFinishers) {
+            finishCopy([]);
+        }
+
+        await expect(probePromise).resolves.toEqual({ outputCopySupported: false });
+        expect(closeFrame).toHaveBeenCalledOnce();
     });
 
     it('fails raw output qualification when the decoder flush stalls', async () => {
@@ -2805,5 +2801,296 @@ describe('item-scoped capability probe selection', () => {
         expect(hasProbedCustomDecodeSelection(capabilities, createItem([ SDR_MPEG2_STREAM ]))).toBe(true);
         expect(hasProbedCustomDecodeSelection(capabilities, {})).toBe(false);
         expect(hasProbedCustomDecodeSelection(unscopedCapabilities, createItem([ SDR_H264_STREAM ]))).toBe(true);
+    });
+});
+
+describe('capability probe steps on the page manager', () => {
+    // How long each observed browser call takes, so the calls admitted together overlap
+    const CALL_MILLISECONDS = 10;
+    const SDR_VP8_STREAM = Object.freeze({ BitDepth: 8, Codec: 'vp8', Type: 'Video', VideoRange: 'SDR', VideoRangeType: 'SDR' });
+    // The raw HEVC decode at Ultra HD holds 10-bit references and a 10-bit copy, the most bytes any probe call holds
+    const LARGEST_DECODE = /^decode hvc1\.2\.4\.L153\.B0 3840x2160 .*I420P10$/u;
+    const WEBKIT_BEFORE_SAFARI_27 = Object.freeze({ engine: 'webkit', majorVersion: 26 } as const);
+
+    type CallStart = Readonly<{ call: string, inFlight: readonly string[] }>;
+
+    type ObservedEnvironment = Readonly<{
+        environment: WebCodecsCapabilityEnvironment
+        /** Each browser call as it starts, with the steps the session had in flight then */
+        starts: CallStart[]
+    }>;
+
+    // Supports every configuration and decode; each call takes CALL_MILLISECONDS and notes the steps in flight as it starts
+    function createObservedEnvironment(
+        recordingStore: RecordingStore,
+        overrides: WebCodecsCapabilityEnvironment = {}
+    ): ObservedEnvironment {
+        const starts: CallStart[] = [];
+        const observe = <Value>(call: string, value: Value): Promise<Value> => {
+            starts.push({ call, inFlight: recordingStore.inFlight() });
+            return new Promise<Value>((resolve) => {
+                globalThis.setTimeout(() => resolve(value), CALL_MILLISECONDS);
+            });
+        };
+        return {
+            environment: {
+                audioDecoder: {
+                    isConfigSupported: (config: AudioDecoderConfig) => observe(`check ${config.codec} ${config.numberOfChannels}ch`, { config, supported: true })
+                },
+                browserIdentity: UNAFFECTED_BROWSER,
+                canHoldVideoFrameFormat: () => true,
+                h264ProfileProbe: null,
+                hardwareConcurrency: 4,
+                nativeAudioOutputProbe: request => observe(`decode ${request.configuration.codec} ${request.configuration.numberOfChannels}ch`, true),
+                nativeDolbyVisionVideoOutputProbe: request => observe(`decode ${request.configuration.codec}`, { outputSupported: true }),
+                nativeHDRVideoOutputProbe: request => observe(`decode ${request.configuration.codec}`, { outputSupported: true }),
+                nativeVideoOutputProbe: request => observe(`decode ${request.configuration.codec}`, true),
+                rawHDRVideoOutputProbe: request => observe(`decode ${request.configuration.codec} ${request.expectedFormat}`, { outputCopySupported: true }),
+                videoDecoder: { isConfigSupported: (config: VideoDecoderConfig) => observe(`check ${config.codec}`, { config, supported: true }) },
+                ...overrides
+            },
+            starts
+        };
+    }
+
+    async function settle<Value>(promise: Promise<Value>): Promise<Value> {
+        await vi.runAllTimersAsync();
+        return promise;
+    }
+
+    // Returns the label the session records for a step, from a run of the item's probes
+    async function findStepLabel(pattern: RegExp, item: object): Promise<string> {
+        const recordingStore = createRecordingStore();
+        await settle(new CustomDecodeCapabilityProbe(createObservedEnvironment(recordingStore).environment, { store: recordingStore.store }).probe(item));
+        const label = recordingStore.markRunning.mock.calls.map(([ , step ]) => step).find(step => pattern.test(step));
+        if (label === undefined) {
+            throw new Error(`No step matches ${String(pattern)}`);
+        }
+        return label;
+    }
+
+    function countDecodes(inFlight: readonly string[]): number {
+        return inFlight.filter(step => step.startsWith('decode ')).length;
+    }
+
+    beforeEach(() => {
+        vi.useFakeTimers();
+    });
+
+    afterEach(() => {
+        vi.useRealTimers();
+        vi.unstubAllGlobals();
+    });
+
+    it('runs checks and small decodes of different probes side by side within the limits, and the largest decode beside no other decode', async () => {
+        const recordingStore = createRecordingStore();
+        const { environment, starts } = createObservedEnvironment(recordingStore);
+
+        await settle(new CustomDecodeCapabilityProbe(environment, { store: recordingStore.store }).probe());
+
+        const largestDecode = recordingStore.markRunning.mock.calls.map(([ , step ]) => step).find(step => LARGEST_DECODE.test(step));
+        expect(largestDecode).toBeDefined();
+        expect(Math.max(...starts.map(({ inFlight }) => inFlight.length))).toBe(environment.hardwareConcurrency);
+        expect(starts.some(({ inFlight }) => countDecodes(inFlight) > 1)).toBe(true);
+        expect(starts.some(({ inFlight }) => countDecodes(inFlight) > 0 && inFlight.some(step => step.startsWith('check ')))).toBe(true);
+        const withLargestDecode = starts.filter(({ inFlight }) => inFlight.includes(largestDecode ?? ''));
+        expect(withLargestDecode).not.toHaveLength(0);
+        for (const { inFlight } of withLargestDecode) {
+            expect(countDecodes(inFlight)).toBe(1);
+        }
+    });
+
+    it('reads a step a declared defect crashes, or one a crash blocked, as unsupported without calling the browser', async () => {
+        const vp8Decode = await findStepLabel(/^decode vp8 /u, createItem([ SDR_VP8_STREAM ]));
+        const recordingStore = createRecordingStore({ blocked: new Set([ vp8Decode ]) });
+        const { environment, starts } = createObservedEnvironment(recordingStore, { browserIdentity: WEBKIT_BEFORE_SAFARI_27 });
+
+        const capabilities = await settle(new CustomDecodeCapabilityProbe(environment, { store: recordingStore.store }).probe(createItem([ SDR_VP8_STREAM ])));
+
+        expect(capabilities.video.vp8).toMatchObject({ reason: 'stopped-page', status: 'unsupported' });
+        expect(capabilities.nativeSurroundAudio?.aac).toMatchObject({ reason: 'browser-defect', status: 'unsupported' });
+        expect(capabilities.nativeSevenPointOneAudio?.aac).toMatchObject({ reason: 'browser-defect', status: 'unsupported' });
+        expect(capabilities.audio.aac).toMatchObject({ status: 'supported' });
+        const calls = starts.map(({ call }) => call);
+        expect(calls).not.toContain('decode vp8');
+        expect(calls).toContain('decode mp4a.40.2 2ch');
+        expect(calls.filter(call => /^decode mp4a\.40\.2 [68]ch$/u.test(call))).toEqual([]);
+        expect(recordingStore.markRunning.mock.calls.map(([ , step ]) => step)).not.toContain(vp8Decode);
+    });
+
+    it('runs a suspect step after the steps waiting with it and alone, one decoder at a time, and clears it once it settles', async () => {
+        const vp8Item = createItem([ SDR_VP8_STREAM ]);
+        const aacDecode = await findStepLabel(/^decode mp4a\.40\.2 2ch /u, vp8Item);
+        const recordingStore = createRecordingStore({ suspects: new Map([ [ aacDecode, new Set([ 'native-audio' ]) ] ]) });
+        const { environment, starts } = createObservedEnvironment(recordingStore);
+        const probe = new CustomDecodeCapabilityProbe(environment, { store: recordingStore.store });
+
+        await settle(probe.probe(vp8Item));
+
+        expect(Math.max(...starts.map(({ inFlight }) => inFlight.length))).toBe(1);
+        const suspectIndex = starts.findIndex(({ call }) => call === 'decode mp4a.40.2 2ch');
+        expect(starts[suspectIndex].inFlight).toEqual([ aacDecode ]);
+        // Only the VP8 decode, which waits for every audio probe, comes after it
+        expect(starts.slice(suspectIndex + 1).map(({ call }) => call)).toEqual([ 'decode vp8' ]);
+        expect(recordingStore.resolveSuspect).toHaveBeenCalledExactlyOnceWith(aacDecode);
+
+        // With no suspect left the probes run side by side again
+        starts.length = 0;
+        await settle(probe.probe(createItem([ SDR_HEVC_STREAM ])));
+        expect(Math.max(...starts.map(({ inFlight }) => inFlight.length))).toBeGreaterThan(1);
+    });
+
+    it('reads raw HDR output as a copy failure where no VideoFrame holds its format, without a check or a decode', async () => {
+        const countCalls = async (canHoldVideoFrameFormat: (format: string) => boolean): Promise<Readonly<{ capabilities: CustomDecodeCapabilities, calls: number }>> => {
+            const recordingStore = createRecordingStore();
+            const { environment } = createObservedEnvironment(recordingStore, { canHoldVideoFrameFormat });
+            const capabilities = await settle(new CustomDecodeCapabilityProbe(environment, { store: recordingStore.store }).probe());
+            return { calls: recordingStore.markRunning.mock.calls.length, capabilities };
+        };
+        const held = await countCalls(() => true);
+
+        const notHeld = await countCalls(format => format !== 'I420P10');
+
+        for (const codec of CUSTOM_RAW_HDR_VIDEO_CODECS) {
+            expect(held.capabilities.rawHDRVideo[codec]).toMatchObject({ status: 'supported' });
+            expect(notHeld.capabilities.rawHDRVideo[codec]).toMatchObject({ reason: 'output-copy-unsupported', status: 'unsupported' });
+        }
+        // Each raw probe's configuration check and decode are all that is left out
+        expect(held.calls - notHeld.calls).toBe(2 * CUSTOM_RAW_HDR_VIDEO_CODECS.length);
+    });
+
+    it('holds the calls in flight together at the stored ceiling', async () => {
+        const ceiling = { bytes: Number.MAX_SAFE_INTEGER, decoders: 2 };
+        const recordingStore = createRecordingStore({ ceiling });
+        const { environment, starts } = createObservedEnvironment(recordingStore, { hardwareConcurrency: 8 });
+
+        await settle(new CustomDecodeCapabilityProbe(environment, { store: recordingStore.store }).probe());
+
+        expect(Math.max(...starts.map(({ inFlight }) => inFlight.length))).toBe(ceiling.decoders);
+    });
+
+    it('decodes each refused video output once more alone before it counts, and never checks a refused configuration again', async () => {
+        const recordingStore = createRecordingStore();
+        // Each recorded run, in the order the runs start, with whether another run was in flight at some time during it
+        const runs: Array<{ overlapped: boolean, readonly probe: string, readonly step: string }> = [];
+        const inFlight = new Set<{ overlapped: boolean }>();
+        recordingStore.markRunning.mockImplementation(async (probe: string, step: string): Promise<() => void> => {
+            const run = { overlapped: inFlight.size > 0, probe, step };
+            for (const other of inFlight) {
+                other.overlapped = true;
+            }
+            inFlight.add(run);
+            runs.push(run);
+            return (): void => {
+                inFlight.delete(run);
+            };
+        });
+        // A refusal takes as long as any call, so the calls admitted together overlap
+        const refuse = <Value>(value: Value): Promise<Value> => new Promise<Value>((resolve) => {
+            globalThis.setTimeout(() => resolve(value), CALL_MILLISECONDS);
+        });
+        let releaseHeldCheck = (): void => undefined;
+        const { environment } = createObservedEnvironment(recordingStore, {
+            nativeDolbyVisionVideoOutputProbe: () => refuse({ outputSupported: false }),
+            nativeHDRVideoOutputProbe: () => refuse({ outputSupported: false }),
+            nativeVideoOutputProbe: () => refuse(false),
+            rawHDRVideoOutputProbe: () => refuse({ outputCopySupported: false }),
+            videoDecoder: {
+                // The VP8 check refuses only once the test releases it; the audio probes pass, so every video decode, which waits
+                // for them, starts beside the held check, and its run again waits for the release
+                isConfigSupported: (config: VideoDecoderConfig) => (config.codec === 'vp8' ?
+                    new Promise<VideoDecoderSupport>((resolve) => {
+                        releaseHeldCheck = (): void => resolve({ config, supported: false });
+                    }) :
+                    refuse({ config, supported: true }))
+            }
+        });
+
+        const probing = new CustomDecodeCapabilityProbe(environment, { store: recordingStore.store }).probe();
+        // As long as the held check may run without timing out
+        await vi.advanceTimersByTimeAsync(CAPABILITY_PROBE_TIMEOUT_MILLISECONDS - 1);
+        releaseHeldCheck();
+        const capabilities = await settle(probing);
+
+        const overlapsByStep = new Map<string, boolean[]>();
+        for (const { overlapped, probe, step } of runs) {
+            const key = `${probe}: ${step}`;
+            overlapsByStep.set(key, [ ...overlapsByStep.get(key) ?? [], overlapped ]);
+        }
+        const isRefusedDecode = (key: string): boolean => CUSTOM_DECODE_VIDEO_PROBES.some(probe => key.startsWith(`${probe}: decode `));
+        const refusedDecodes = [ ...overlapsByStep ].filter(([ key ]) => isRefusedDecode(key));
+        const otherSteps = [ ...overlapsByStep ].filter(([ key ]) => !isRefusedDecode(key));
+        expect(refusedDecodes).not.toHaveLength(0);
+        // A refused decode ran beside other calls, then once more alone
+        expect(refusedDecodes.filter(([ , overlaps ]) => overlaps.join() !== [ true, false ].join())).toEqual([]);
+        // A check, refused or not, and a decode that passed ran once
+        expect(otherSteps.filter(([ , overlaps ]) => overlaps.length !== 1)).toEqual([]);
+        expect(capabilities.video.vp8).toMatchObject({ reason: 'config-unsupported', status: 'unsupported' });
+        expect(capabilities.nativeUltraHDVideo?.hevc).toMatchObject({ reason: 'decode-output-missing', status: 'unsupported' });
+        expect(capabilities.rawHDRVideo.hevc).toMatchObject({ reason: 'output-copy-unsupported', status: 'unsupported' });
+        expect(capabilities.nativeDolbyVisionHEVC).toMatchObject({ reason: 'decode-output-missing', status: 'unsupported' });
+        expect(capabilities.nativeHDRHEVC).toMatchObject({ reason: 'decode-output-missing', status: 'unsupported' });
+    });
+
+    it('gives no video chunk a duration, which WebKit 26 races on', async () => {
+        const chunkInits: object[] = [];
+        class FakeVideoDecoder {
+            public state: CodecState = 'unconfigured';
+
+            public close(): void {
+                this.state = 'closed';
+            }
+
+            public configure(): void {
+                this.state = 'configured';
+            }
+
+            public decode(): void {
+                return;
+            }
+
+            public flush(): Promise<void> {
+                return Promise.resolve();
+            }
+        }
+        class FakeEncodedVideoChunk {
+            public constructor(init: EncodedVideoChunkInit) {
+                chunkInits.push({ ...init });
+            }
+        }
+        vi.stubGlobal('VideoDecoder', FakeVideoDecoder);
+        vi.stubGlobal('EncodedVideoChunk', FakeEncodedVideoChunk);
+        const configuration = { codec: 'hvc1.2.4.L153.B0', codedHeight: 64, codedWidth: 64 };
+
+        await createNativeVideoOutputProbe()?.({
+            codec: 'hevc',
+            configuration,
+            encodedKeyFrame: new Uint8Array([ 1 ]),
+            expectedCodedHeight: 64,
+            expectedCodedWidth: 64,
+            expectedDisplayHeight: 64,
+            expectedDisplayWidth: 64,
+            expectedTimestamp: 0
+        });
+        await createNativeDolbyVisionVideoOutputProbe()?.({
+            configuration,
+            encodedKeyFrame: new Uint8Array([ 1 ]),
+            expectedCodedHeight: 64,
+            expectedCodedWidth: 64
+        });
+        await createRawHDRVideoOutputProbe()?.({
+            codec: 'hevc',
+            configuration,
+            encodedChunks: [ { data: new Uint8Array([ 1 ]), timestamp: 0, type: 'key' }, { data: new Uint8Array([ 2 ]), timestamp: 1, type: 'delta' } ],
+            expectedCodedHeight: 64,
+            expectedCodedWidth: 64,
+            expectedDecodedFrames: [ { fingerprint: 0, timestamp: 0 }, { fingerprint: 0, timestamp: 1 } ],
+            expectedFormat: 'I420P10'
+        });
+
+        expect(chunkInits).toHaveLength(4);
+        for (const init of chunkInits) {
+            expect(init).not.toHaveProperty('duration');
+        }
     });
 });

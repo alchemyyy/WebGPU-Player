@@ -9,6 +9,8 @@ import {
     H264_RAW_FORMAT_VARIANTS
 } from 'webgpu-player/capability/H264RawFormatCapabilities';
 
+import { UNAFFECTED_BROWSER } from '../helpers/capabilityProbeSession';
+
 type CapabilityHarness = {
     environment: WebCodecsCapabilityEnvironment
     outputProbe: Mock
@@ -42,6 +44,8 @@ function createEnvironment(
     return {
         environment: {
             audioDecoder: null,
+            browserIdentity: UNAFFECTED_BROWSER,
+            canHoldVideoFrameFormat: () => true,
             h264ProfileProbe: null,
             h264RawFormatVectorLoader: vectorLoader,
             nativeAudioOutputProbe: null,

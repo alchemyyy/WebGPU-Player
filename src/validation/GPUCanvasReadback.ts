@@ -4,7 +4,8 @@ import {
     microsecondsToMilliseconds,
     millisecondsToMicroseconds
 } from '../MediaTime';
-import { COPY_BYTES_PER_ROW_ALIGNMENT, VALIDATION_ERROR_FILTER } from '../presentation/WebGPUConstants';
+import { COPY_BYTES_PER_ROW_ALIGNMENT } from '../presentation/WebGPUConstants';
+import { captureValidationErrors } from './GPUErrorScope';
 
 export const GPU_CANVAS_READBACK_TIMEOUT_MICROSECONDS = millisecondsToMicroseconds(5_000);
 const GPU_CANVAS_READBACK_OPERATION_DESTROYED = Symbol('gpu-canvas-readback-operation-destroyed');
@@ -413,22 +414,14 @@ export class GPUCanvasPixelReader {
         const bytesPerRow = Math.ceil(pixelByteLength / COPY_BYTES_PER_ROW_ALIGNMENT) * COPY_BYTES_PER_ROW_ALIGNMENT;
         const bufferByteLength = bytesPerRow * samples.length;
         let buffer: GPUBuffer | null = null;
-        let errorScopePushed = false;
         let mapped = false;
         try {
-            this.device.pushErrorScope(VALIDATION_ERROR_FILTER);
-            errorScopePushed = true;
-            buffer = this.device.createBuffer({
-                label: 'WebGPU color validation readback',
-                size: bufferByteLength,
-                usage: usageConstants.bufferCopyDestination | usageConstants.bufferMapRead
-            });
+            const copy = captureValidationErrors(
+                this.device,
+                (): GPUBuffer => this.submitPixelCopies(texture, samples, usageConstants, bytesPerRow, bufferByteLength)
+            );
+            buffer = copy.value;
             this.activeBuffers.add(buffer);
-            const commandEncoder = this.device.createCommandEncoder({
-                label: 'WebGPU color validation copy'
-            });
-            encodePixelCopies(commandEncoder, texture, buffer, samples, bytesPerRow);
-            this.device.queue.submit([ commandEncoder.finish() ]);
             const mappingResult = await this.waitForOperation(
                 waitForGPUCompletion(this.device, buffer.mapAsync(usageConstants.mapRead, 0, bufferByteLength))
             );
@@ -439,9 +432,7 @@ export class GPUCanvasPixelReader {
                 return createFailure('operation-timeout', 'The GPU buffer mapping operation timed out');
             }
             mapped = true;
-            const validationPromise = this.device.popErrorScope();
-            errorScopePushed = false;
-            const validationResult = await this.waitForOperation(validationPromise);
+            const validationResult = await this.waitForOperation(copy.validationError);
             if (validationResult === GPU_CANVAS_READBACK_OPERATION_DESTROYED) {
                 return createFailure('destroyed', 'The reader was destroyed during canvas readback');
             }
@@ -464,9 +455,6 @@ export class GPUCanvasPixelReader {
         } catch (error) {
             return createFailure('mapping-failed', getErrorMessage(error));
         } finally {
-            if (errorScopePushed) {
-                this.discardErrorScope();
-            }
             if (buffer) {
                 if (mapped) {
                     try {
@@ -481,19 +469,30 @@ export class GPUCanvasPixelReader {
         }
     }
 
-    private discardErrorScope(): void {
-        let discardedScope: Promise<GPUError | null>;
-        // popErrorScope can fail synchronously when the device is unavailable
-        // eslint-disable-next-line sonarjs/no-try-promise
-        try {
-            discardedScope = this.device.popErrorScope();
-        } catch {
-            return;
-        }
-
-        void discardedScope.catch((): void => {
-            // Device destruction can invalidate an outstanding error scope
+    /** Creates the mappable buffer, copies the samples into it, and submits the copies; a buffer whose copies fail is destroyed. */
+    private submitPixelCopies(
+        texture: GPUTexture,
+        samples: readonly GPUCanvasPixelSample[],
+        usageConstants: GPUUsageConstants,
+        bytesPerRow: number,
+        bufferByteLength: number
+    ): GPUBuffer {
+        const buffer = this.device.createBuffer({
+            label: 'WebGPU color validation readback',
+            size: bufferByteLength,
+            usage: usageConstants.bufferCopyDestination | usageConstants.bufferMapRead
         });
+        try {
+            const commandEncoder = this.device.createCommandEncoder({
+                label: 'WebGPU color validation copy'
+            });
+            encodePixelCopies(commandEncoder, texture, buffer, samples, bytesPerRow);
+            this.device.queue.submit([ commandEncoder.finish() ]);
+        } catch (error) {
+            buffer.destroy();
+            throw error;
+        }
+        return buffer;
     }
 
     private waitForOperation<Value>(

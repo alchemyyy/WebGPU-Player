@@ -50,7 +50,10 @@ export type HEVCRangeExtensionCapabilityReason =
     | 'output-copy-supported'
     | 'output-copy-unsupported'
     | 'probe-exception'
-    | 'probe-timeout';
+    | 'probe-timeout'
+    // The step never ran: a declared browser defect crashes it, or it stopped an earlier page alone
+    | 'browser-defect'
+    | 'stopped-page';
 
 export type HEVCRangeExtensionCapability = Readonly<{
     bitDepth: HEVCRangeExtensionBitDepth

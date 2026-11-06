@@ -9,6 +9,8 @@ import {
     AV1_RAW_FORMAT_VARIANTS
 } from 'webgpu-player/capability/AV1RawFormatCapabilities';
 
+import { UNAFFECTED_BROWSER } from '../helpers/capabilityProbeSession';
+
 type CapabilityHarness = {
     environment: WebCodecsCapabilityEnvironment
     outputProbe: Mock
@@ -43,6 +45,8 @@ function createEnvironment(
         environment: {
             audioDecoder: null,
             av1RawFormatVectorLoader: vectorLoader,
+            browserIdentity: UNAFFECTED_BROWSER,
+            canHoldVideoFrameFormat: () => true,
             h264ProfileProbe: null,
             nativeAudioOutputProbe: null,
             nativeDolbyVisionVideoOutputProbe: null,
@@ -111,6 +115,11 @@ describe('AV1 raw format capability probe', () => {
         const capabilities = await new CustomDecodeCapabilityProbe(harness.environment).probe();
 
         expect(capabilities.av1RawFormats?.['high444-8']).toMatchObject({ reason: 'output-copy-unsupported', status: 'unsupported' });
+        // The failed copy came from a decode beside the other variants', so it decoded once more alone before it counted
+        const failedCopies = harness.outputProbe.mock.calls
+            .map(([ outputRequest ]) => outputRequest as RawHDRVideoOutputProbeRequest)
+            .filter(outputRequest => outputRequest.codec === 'av1' && outputRequest.expectedFormat === 'I444');
+        expect(failedCopies).toHaveLength(2);
         for (const variant of [ 'professional420-12', 'professional422-12', 'professional444-12' ] as const) {
             expect(capabilities.av1RawFormats?.[variant]).toMatchObject({ reason: 'config-unsupported', status: 'unsupported' });
         }

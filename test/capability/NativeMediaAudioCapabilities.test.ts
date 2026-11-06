@@ -3,10 +3,20 @@ import { describe, expect, it, vi } from 'vitest';
 import {
     default as NativeMediaAudioCapabilityProbe,
     getSupportedNativeMediaAudioRoute,
+    NATIVE_MEDIA_AUDIO_PROBE,
     probeNativeMediaAudioCapabilities,
-    type NativeMediaAudioExactProbeRequest
+    type NativeMediaAudioExactProbeRequest,
+    type NativeMediaAudioExactProbeResult
 } from 'webgpu-player/capability/NativeMediaAudioCapabilities';
 import { createNativeMediaAudioProbeVector } from 'webgpu-player/capability/vectors/NativeMediaAudioCapabilityVectors';
+
+import { createCapabilityProbeSession, createRecordingStore } from '../helpers/capabilityProbeSession';
+
+const PLAYBACK_STEPS = [ 'play ac-3 2ch 48000Hz', 'play ac-3 6ch 48000Hz', 'play ec-3 2ch 48000Hz', 'play ec-3 6ch 48000Hz' ];
+
+function advancedPlayback(): Promise<NativeMediaAudioExactProbeResult> {
+    return Promise.resolve({ reason: 'decoded-playback-advanced', supported: true });
+}
 
 describe('NativeMediaAudioCapabilities', () => {
     it('ships fresh exact fMP4 vectors for every qualified layout', () => {
@@ -32,7 +42,8 @@ describe('NativeMediaAudioCapabilities', () => {
         const exactPlaybackProbe = vi.fn();
         const capabilities = await probeNativeMediaAudioCapabilities({
             exactPlaybackProbe,
-            isTypeSupported: null
+            isTypeSupported: null,
+            session: createCapabilityProbeSession()
         });
 
         expect(exactPlaybackProbe).not.toHaveBeenCalled();
@@ -52,7 +63,8 @@ describe('NativeMediaAudioCapabilities', () => {
         const exactPlaybackProbe = vi.fn();
         const capabilities = await probeNativeMediaAudioCapabilities({
             exactPlaybackProbe,
-            isTypeSupported: () => false
+            isTypeSupported: () => false,
+            session: createCapabilityProbeSession()
         });
 
         expect(exactPlaybackProbe).not.toHaveBeenCalled();
@@ -74,10 +86,14 @@ describe('NativeMediaAudioCapabilities', () => {
                     supported
                 };
             },
-            isTypeSupported: () => true
+            isTypeSupported: () => true,
+            session: createCapabilityProbeSession()
         });
 
-        expect(probeInputs).toHaveLength(4);
+        // Every playback started beside the others, so each failed one played once more alone before it counted
+        const playedLayouts = probeInputs.map(probeInput => `${probeInput.codec}:${probeInput.channelCount}`);
+        expect([ ...playedLayouts ].sort((first, second) => first.localeCompare(second)))
+            .toEqual([ 'ac3:2', 'ac3:2', 'ac3:6', 'ac3:6', 'eac3:2', 'eac3:2', 'eac3:6' ]);
         expect(probeInputs.every(probeInput => probeInput.vector.byteLength > 1_000)).toBe(true);
         expect(capabilities.audio.ac3.status).toBe('unsupported');
         expect(capabilities.audio.eac3.status).toBe('supported');
@@ -118,7 +134,8 @@ describe('NativeMediaAudioCapabilities', () => {
         }));
         const probe = new NativeMediaAudioCapabilityProbe({
             exactPlaybackProbe,
-            isTypeSupported: () => true
+            isTypeSupported: () => true,
+            session: createCapabilityProbeSession()
         });
 
         const firstResult = probe.probe();
@@ -138,11 +155,69 @@ describe('NativeMediaAudioCapabilities', () => {
     it('keeps probe exceptions unknown instead of advertising the route', async () => {
         const capabilities = await probeNativeMediaAudioCapabilities({
             exactPlaybackProbe: () => Promise.reject(new Error('probe failed')),
-            isTypeSupported: () => true
+            isTypeSupported: () => true,
+            session: createCapabilityProbeSession()
         });
 
         expect(capabilities.audio.ac3.status).toBe('unknown');
         expect(capabilities.audio.eac3.status).toBe('unknown');
         expect(capabilities.telemetry.unknownLayoutCount).toBe(4);
+    });
+
+    it('records each layout\'s playback as a step of its own, holding one decoder and the PCM it buffers', async () => {
+        const recordingStore = createRecordingStore();
+
+        await probeNativeMediaAudioCapabilities({
+            exactPlaybackProbe: advancedPlayback,
+            isTypeSupported: () => true,
+            session: createCapabilityProbeSession({ store: recordingStore.store })
+        });
+
+        const calls = recordingStore.markRunning.mock.calls;
+        expect(calls.map(([ probe ]) => probe)).toEqual(PLAYBACK_STEPS.map(() => NATIVE_MEDIA_AUDIO_PROBE));
+        expect(new Set(calls.map(([ , step ]) => step))).toEqual(new Set(PLAYBACK_STEPS));
+        for (const [ , step, cost ] of calls) {
+            const channelCount = step.includes('6ch') ? 6 : 2;
+            expect(cost.decoders).toBe(1);
+            expect(cost.bytes).toBeGreaterThan(0);
+            // f32 samples of every channel
+            expect(cost.bytes % (channelCount * Float32Array.BYTES_PER_ELEMENT)).toBe(0);
+        }
+    });
+
+    it('reads a playback a crash blocked as unsupported, without playing it', async () => {
+        const exactPlaybackProbe = vi.fn<(probeInput: Readonly<NativeMediaAudioExactProbeRequest>) => Promise<NativeMediaAudioExactProbeResult>>(advancedPlayback);
+
+        const capabilities = await probeNativeMediaAudioCapabilities({
+            exactPlaybackProbe,
+            isTypeSupported: () => true,
+            session: createCapabilityProbeSession({ store: createRecordingStore({ blocked: new Set([ 'play ec-3 6ch 48000Hz' ]) }).store })
+        });
+
+        expect(capabilities.audio.eac3.layouts[6]).toMatchObject({ reason: 'stopped-page', status: 'unsupported' });
+        expect(capabilities.audio.eac3.layouts[2]).toMatchObject({ status: 'supported' });
+        expect(exactPlaybackProbe.mock.calls.map(([ probeInput ]) => `${probeInput.codec}:${probeInput.channelCount}`)).not.toContain('eac3:6');
+        expect(exactPlaybackProbe).toHaveBeenCalledTimes(PLAYBACK_STEPS.length - 1);
+    });
+
+    it('plays within the session manager\'s limits', async () => {
+        let playing = 0;
+        let mostPlaying = 0;
+        const exactPlaybackProbe = vi.fn(async (): Promise<NativeMediaAudioExactProbeResult> => {
+            playing += 1;
+            mostPlaying = Math.max(mostPlaying, playing);
+            await Promise.resolve();
+            playing -= 1;
+            return advancedPlayback();
+        });
+
+        await probeNativeMediaAudioCapabilities({
+            exactPlaybackProbe,
+            isTypeSupported: () => true,
+            session: createCapabilityProbeSession({ limits: { bytes: Number.MAX_SAFE_INTEGER, decoders: 1 } })
+        });
+
+        expect(exactPlaybackProbe).toHaveBeenCalledTimes(PLAYBACK_STEPS.length);
+        expect(mostPlaying).toBe(1);
     });
 });

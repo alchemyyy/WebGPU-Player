@@ -38,12 +38,22 @@ import {
     createExternalHDRShaderSignature,
     ExternalHDRPresentationAuthorizationRegistry,
     ExternalHDRPresentationAuthorizationRunner,
+    type ExternalHDRAuthorizationFrameFactory,
     type ExternalHDRAuthorizationRouteKey,
-    type ExternalHDRRouteAuthorizationDecision
+    type ExternalHDRRouteAuthorizationDecision,
+    type ExternalHDRVideoCodec
 } from 'webgpu-player/validation/ExternalHDRPresentationAuthorization';
 import type { RawHDRVectorObservation } from 'webgpu-player/validation/RawHDRPresentationAuthorization';
+import type CapabilityProbeSession from 'webgpu-player/capability/CapabilityProbeSession';
+import { AV1_MAXIMUM_REFERENCE_FRAMES, HEVC_MAXIMUM_REFERENCE_FRAMES } from 'webgpu-player/capability/CapabilityProbeSteps';
 
 import {
+    CAPABILITY_PROBE_TIMEOUT_MILLISECONDS,
+    createCapabilityProbeSession,
+    createRecordingStore
+} from '../helpers/capabilityProbeSession';
+import {
+    createDeferred,
     createWebGPUDeviceHarness,
     getBufferWrites,
     getShaderCodes,
@@ -68,6 +78,16 @@ const PLAN_SHADER_CODE_SEPARATOR = '\u0000';
 // The color space the executor imports frames in
 const EXTERNAL_TEXTURE_COLOR_SPACE: PredefinedColorSpace = 'srgb';
 const RENDER_SETTINGS_LABEL = 'Presentation render settings';
+const HEVC_PROBE = 'external-hdr-authorization:hevc';
+const AV1_PROBE = 'external-hdr-authorization:av1';
+const HEVC_CHECK_LABEL = 'check hvc1.2.4.L120.B0 1920x1088 prefer-hardware';
+const HEVC_DECODE_LABEL = 'decode hvc1.2.4.L120.B0 1920x1088 prefer-hardware';
+const AV1_CHECK_LABEL = 'check av01.0.08M.10 1920x1080 prefer-hardware';
+const AV1_DECODE_LABEL = 'decode av01.0.08M.10 1920x1080 prefer-hardware';
+// A 10-bit 4:2:0 frame holds 2-byte samples, 1.5 per pixel; a decode holds its codec's references and the frame it outputs
+const I420P10_BYTES_PER_PIXEL = 3;
+const HEVC_DECODE_COST = { bytes: 1_920 * 1_088 * I420P10_BYTES_PER_PIXEL * (HEVC_MAXIMUM_REFERENCE_FRAMES + 1), decoders: 1 };
+const AV1_DECODE_COST = { bytes: 1_920 * 1_080 * I420P10_BYTES_PER_PIXEL * (AV1_MAXIMUM_REFERENCE_FRAMES + 1), decoders: 1 };
 const SIMULATED_IMPORT_FAILURE = 'simulated import failure';
 // A rejection names its worst error and the 10/255 bound in 8-bit steps, and the sample where it is
 const PIXEL_MISMATCH_DETAIL_PATTERN = /^\d+(\.\d)?\/255 > 10\/255 at \(\d+, \d+\)$/;
@@ -124,6 +144,24 @@ function expectEveryResourceDestroyed(harness: WebGPUDeviceHarness): void {
     }
 }
 
+function createRunner(
+    createFrameFactory: ExternalHDRAuthorizationFrameFactory,
+    session: CapabilityProbeSession = createCapabilityProbeSession()
+): ExternalHDRPresentationAuthorizationRunner {
+    return new ExternalHDRPresentationAuthorizationRunner(createFrameFactory, (): CapabilityProbeSession => session);
+}
+
+async function validateRoute(
+    runner: ExternalHDRPresentationAuthorizationRunner,
+    device: GPUDevice,
+    routeKey: ExternalHDRAuthorizationRouteKey,
+    targetFormat: GPUTextureFormat = TARGET_FORMAT
+): Promise<ExternalHDRRouteAuthorizationDecision> {
+    const codec: ExternalHDRVideoCodec = routeKey === AV1_PQ_ROUTE_KEY || routeKey === AV1_HLG_ROUTE_KEY ? 'av1' : 'hevc';
+    const [ decision ] = await runner.validate(device, targetFormat, codec, [ routeKey ]);
+    return decision;
+}
+
 function findAnnexBNALUnit(data: Uint8Array, nalUnitType: number): Uint8Array {
     const startOffsets: number[] = [];
     for (let offset = 0; offset + 4 <= data.byteLength; offset += 1) {
@@ -148,9 +186,15 @@ function findAnnexBNALUnit(data: Uint8Array, nalUnitType: number): Uint8Array {
 }
 
 describe('External HDR presentation authorization', () => {
+    // The runner checks the configuration itself, so every test has a decoder that supports it unless the test says otherwise
+    let isConfigSupported: Mock<(config: VideoDecoderConfig) => Promise<VideoDecoderSupport>>;
+
     beforeEach(() => {
         restoreWebGPUGlobals = installWebGPUGlobals();
         vi.spyOn(PresentationExecutor, 'create');
+        isConfigSupported = vi.fn(async (config: VideoDecoderConfig): Promise<VideoDecoderSupport> => ({ config, supported: true }));
+        vi.stubGlobal('VideoDecoder', { isConfigSupported });
+        vi.stubGlobal('EncodedVideoChunk', class {});
     });
 
     afterEach(() => {
@@ -170,9 +214,9 @@ describe('External HDR presentation authorization', () => {
             const harness = createDeviceHarness(createExpectedObservations(routeKey));
             const close = vi.fn();
             const frame = createFrame(close);
-            const runner = new ExternalHDRPresentationAuthorizationRunner(async (): Promise<VideoFrame> => frame);
+            const runner = createRunner(async (): Promise<VideoFrame> => frame);
 
-            const decision = await runner.validate(harness.device, TARGET_FORMAT, routeKey);
+            const decision = await validateRoute(runner, harness.device, routeKey);
 
             // The signature covers exactly the modules the executor compiled
             expect(decision).toMatchObject({
@@ -233,9 +277,9 @@ describe('External HDR presentation authorization', () => {
             EXTERNAL_AV1_HDR_AUTHORIZATION_DISPLAY_WIDTH,
             EXTERNAL_AV1_HDR_AUTHORIZATION_DISPLAY_HEIGHT
         ));
-        const runner = new ExternalHDRPresentationAuthorizationRunner(createFrameFactory);
+        const runner = createRunner(createFrameFactory);
 
-        const decision = await runner.validate(harness.device, TARGET_FORMAT, routeKey);
+        const decision = await validateRoute(runner, harness.device, routeKey);
 
         expect(decision).toMatchObject({
             authorizedRouteKeys: [ routeKey ],
@@ -255,14 +299,14 @@ describe('External HDR presentation authorization', () => {
 
     it('keeps each codec\'s route keys apart and prewarms only HEVC\'s', async () => {
         const harness = createDeviceHarness(createExpectedObservations(PQ_ROUTE_KEY));
-        const runner = new ExternalHDRPresentationAuthorizationRunner(async (): Promise<VideoFrame> => createFrame(vi.fn()));
+        const runner = createRunner(async (): Promise<VideoFrame> => createFrame(vi.fn()));
         const validate = vi.spyOn(runner, 'validate');
         const registry = new ExternalHDRPresentationAuthorizationRegistry(runner);
 
         registry.prewarm(harness.device, TARGET_FORMAT);
         await registry.waitForPending(harness.device, TARGET_FORMAT);
 
-        expect(validate.mock.calls.map(call => call[2])).toEqual([ PQ_ROUTE_KEY, HLG_ROUTE_KEY ]);
+        expect(validate.mock.calls.map(call => [ call[2], call[3] ])).toEqual([ [ 'hevc', [ PQ_ROUTE_KEY, HLG_ROUTE_KEY ] ] ]);
         expect(registry.isAuthorized(harness.device, TARGET_FORMAT, 'hevc', createPQColorMetadata())).toBe(true);
         expect(registry.getAuthorizationFailure(harness.device, TARGET_FORMAT, 'av1', createPQColorMetadata())).toBe(`unprobed: ${AV1_PQ_ROUTE_KEY}`);
         expect(registry.getAuthorizationFailure(harness.device, TARGET_FORMAT, 'av1', createSDRColorMetadata())).toBe(SDR_ROUTE_UNSUPPORTED_FAILURE);
@@ -271,9 +315,9 @@ describe('External HDR presentation authorization', () => {
     it('rejects a bounded pixel mismatch and still closes the frame', async () => {
         const harness = createDeviceHarness(mutateFirstObservation(createExpectedObservations(PQ_ROUTE_KEY)));
         const close = vi.fn();
-        const runner = new ExternalHDRPresentationAuthorizationRunner(async (): Promise<VideoFrame> => createFrame(close));
+        const runner = createRunner(async (): Promise<VideoFrame> => createFrame(close));
 
-        const decision = await runner.validate(harness.device, TARGET_FORMAT, PQ_ROUTE_KEY);
+        const decision = await validateRoute(runner, harness.device, PQ_ROUTE_KEY);
 
         expect(decision).toMatchObject({
             failureReason: 'pixel-mismatch',
@@ -289,9 +333,9 @@ describe('External HDR presentation authorization', () => {
             throw new Error(SIMULATED_IMPORT_FAILURE);
         });
         const close = vi.fn();
-        const runner = new ExternalHDRPresentationAuthorizationRunner(async (): Promise<VideoFrame> => createFrame(close));
+        const runner = createRunner(async (): Promise<VideoFrame> => createFrame(close));
 
-        await expect(runner.validate(harness.device, TARGET_FORMAT, PQ_ROUTE_KEY)).resolves.toMatchObject({
+        await expect(validateRoute(runner, harness.device, PQ_ROUTE_KEY)).resolves.toMatchObject({
             failureDetail: `import: ${SIMULATED_IMPORT_FAILURE}`,
             failureReason: 'frame-import-failed',
             status: 'rejected'
@@ -311,14 +355,13 @@ describe('External HDR presentation authorization', () => {
         const createFrameFactory = vi.fn(() => new Promise<VideoFrame>(resolve => {
             deferredFrame.resolve = resolve;
         }));
-        const runner = new ExternalHDRPresentationAuthorizationRunner(createFrameFactory);
+        const runner = createRunner(createFrameFactory);
 
-        const decisionPromise = runner.validate(harness.device, TARGET_FORMAT, PQ_ROUTE_KEY);
+        const decisionPromise = validateRoute(runner, harness.device, PQ_ROUTE_KEY);
         await vi.waitFor(() => expect(createFrameFactory).toHaveBeenCalledOnce());
         await vi.advanceTimersByTimeAsync(AUTHORIZATION_TIMEOUT_MILLISECONDS);
 
         await expect(decisionPromise).resolves.toMatchObject({
-            failureDetail: 'frame',
             failureReason: 'timeout',
             status: 'rejected'
         });
@@ -334,7 +377,7 @@ describe('External HDR presentation authorization', () => {
 
     it('deduplicates route authorization and exposes settled telemetry', async () => {
         const harness = createDeviceHarness(createExpectedObservations(PQ_ROUTE_KEY));
-        const runner = new ExternalHDRPresentationAuthorizationRunner(async (): Promise<VideoFrame> => createFrame(vi.fn()));
+        const runner = createRunner(async (): Promise<VideoFrame> => createFrame(vi.fn()));
         const validate = vi.spyOn(runner, 'validate');
         const registry = new ExternalHDRPresentationAuthorizationRegistry(runner);
 
@@ -361,7 +404,7 @@ describe('External HDR presentation authorization', () => {
 
     it('reports a rejected route with its failure reason and detail', async () => {
         const harness = createDeviceHarness(mutateFirstObservation(createExpectedObservations(PQ_ROUTE_KEY)));
-        const runner = new ExternalHDRPresentationAuthorizationRunner(async (): Promise<VideoFrame> => createFrame(vi.fn()));
+        const runner = createRunner(async (): Promise<VideoFrame> => createFrame(vi.fn()));
         const registry = new ExternalHDRPresentationAuthorizationRegistry(runner);
 
         const decision = await registry.authorize(harness.device, TARGET_FORMAT, PQ_ROUTE_KEY);
@@ -374,7 +417,7 @@ describe('External HDR presentation authorization', () => {
     it('scopes authorization to exact GPUDevice identity', async () => {
         const firstHarness = createDeviceHarness(createExpectedObservations(PQ_ROUTE_KEY));
         const secondHarness = createDeviceHarness(createExpectedObservations(PQ_ROUTE_KEY));
-        const runner = new ExternalHDRPresentationAuthorizationRunner(async (): Promise<VideoFrame> => createFrame(vi.fn()));
+        const runner = createRunner(async (): Promise<VideoFrame> => createFrame(vi.fn()));
         const validate = vi.spyOn(runner, 'validate');
         const registry = new ExternalHDRPresentationAuthorizationRegistry(runner);
 
@@ -389,9 +432,9 @@ describe('External HDR presentation authorization', () => {
     it('rejects unsupported targets before constructing a frame', async () => {
         const harness = createDeviceHarness(createExpectedObservations(PQ_ROUTE_KEY));
         const createFrameFactory = vi.fn(async (): Promise<VideoFrame> => createFrame(vi.fn()));
-        const runner = new ExternalHDRPresentationAuthorizationRunner(createFrameFactory);
+        const runner = createRunner(createFrameFactory);
 
-        await expect(runner.validate(harness.device, UNREADABLE_TARGET_FORMAT, PQ_ROUTE_KEY)).resolves.toMatchObject({
+        await expect(validateRoute(runner, harness.device, PQ_ROUTE_KEY, UNREADABLE_TARGET_FORMAT)).resolves.toMatchObject({
             failureDetail: UNREADABLE_TARGET_FORMAT,
             failureReason: 'target-format-unsupported',
             status: 'rejected'
@@ -613,26 +656,24 @@ describe('External HDR presentation authorization', () => {
         expect(close).toHaveBeenCalledOnce();
     });
 
-    it('rejects an unsupported decoder configuration before constructing a decoder', async () => {
-        const constructed = vi.fn();
-        class FakeEncodedVideoChunk {}
-        class FakeVideoDecoder {
-            public static readonly isConfigSupported = vi.fn(
-                async (config: VideoDecoderConfig): Promise<VideoDecoderSupport> => ({
-                    config,
-                    supported: false
-                })
-            );
+    it('rejects an unsupported decoder configuration before building an executor or opening a decoder', async () => {
+        isConfigSupported.mockImplementation(async (config: VideoDecoderConfig): Promise<VideoDecoderSupport> => ({ config, supported: false }));
+        const harness = createDeviceHarness(createExpectedObservations(PQ_ROUTE_KEY));
+        const createFrameFactory = vi.fn(async (): Promise<VideoFrame> => createFrame(vi.fn()));
 
-            public constructor() {
-                constructed();
-            }
-        }
-        vi.stubGlobal('EncodedVideoChunk', FakeEncodedVideoChunk);
-        vi.stubGlobal('VideoDecoder', FakeVideoDecoder);
-
-        await expect(createExternalHDRAuthorizationFrame('hevc')).rejects.toThrow('decoder-config-unsupported');
-        expect(constructed).not.toHaveBeenCalled();
+        await expect(validateRoute(createRunner(createFrameFactory), harness.device, PQ_ROUTE_KEY)).resolves.toMatchObject({
+            failureDetail: HEVC_CHECK_LABEL,
+            failureReason: 'decoder-config-unsupported',
+            status: 'rejected'
+        });
+        expect(isConfigSupported).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+            codec: 'hvc1.2.4.L120.B0',
+            codedHeight: 1_088,
+            codedWidth: 1_920,
+            hardwareAcceleration: 'prefer-hardware'
+        }));
+        expect(createFrameFactory).not.toHaveBeenCalled();
+        expect(PresentationExecutor.create).not.toHaveBeenCalled();
     });
 
     it('closes the decoder after a decoder error', async () => {
@@ -713,5 +754,189 @@ describe('External HDR presentation authorization', () => {
 
         await expect(framePromise).rejects.toMatchObject({ name: 'AbortError' });
         expect(closed).toHaveBeenCalledOnce();
+    });
+
+    it.each([
+        [ PQ_ROUTE_KEY, HEVC_PROBE, HEVC_CHECK_LABEL, HEVC_DECODE_LABEL, HEVC_DECODE_COST ],
+        [ AV1_PQ_ROUTE_KEY, AV1_PROBE, AV1_CHECK_LABEL, AV1_DECODE_LABEL, AV1_DECODE_COST ]
+    ])('journals the check and the decode of %s as steps of its probe', async (routeKey, probe, checkLabel, decodeLabel, decodeCost) => {
+        const harness = createDeviceHarness(createExpectedObservations(routeKey));
+        const recording = createRecordingStore();
+        const inFlightDuringCheck: string[][] = [];
+        isConfigSupported.mockImplementation(async (config: VideoDecoderConfig): Promise<VideoDecoderSupport> => {
+            inFlightDuringCheck.push(recording.inFlight());
+            return { config, supported: true };
+        });
+        const inFlightDuringDecode: string[][] = [];
+        const createFrameFactory = vi.fn(async (): Promise<VideoFrame> => {
+            inFlightDuringDecode.push(recording.inFlight());
+            return routeKey === AV1_PQ_ROUTE_KEY ?
+                createFrame(vi.fn(), EXTERNAL_AV1_HDR_AUTHORIZATION_DISPLAY_WIDTH, EXTERNAL_AV1_HDR_AUTHORIZATION_DISPLAY_HEIGHT) :
+                createFrame(vi.fn());
+        });
+        const inFlightDuringImport: string[][] = [];
+        const importExternalTexture = harness.importExternalTexture.getMockImplementation();
+        harness.importExternalTexture.mockImplementation((descriptor: GPUExternalTextureDescriptor): unknown => {
+            inFlightDuringImport.push(recording.inFlight());
+            return importExternalTexture?.(descriptor);
+        });
+        const runner = createRunner(createFrameFactory, createCapabilityProbeSession({ store: recording.store }));
+
+        await expect(validateRoute(runner, harness.device, routeKey)).resolves.toMatchObject({ status: 'authorized' });
+
+        expect(recording.markRunning.mock.calls).toEqual([
+            [ probe, checkLabel, { bytes: 0, decoders: 1 } ],
+            [ probe, decodeLabel, decodeCost ]
+        ]);
+        expect(inFlightDuringCheck).toEqual([ [ checkLabel ] ]);
+        // The import and render of the frame run inside the decode step, so a page that stops in them names it
+        expect(inFlightDuringDecode).toEqual([ [ decodeLabel ] ]);
+        expect(inFlightDuringImport).toEqual([ [ decodeLabel ] ]);
+        expect(recording.inFlight()).toEqual([]);
+        // The check settles before any executor is built
+        expect(isConfigSupported.mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(PresentationExecutor.create).mock.invocationCallOrder[0]);
+    });
+
+    it('rejects the routes of a blocked check without a decoder call', async () => {
+        const harness = createDeviceHarness(createExpectedObservations(PQ_ROUTE_KEY));
+        const recording = createRecordingStore({ blocked: new Set([ HEVC_CHECK_LABEL ]) });
+        const createFrameFactory = vi.fn(async (): Promise<VideoFrame> => createFrame(vi.fn()));
+        const runner = createRunner(createFrameFactory, createCapabilityProbeSession({ store: recording.store }));
+
+        await expect(validateRoute(runner, harness.device, PQ_ROUTE_KEY)).resolves.toMatchObject({
+            failureDetail: HEVC_CHECK_LABEL,
+            failureReason: 'stopped-page',
+            status: 'rejected'
+        });
+        expect(isConfigSupported).not.toHaveBeenCalled();
+        expect(createFrameFactory).not.toHaveBeenCalled();
+        expect(PresentationExecutor.create).not.toHaveBeenCalled();
+        expect(recording.markRunning).not.toHaveBeenCalled();
+    });
+
+    it('rejects the routes of a blocked decode without opening a decoder', async () => {
+        const harness = createDeviceHarness(createExpectedObservations(PQ_ROUTE_KEY));
+        const recording = createRecordingStore({ blocked: new Set([ HEVC_DECODE_LABEL ]) });
+        const createFrameFactory = vi.fn(async (): Promise<VideoFrame> => createFrame(vi.fn()));
+        const runner = createRunner(createFrameFactory, createCapabilityProbeSession({ store: recording.store }));
+
+        await expect(validateRoute(runner, harness.device, PQ_ROUTE_KEY)).resolves.toMatchObject({
+            failureDetail: HEVC_DECODE_LABEL,
+            failureReason: 'stopped-page',
+            status: 'rejected'
+        });
+        expect(isConfigSupported).toHaveBeenCalledOnce();
+        expect(createFrameFactory).not.toHaveBeenCalled();
+        expect(harness.importExternalTexture).not.toHaveBeenCalled();
+        await vi.waitFor(() => expectEveryResourceDestroyed(harness));
+    });
+
+    it('decodes the HEVC vector once for prewarmed PQ and HLG, and closes the frame once', async () => {
+        const pqObservations = createExpectedObservations(PQ_ROUTE_KEY);
+        const hlgObservations = createExpectedObservations(HLG_ROUTE_KEY);
+        // The routes render one after the other from the one frame, PQ first, each in one render pass
+        const harness = createWebGPUDeviceHarness({
+            readPixel: (texel: ReadbackTexel): ColorTriplet | undefined => (texel.renderPassCount === 1 ? pqObservations : hlgObservations)
+                .find(observation => observation.sampleX === texel.sampleX && observation.sampleY === texel.sampleY)?.linearRGB
+        });
+        const close = vi.fn();
+        const createFrameFactory = vi.fn(async (): Promise<VideoFrame> => createFrame(close));
+        const registry = new ExternalHDRPresentationAuthorizationRegistry(createRunner(createFrameFactory));
+
+        registry.prewarm(harness.device, TARGET_FORMAT);
+        await registry.waitForPending(harness.device, TARGET_FORMAT);
+
+        expect(isConfigSupported).toHaveBeenCalledOnce();
+        expect(createFrameFactory).toHaveBeenCalledOnce();
+        expect(harness.importExternalTexture).toHaveBeenCalledTimes(2);
+        expect(close).toHaveBeenCalledOnce();
+        expect(registry.getTelemetry(harness.device, TARGET_FORMAT).authorizedRouteKeys).toEqual([ PQ_ROUTE_KEY, HLG_ROUTE_KEY ]);
+        await vi.waitFor(() => expectEveryResourceDestroyed(harness));
+    });
+
+    it('starts a codec\'s next decode on a device only once its last one settles', async () => {
+        const harness = createDeviceHarness(createExpectedObservations(PQ_ROUTE_KEY));
+        const firstFrame = createDeferred<VideoFrame>();
+        const createFrameFactory = vi.fn<ExternalHDRAuthorizationFrameFactory>()
+            .mockReturnValueOnce(firstFrame.promise)
+            .mockImplementation(async (): Promise<VideoFrame> => createFrame(vi.fn()));
+        const registry = new ExternalHDRPresentationAuthorizationRegistry(createRunner(createFrameFactory));
+
+        const pqDecision = registry.authorize(harness.device, TARGET_FORMAT, PQ_ROUTE_KEY);
+        await vi.waitFor(() => expect(createFrameFactory).toHaveBeenCalledOnce());
+        const hlgDecision = registry.authorize(harness.device, TARGET_FORMAT, HLG_ROUTE_KEY);
+        const firstClose = vi.fn();
+        firstFrame.resolve(createFrame(firstClose));
+        await expect(pqDecision).resolves.toMatchObject({ status: 'authorized' });
+        await hlgDecision;
+
+        expect(isConfigSupported).toHaveBeenCalledTimes(2);
+        expect(createFrameFactory).toHaveBeenCalledTimes(2);
+        // HLG, asked for while PQ's decode ran, began its check only once PQ's decode closed its frame
+        expect(isConfigSupported.mock.invocationCallOrder[1]).toBeGreaterThan(firstClose.mock.invocationCallOrder[0]);
+    });
+
+    it('opens no decoder once the deadline passes during the check', async () => {
+        vi.useFakeTimers();
+        const harness = createDeviceHarness(createExpectedObservations(PQ_ROUTE_KEY));
+        const support = createDeferred<VideoDecoderSupport>();
+        isConfigSupported.mockReturnValueOnce(support.promise);
+        const createFrameFactory = vi.fn(async (): Promise<VideoFrame> => createFrame(vi.fn()));
+        // The session would wait for the check longer than the authorization does, so the authorization's deadline passes during it
+        const session = createCapabilityProbeSession({ timeoutMilliseconds: AUTHORIZATION_TIMEOUT_MILLISECONDS * 2 });
+
+        const decisionPromise = validateRoute(createRunner(createFrameFactory, session), harness.device, PQ_ROUTE_KEY);
+        await vi.waitFor(() => expect(isConfigSupported).toHaveBeenCalledOnce());
+        await vi.advanceTimersByTimeAsync(AUTHORIZATION_TIMEOUT_MILLISECONDS);
+        await expect(decisionPromise).resolves.toMatchObject({ failureReason: 'timeout', status: 'rejected' });
+
+        support.resolve({ supported: true });
+        await vi.runAllTimersAsync();
+        expect(PresentationExecutor.create).not.toHaveBeenCalled();
+        expect(createFrameFactory).not.toHaveBeenCalled();
+    });
+
+    it('pops the validation scope right after the submit, and never twice when its result never comes', async () => {
+        vi.useFakeTimers();
+        const harness = createDeviceHarness(createExpectedObservations(PQ_ROUTE_KEY));
+        harness.popErrorScope.mockReturnValue(new Promise<GPUError | null>(() => undefined));
+        const runner = createRunner(async (): Promise<VideoFrame> => createFrame(vi.fn()));
+
+        const decisionPromise = validateRoute(runner, harness.device, PQ_ROUTE_KEY);
+        await vi.waitFor(() => expect(harness.queueSubmit).toHaveBeenCalledOnce());
+        const [ submitOrder ] = harness.queueSubmit.mock.invocationCallOrder;
+        const popOrder = harness.popErrorScope.mock.invocationCallOrder.find(order => order > submitOrder);
+        expect(popOrder).toBeDefined();
+        expect(popOrder).toBeLessThan(harness.queueOnSubmittedWorkDone.mock.invocationCallOrder[0]);
+
+        await vi.advanceTimersByTimeAsync(CAPABILITY_PROBE_TIMEOUT_MILLISECONDS);
+        await expect(decisionPromise).resolves.toMatchObject({ failureReason: 'timeout', status: 'rejected' });
+        await vi.runAllTimersAsync();
+        expect(harness.popErrorScope).toHaveBeenCalledTimes(harness.pushErrorScope.mock.calls.length);
+        expectEveryResourceDestroyed(harness);
+    });
+
+    it('probes a route again after a timeout, which it does not keep', async () => {
+        vi.useFakeTimers();
+        const harness = createDeviceHarness(createExpectedObservations(PQ_ROUTE_KEY));
+        const createFrameFactory = vi.fn<ExternalHDRAuthorizationFrameFactory>()
+            .mockReturnValueOnce(new Promise<VideoFrame>(() => undefined))
+            .mockImplementation(async (): Promise<VideoFrame> => createFrame(vi.fn()));
+        const registry = new ExternalHDRPresentationAuthorizationRegistry(createRunner(createFrameFactory));
+
+        const firstDecision = registry.authorize(harness.device, TARGET_FORMAT, PQ_ROUTE_KEY);
+        await vi.waitFor(() => expect(createFrameFactory).toHaveBeenCalledOnce());
+        await vi.advanceTimersByTimeAsync(CAPABILITY_PROBE_TIMEOUT_MILLISECONDS);
+        await expect(firstDecision).resolves.toMatchObject({ failureReason: 'timeout' });
+        expect(registry.getAuthorizationFailure(harness.device, TARGET_FORMAT, 'hevc', createPQColorMetadata()))
+            .toMatch(new RegExp(`^timeout: ${PQ_ROUTE_KEY} `, 'u'));
+        await vi.runAllTimersAsync();
+        vi.useRealTimers();
+
+        const secondDecision = registry.authorize(harness.device, TARGET_FORMAT, PQ_ROUTE_KEY);
+        expect(secondDecision).not.toBe(firstDecision);
+        await expect(secondDecision).resolves.toMatchObject({ status: 'authorized' });
+        expect(createFrameFactory).toHaveBeenCalledTimes(2);
+        expect(registry.isAuthorized(harness.device, TARGET_FORMAT, 'hevc', createPQColorMetadata())).toBe(true);
     });
 });

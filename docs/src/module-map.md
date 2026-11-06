@@ -74,7 +74,13 @@ The optional user passes a host may offer are pass projects in `wgpup/`, outside
 - `CustomPlaybackEligibility.ts`: per-session route choice, the player-selection prefilter, `hasEligibleCustomVideoRoute` for item-scoped negotiation, the codecs whose interlaced streams a route presents (`presentsInterlacedVideo`), and the video and audio codecs a playback decodes (`getGPUVideoDecodeTarget`, `getPlaybackAudioCodec`), which a host fetches packages for.
 - `CustomDecodeCapabilities.ts`: the cached orchestrator of every capability probe, the per-item probe selection, and the codec lists, with the video codecs only a decoder package decodes (`CUSTOM_PACKAGE_VIDEO_CODECS`).
 - `CapabilityAssetLoading.ts`: the bounded, retried download of a probe's served vectors.
-- `CapabilityProbeStore.ts`: the probe verdicts kept in localStorage across page loads, their fingerprint, the clear a failed start or a host calls, the run journal that names the probes in a browser call, with the steps they had in flight, when a page stopped, and the crash event a host listens to.
+- `CapabilityProbeStore.ts`: the probe verdicts kept in localStorage across page loads, their fingerprint, the clear a failed start or a host calls, the run journal that names the steps in flight and their costs when a page stopped, the step quarantine (blocked steps, suspects, and the concurrency ceiling), and the crash event a host listens to.
+- `CapabilityProbeManager.ts`: the parallel runner of every probe's browser calls within byte and decoder limits, with negotiation priority, reservations held until a call settles, and the stop rule for a call that never settles.
+- `CapabilityProbeSession.ts`: the page's probe session, which owns the manager, sets its limits from the quarantine, and wraps every probe step (`record`): it blocks defect and quarantined steps with a `CapabilityProbeBlock`, enqueues suspects, and records admitted calls on the store.
+- `CapabilityProbeSteps.ts`: the step descriptors, a label naming each browser call and its cost in decoded bytes and decoders, from the codecs' maximum reference frames.
+- `BrowserDefects.ts`: the declared table of known browser defects whose matching steps never run, and the browser identity it matches.
+- `AudioDataPlanes.ts`: the copy of an AudioData in its own format, converted to float planes in JavaScript.
+- `VideoFrameFormatSupport.ts`: the check that the browser holds a raw VideoFrame format, and a format's byte length.
 - `CustomPlaybackRuntime.ts`: runtime feature detection with failure reasons.
 - `H264ProfileCapabilities.ts`: the per-profile H.264 decoded-output probe and Jellyfin's profile names.
 - `HEVCRangeExtensionCapabilities.ts`: the nine range-extension variant definitions and the stream metadata resolver.
@@ -320,11 +326,11 @@ AC-3 and E-AC-3 through a hidden `<audio>` and MSE.
 The authorization vectors are in `capability/vectors/`.
 
 - `RawHDRPresentationAuthorization.ts`: raw route keys, readback of the route's default plan, and the per-device registry.
-- `ExternalHDRPresentationAuthorization.ts`: external PQ and HLG route keys per codec, HEVC Main 10 and AV1 Main 10, each checked with its own neutralized vector.
+- `ExternalHDRPresentationAuthorization.ts`: external PQ and HLG route keys per codec, HEVC Main 10 and AV1 Main 10, each checked with its own neutralized vector, its check and decode recorded as probe session steps and batched per codec and target format.
 - `DolbyVisionPresentationAuthorization.ts`, `ExternalDolbyVisionPresentationAuthorization.ts`: raw Dolby Vision keys (per raw format: single-layer, the P4 and P7 bases, and the P4 and P7 FEL) and the external P5 and P8 keys, one registry each, checked with synthetic RPU vectors.
 - `GPUAuthorizationDeadline.ts`: the shared 5 s timeout, cancelled on device loss.
 - `GPUCanvasReadback.ts`: bounded GPU canvas pixel readback (5 s).
-- `GPUErrorScope.ts`: the error-scope cleanup the authorizations share.
+- `GPUErrorScope.ts`: the validation error scope the authorizations and the canvas readback push and pop in one task around their submit (`captureValidationErrors`), and its cleanup.
 
 ## Outside src/
 

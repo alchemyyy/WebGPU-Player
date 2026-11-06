@@ -62,6 +62,15 @@ Without a container mask, the host's `audioMetadataLayout` (Jellyfin's count and
   The engine has no decoder of its own to probe: Mediabunny's PCM decoding is always supported, and a codec only a package decodes reads `unsupported` with the reason `no-engine-decoder`.
 - GPU: presentation authorization reads back renders of the production shaders.
   Results are cached per `GPUDevice`, canvas format, and shader signature, and dropped on device loss.
+  A `timeout` or `device-lost` decision stays visible but is not kept: the next authorize call probes the route again (`isRetriedAuthorizationDecision`), since a deadline that counted time behind other runners is no verdict.
+  Every runner, and the canvas readback, pushes and pops its validation error scope in the same task, around its submit (`captureValidationErrors`, `submitAuthorizationFrames`), and awaits the popped result later, because the runners at device creation share the device's one scope stack and a late pop could take another runner's scope.
+- External HDR authorization opens a hardware decoder (HEVC `hvc1.2.4.L120.B0` at 1920x1088, AV1 `av01.0.08M.10` at 1920x1080, `prefer-hardware`), so its `isConfigSupported` check and its decode run as recorded steps of the page's probe session, under the probes `external-hdr-authorization:hevc` and `external-hdr-authorization:av1`, with labels such as `check hvc1.2.4.L120.B0 1920x1088 prefer-hardware`.
+  A crash in them is quarantined like a capability probe step's, and a blocked or defective step rejects the route with the reason `stopped-page` or `browser-defect`.
+  The decode step's call decodes, imports, renders, and reads back within the manager's step timeout (`CapabilityProbeManager.timeoutMilliseconds`), and returns decisions, never the frame.
+  The routes of one codec and target format asked for in the same task, such as the HEVC PQ and HLG keys, share one check and one decode, and a device runs a codec's batches one after another, so it never holds two of that codec's decoders.
+  A deadline that passes during the check opens no decoder.
+- External Dolby Vision authorization returns `video-frame-creation-failed` before compiling anything when `canHoldVideoFrameFormat('I420P10')` is false, as on shipping Safari or without `VideoFrame`.
+  The other authorizations open no decoder, so they are not recorded.
 - `selectCustomDecodeProbes(item)` picks the probes an item needs.
   Every audio probe runs for every item, because a playing item can switch to any of its audio tracks: the stereo probes (`native-audio`), the 5.1 probes (`native-surround-audio`), and the 7.1 probes (`native-seven-point-one-audio`).
   The video probes follow the union of the video streams across the item's sources: the codec picks its native probes, a range extension picks its own variants, an H.264 stream beyond 8-bit 4:2:0 picks every raw format variant its profile codes at its depth beside the per-profile probe, since a host advertises the profile at that depth only when all of them qualify, a stream beyond 8-bit SDR adds the raw-plane and native HDR probes, and a range that is neither SDR nor static HDR adds the Dolby Vision probe.
@@ -70,11 +79,52 @@ Without a container mask, the host's `audioMetadataLayout` (Jellyfin's count and
   An item without stream metadata, or with a video stream that names no codec, runs every probe.
 - A probe the item does not select reads `not-probed`, which no profile rule or eligibility check treats as support, and its H.264 profile result is absent; `probeStates` records which probes a result ran.
   At eligibility, the host keeps the negotiated result when `hasProbedCustomDecodeSelection` says it covers the played source, and otherwise probes that source.
-- A range-extension or raw-format probe downloads its vector before its decode timeout starts, under its own 30 s bound (`capability/CapabilityAssetLoading.ts`), so a slow link never reads as a slow decoder or trips the queue's timeout.
+- A range-extension or raw-format probe downloads its vector before its decode step joins the probe manager, under its own 30 s bound (`capability/CapabilityAssetLoading.ts`), so a slow link never reads as a slow decoder or trips a step's timeout.
   A download that fails with a network error, 408, 429, or 5xx is retried after 250 ms and again after 1 s, inside the same 30 s bound; any other HTTP failure, or the bound ending, is final and reports `asset-unavailable` with an unknown status.
+- Before its download, a raw HDR, range-extension, AV1 raw format, or H.264 raw format probe asks `canHoldVideoFrameFormat(format)` (`capability/VideoFrameFormatSupport.ts`), which builds a 2x2 `VideoFrame` of the format.
+  A `TypeError` means the browser has no such pixel format, as every shipping Safari lacks the 10-bit and 12-bit formats, and the probe reads `unsupported` with the reason `output-copy-unsupported` without downloading or decoding.
+- An audio probe copies each `AudioData` in its own format (`copyAudioDataPlanes` in `capability/AudioDataPlanes.ts`): one copy for interleaved data, one per plane for planar data, converted to float in JavaScript.
+  It never asks the browser to convert a sample layout, since Safari 26.0 to 26.3 ends the page in `copyTo(..., { format: 'f32-planar', planeIndex })` with a plane index of 2 or more on its interleaved multi-channel output (WebKit bug 302521).
+- A step that matches an entry of `capability/BrowserDefects.ts` never runs and reads `unsupported` with the reason `browser-defect`.
+  The table holds WebKit bug 308322: AAC decoding with more than 2 channels on WebKit before Safari 27, or of unknown version, may end the page, since AudioToolbox can return no format description for the raw AudioSpecificConfig.
+  An iOS 26 user agent freezes the OS version at 18.x and a web view has no `Version/`, so such a WebKit counts as unknown.
 - Each probe is one promise per page, so a later item runs only the probes no earlier item ran.
   It is dropped only when the store clears a stored verdict it holds, or replaced when a background rerun reaches a new verdict.
-  `SerializedHeavyCapabilityProbeScheduler` runs the heavy probes one at a time, audio first; after one a negotiation started times out, later heavy probes report a timeout until the page reloads.
+  `capability/CapabilityProbeManager.ts` runs the browser calls of every probe, and the MSE AC-3/E-AC-3 playbacks, side by side; see [The probe manager](#the-probe-manager).
+
+### The probe manager
+
+Every browser call is a step: each `isConfigSupported` check, each decode, each H.264 profile's check and decode, and each MSE layout playback.
+One `CapabilityProbeSession` per page (`capability/CapabilityProbeSession.ts`, from `getDefaultCapabilityProbeSession()` or a probe's `getSession()`) owns the manager, and every probe's steps go through its `record(queue, probe)` wrapper; see [Probes that stop the page](#probes-that-stop-the-page).
+
+- `capability/CapabilityProbeSteps.ts` describes each step with a label naming the exact call and a cost `{ bytes, decoders }`.
+  Video labels read `<check|decode> <codec> <W>x<H>`, then the `hardwareAcceleration` unless it is `no-preference`, then the copy format; audio labels read `<check|decode> <codec> <N>ch <R>Hz`, and MSE labels `play <codec> <N>ch <R>Hz`.
+  Labels are printable ASCII, at most 96 characters (`CAPABILITY_PROBE_STEP_LABEL_MAXIMUM_LENGTH`).
+- A check costs 0 bytes and 1 decoder.
+  A video decode costs the frame layout at coded size times the codec's maximum reference frames plus one, plus one copy frame when it copies: 16 for H.264 and HEVC, 8 for VP9 and AV1, and 3 for VP8.
+  An audio decode costs its decoded f32 PCM.
+- Negotiation steps, and a promoted background run's, run in parallel while the running decoders stay within the decoder limit and the running bytes within the byte limit; a step larger than the limits runs once nothing else does.
+  The byte limit is `CAPABILITY_PROBE_DEFINITION_BYTES`, the largest decode cost among the steps of every probe definition (`getLargestCapabilityProbeStepCost`), the raw HEVC 4K decode, so parallel probing never holds more than the heaviest single test would alone.
+  The decoder limit is `navigator.hardwareConcurrency`, or 1 without it.
+  The session lowers each to the stored ceiling's value in that dimension when it has one (`CapabilityProbeCeiling`, each of `bytes` and `decoders` a number or null for uncapped), and the decoders to 1 while suspects remain; it reads the limits again once the last suspect settles.
+- Negotiation steps, and a promoted background run's, go before background steps; among them, a step that does not fit never holds back a later one that does.
+  A negotiation's video decodes join the manager only once its audio probes settle (`manager.after`), so a video timeout never costs audio its verdicts; checks join at once.
+- A step of a background run that is not promoted, read at admission, runs alone: it starts only when nothing runs and no negotiation step waits, and no other background step joins it, checks included.
+  A negotiation step may join a running background step, so playback never waits on the warm-up, but a background crash still names exactly one call when no negotiation runs.
+  A promotion takes effect at once (`CapabilityProbeBackgroundRun.promotion`): the run's waiting steps join the negotiation steps without waiting for a running call to settle.
+- A step enqueued with `{ alone: true }` runs by itself: it starts once nothing runs and no step ahead of it waits, and nothing joins it.
+  A negotiation's other steps go ahead of it and it goes ahead of background steps, except that a background step that runs alone goes last.
+- A decode step may pass `confirm(value)`, which accepts a negative result.
+  A call that overlapped any other call and settles before its timeout with a value `confirm` accepts runs again alone, timed from its own admission, and its caller gets that run's result.
+  A call that ran alone, a timeout, and an error are never rerun.
+  A hardware decoder pool may refuse a decoder only because other calls hold theirs, and a refused decode would otherwise be stored as `unsupported` for the fingerprint.
+  Every decode step passes it: native video and Ultra HD, HDR and Dolby Vision frames, raw HDR and the exact raw formats, audio, each H.264 profile decode, and each MSE playback; configuration checks do not.
+- A step holds its reservation until its call settles, not until its timeout, so work the browser still does keeps counting.
+  Checks and decodes (`check`, `runTimed`) time out 2 s after they start, so queue time never counts, and resolve `CAPABILITY_PROBE_TIMEOUT`.
+  A timed call still unsettled one more timeout after its own stops the page's probing: every waiting and later step reads as a timeout until the page reloads.
+- The H.264 profile output probe also closes its own decoder after 2 s (`H264_PROFILE_OUTPUT_PROBE_TIMEOUT_MILLISECONDS`), since the manager cannot close a decoder.
+- An MSE playback (`NATIVE_MEDIA_AUDIO_PROBE`, `native-media-audio`) joins through the untimed `run`, since each playback bounds its own stages at 3 s; its cost is its buffered f32 PCM.
+- The raw HDR output probe waits for a pending `copyTo` before it settles, and closes a frame only after its copy settles.
 
 ### Background probes
 
@@ -83,15 +133,16 @@ Each call replaces the previous configuration; `refreshAfterUse`, which defaults
 
 - The warm-up runs every probe without a page result or stored verdict, one probe after another, in the order a full run starts them.
   A client whose `navigator.connection.saveData` is set, or whose `navigator.hardwareConcurrency` is below 4, gets no warm-up.
-- Before a background probe starts, and before each of its heavy steps joins the queue, it waits for its turn: a `requestIdleCallback` with a 2 s timeout (`BACKGROUND_PROBE_IDLE_TIMEOUT_MILLISECONDS`), then no media playing, no negotiation under way, and none settled in the last 10 s (`BACKGROUND_PROBE_NEGOTIATION_HOLD_MILLISECONDS`); a held step looks again after 1 s.
+- Before a background probe starts, and before each of its `run` and `runTimed` steps joins the manager, it waits for its turn: a `requestIdleCallback` with a 2 s timeout (`BACKGROUND_PROBE_IDLE_TIMEOUT_MILLISECONDS`), then no media playing, no negotiation under way, and none settled in the last 10 s (`BACKGROUND_PROBE_NEGOTIATION_HOLD_MILLISECONDS`); a held step looks again after 1 s.
+  Its checks skip the wait, but still run one at a time like its other steps.
   Without `requestIdleCallback`, as on WebKit, the wait is the whole 2 s.
-  The wait comes before a step joins the queue, so it never counts against the step's 2 s timeout, and it never holds the queue for a negotiation's steps.
+  The wait comes before a step joins the manager, so it never counts against the step's timeout, and it never holds back a negotiation's steps.
 - A background probe downloads its range-extension vector with `fetch(..., { priority: 'low' })`, retries included.
-- `probeCustomDecodeCapabilities` promotes a background probe it needs: its remaining steps skip the wait, and its later downloads take the default priority; a download already under way keeps its priority.
-  A probe no background run started runs at once, as without a warm-up, so a negotiation waits for at most the one background step already in the queue.
+- `probeCustomDecodeCapabilities` promotes a background probe it needs: its remaining steps skip the wait and take a negotiation's admission at once, and its later downloads take the default priority; a download already under way keeps its priority.
+  A probe no background run started runs at once, as without a warm-up, so a negotiation shares the limits only with the one background step that may be running.
 - A background step that times out marks only its run and halts the background for the page: no later background step runs, and the run's result, like any background result with a `probe-timeout` part, is discarded rather than kept as the page's result.
-  The scheduler's timeout poison stays unset, and a negotiation that needs the probe runs it again.
-- A browser on which a probe stopped a page, as a crash stops it, runs no background probe from then on: the warm-up and the refreshes of stored verdicts end before their first probe, and only negotiations probe; see [Probes that stop the page](#probes-that-stop-the-page).
+  A negotiation that needs the probe runs it again.
+- A background run of a probe that holds suspect steps runs after the others; see [Probes that stop the page](#probes-that-stop-the-page).
 
 ### Stored verdicts
 
@@ -110,8 +161,8 @@ Each call replaces the previous configuration; `refreshAfterUse`, which defaults
   Turning it off schedules no further rerun, but a rerun already queued still runs; turning it back on reruns the hits from then on.
 - A start that falls back with `decode-failed` or `startup-timeout` before its first frame clears the entry and the stored verdicts the page holds, when the page used any (`clearAfterStartFailure`, from `CustomPlaybackController`), so the renegotiation probes again.
   Driver updates, OS codec packs, the hardware acceleration setting, and Chrome's software fallback after a GPU process crash change no fingerprint.
-- `clearStoredCapabilityProbeVerdicts()` clears it, crashed probes included, and `readStoredCapabilityProbeVerdictState()` returns the stored fingerprint, write time, age, probe names, and crashed probes, each a `CrashedCapabilityProbe` with its probe name and the steps it had in flight, sorted by probe.
-- `onCapabilityProbeCrash(listener)` calls the listener on the page that finds crashed probes, once per finding, after the entry records them, with only the crashes of the current fingerprint that finding recorded; it returns the function that removes the listener.
+- `clearStoredCapabilityProbeVerdicts()` clears it, quarantine included, and `readStoredCapabilityProbeVerdictState()` returns the stored fingerprint, write time, age, probe names, `blockedSteps`, `suspectSteps`, `ceiling`, and `crashedProbes`, the blocked and suspect steps grouped by probe, each a `CrashedCapabilityProbe` with its probe name and step labels, sorted by probe.
+- `onCapabilityProbeCrash(listener)` calls the listener on the page that finds a stopped page, once per finding, after the entry records it, with each probe and the steps it had in flight; it returns the function that removes the listener.
   A listener that throws stops neither the recording nor the other listeners.
   A store of its own takes listeners with `onCrash`.
 - The MSE AC-3/E-AC-3 probe and the GPU presentation authorizations are not stored: the first is not a `CustomDecodeProbe`, and the second are measured on the presenter's device, which keeps them for that device.
@@ -119,22 +170,34 @@ Each call replaces the previous configuration; `refreshAfterUse`, which defaults
 ### Probes that stop the page
 
 A probe whose browser call stops the page, as a WebContent crash on WebKit does, never returns, so it reaches no verdict and the next page would run it again.
-The store therefore keeps a run journal beside the verdicts, and a probe that was in a browser call when a page stopped never runs again for that fingerprint.
+The store therefore keeps a run journal beside the verdicts, and quarantines the steps that were in flight when a page stopped, per fingerprint.
 
-- `CustomDecodeCapabilityProbe` records a probe on the store (`markRunning(probe, step)`) before each of its browser calls, with a label that names the call: each `isConfigSupported` check, labelled `check` and the configuration's codec string, such as `check mp4a.40.2`, and each heavy step until the step's own work settles, even past its timeout.
-  A heavy step's call site gives its label to the heavy queue's `run` or `runTimed`, which require one: `decode` and the codec, such as `decode aac`; the codec and raw format for a raw HDR or raw format probe, such as `decode hevc I420P10`; the codec string for a native HDR or Dolby Vision frame probe, such as `decode hvc1.2.4.L153.B0`; and `decode h264 profiles` for the H.264 profile probe, which runs as one step.
-  Labels are short ASCII, at most 64 characters.
-  Downloads, idle waits, and steps waiting in the queue are not recorded, so a background run's record covers only the moments the browser works on it.
-- Each page keeps its record, the probes it has in a call, each with the labels of the steps it has in flight, and its fingerprint, under its own random id in the localStorage entry `webgpu-player-capability-probe-runs`, and drops it once its last call ends.
-  The page counts its open calls by probe and step, so concurrent configuration checks of one probe each appear once, and a step leaves the record once its last call ends.
+- `CapabilityProbeSession.record(queue, probe)` (`capability/CapabilityProbeSession.ts`) is the one wrapper every probe step goes through, the MSE playbacks under the probe `native-media-audio` included.
+  A step that matches a declared browser defect, or whose label the quarantine blocks, never joins the manager and resolves a `CapabilityProbeBlock` whose `reason` is `browser-defect` or `stopped-page`; the probe reads it as `unsupported` with that reason, which is a verdict the store keeps.
+  A suspect step joins the manager as a suspect; any other step joins as usual.
+  Once the manager admits a step, the wrapper records it on the store (`markRunning(probe, step, cost)`) with its label and cost, and ends the record once the call settles, even past its timeout.
+  Downloads, idle waits, and steps waiting in the manager are not recorded, so a background run's record covers only the moments the browser works on it.
+- Every probe run, negotiation, background, or MSE, first calls the session's `readQuarantine()`, which reads the store's quarantine and sets the manager's limits from it.
+- Each page keeps its record, the probes it has in a call, each with the labels of the steps it has in flight, the in-flight totals of bytes and decoders, and its fingerprint, under its own random id in the localStorage entry `webgpu-player-capability-probe-runs`, and drops it once its last call ends.
+  The page counts its open calls by probe and step, so concurrent calls of one step each appear once, and a step leaves the record once its last call ends.
 - A hidden page records nothing, since a browser may end a hidden page without a crash: the page drops its record as it hides, and as it unloads or enters the back-forward cache (`pagehide`), whatever a later visibility change reads, and writes it again as it shows.
 - A page holds a Web Lock of its own id while it has a record: it takes the lock before it writes the record and lets go of it after it drops the record, so an idle page holds none.
   The browser frees a page's locks when the page ends, however it ends, so a record whose lock is free is a stopped page's.
-- A page's first probe run (`readCrashedProbes`) takes the record of every other page whose lock is free, holding that lock while it does, so no page of that id writes one meanwhile.
-  It records the probes of such a record of the verdicts' fingerprint as crashed, each with the steps the record names, joined with the steps already stored for that probe, drops their verdicts, and then calls the crash listeners; a record of another fingerprint goes with no crash, and a page whose lock is held still runs, so its record stays.
+- A page's first quarantine read (`readQuarantine` on the store) takes the record of every other page whose lock is free, holding that lock while it does, so no page of that id writes one meanwhile, drops the stored verdicts of the probes in it, and calls the crash listeners; a record of another fingerprint goes with no crash, and a page whose lock is held still runs, so its record stays.
   Without Web Locks, or when the lock manager takes more than 2 s, the page records nothing and reads no crash.
-- The entry and the records of the 11-05 release named probes alone; such a crash or record reads as a crash with no steps, and the schema version stays 1.
-- A negotiation leaves the crashed probes out of its selection: they read `not-probed`, which no route takes as support, and `probeStates` names them `not-probed`, including the audio probes, which every item otherwise runs.
+- A stopped page with one distinct label in flight blocks that label: in every probe it reads `unsupported` with the reason `stopped-page` and never runs again for the fingerprint.
+  A label already blocked only adds the probes that had it in flight.
+- Several labels in flight become suspects.
+  The next round lasts while suspects remain, with the decoder limit at 1, and retries the suspects alone: the session enqueues each with `{ alone: true }`, so it starts only once nothing runs and no step ahead of it waits, and the background runs first the probes that hold no unsettled suspect (`holdsSuspectSteps(probe)`).
+  A suspect's call never overlaps another, so it is never rerun to confirm a result.
+  Once the last suspect settles, the session restores the limits, with any new ceiling, even in the middle of the round.
+  A suspect that stops the page alone is the culprit: it is blocked, and leaves the suspects; the others clear as they settle (`resolveSuspect`).
+  A step that was no suspect and stops the page alone during the round is blocked too, but explains nothing of the suspects' crash, so the round can still end in a ceiling.
+- When the last suspect clears and no suspect was the culprit, the crash came from concurrency, and the store lowers the ceiling below that crash's in-flight totals, each dimension on its own.
+  A dimension the crash held some of is capped one below its total, never above an existing cap; a total of 0, such as the bytes of a crash with only checks in flight, is no evidence and leaves that dimension's cap, or none.
+  When a new crash comes before an earlier one is explained, the round keeps the lower of each total.
+  A ceiling with neither dimension capped is null; the manager still runs one step alone whatever the ceiling.
+- The store's schema version is 2; an entry or record of version 1 is a miss.
 
 ## Route catalog
 
@@ -258,7 +321,9 @@ MPEG-1, H.263, MS-MPEG4, VP8, VP9, and AV1 have no interlaced coding.
 
 - Raw: `<I420P10..I444P12>:bt2020-ncl:bt2020:limited:<pq|hlg>` and `<I420..I444P12>:<matrix>:<primaries>:<full|limited>:sdr`, with every matrix (`bt709`, `bt470bg`, `smpte170m`, `bt2020-ncl`) and primaries set (`bt709`, `bt470bg`, `smpte170m`, `bt2020`).
   The HDR keys and the BT.709 SDR keys are prewarmed; every other SDR key authorizes on first use, and its vector doubles the chroma excursion so the gamut conversion moves its samples beyond the tolerance.
-- External HDR: `external-hevc-main10-bt709-limited:<pq|hlg>-v1`, prewarmed, and `external-av1-main10-bt709-limited:<pq|hlg>-v1`, authorized on first use, each with its own codec's vector.
+- External HDR: `external-hevc-main10-bt709-limited:<pq|hlg>-v1` and `external-av1-main10-bt709-limited:<pq|hlg>-v1`, each with its own codec's vector, authorize on first use, since they are the only keys whose check decodes a frame.
+  The two HEVC keys start together, sharing one decode, when an HDR negotiation waits for them (`waitForExternalHDRAuthorizationPrewarm`) or a playback that requests the external HDR route starts them (`prewarmExternalHDRPresentationAuthorization`); an AV1 key starts when its route is first used.
+  Device creation prewarms only the raw and Dolby Vision keys named prewarmed here.
 - Dolby Vision raw, each per BL format from I420 to I444P12: `<format>:dovi-rpu-v1`, `<format>:dovi-profile4-base-v1`, `<format>:dovi-profile4-fel-v1`, `<format>:dovi-profile7-base-v1`, and `<format>:dovi-profile7-fel-v1`.
   Only `I420P10:dovi-rpu-v1` and the I420P10 Profile 7 keys are prewarmed; the others authorize on first use.
 - Dolby Vision external: `external-I420P10-bt709-limited:dovi-p5-rpu-v1`, prewarmed, and `external-I420P10-bt709-limited:dovi-p8-rpu-v1`, which only AV1 P10 uses and which authorizes on first use; both check the same shader with their profile's synthetic RPU.

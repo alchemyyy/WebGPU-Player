@@ -226,8 +226,8 @@ GPU authorizations, all in `validation/`:
 
 | Name | Route key | File |
 | --- | --- | --- |
-| `ext-pq` | `external-hevc-main10-bt709-limited:pq-v1` | `ExternalHDRPresentationAuthorization.ts` |
-| `ext-hlg` | `external-hevc-main10-bt709-limited:hlg-v1` | `ExternalHDRPresentationAuthorization.ts` |
+| `ext-pq` | `external-hevc-main10-bt709-limited:pq-v1`, authorized on first use, with `ext-hlg` | `ExternalHDRPresentationAuthorization.ts` |
+| `ext-hlg` | `external-hevc-main10-bt709-limited:hlg-v1`, authorized on first use, with `ext-pq` | `ExternalHDRPresentationAuthorization.ts` |
 | `ext-av1-pq`, `ext-av1-hlg` | `external-av1-main10-bt709-limited:<pq\|hlg>-v1`, authorized on first use | `ExternalHDRPresentationAuthorization.ts` |
 | Raw keys | `<format>:...`, as written in [Route keys](routes.md#route-keys) | `RawHDRPresentationAuthorization.ts` |
 | `dovi-rpu` | `<format>:dovi-rpu-v1`, one per raw format from I420 to I444P12 | `DolbyVisionPresentationAuthorization.ts` |
@@ -238,6 +238,7 @@ GPU authorizations, all in `validation/`:
 
 `I420P10:dovi-rpu-v1` and the I420P10 Profile 7 keys are part of the default Dolby Vision prewarm.
 The Profile 4 keys in any format, and the Profile 7 and single-layer keys of other formats, authorize on first use, so a host must wait for them before it advertises or starts a stream that needs one.
+The external HDR keys authorize on first use too: an HDR negotiation waits for the HEVC pair (`waitForExternalHDRAuthorizationPrewarm`), which shares one decode, and an AV1 HDR stream waits for its own key.
 
 Other conditions:
 

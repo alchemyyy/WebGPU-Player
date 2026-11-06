@@ -17,6 +17,7 @@ import CustomDecodeCapabilityProbe, {
 } from 'webgpu-player/capability/CustomDecodeCapabilities';
 
 import { createFakeWebLocks, type FakeWebLocks } from '../helpers/fakeWebLocks';
+import { CAPABILITY_PROBE_TIMEOUT_MILLISECONDS, UNAFFECTED_BROWSER } from '../helpers/capabilityProbeSession';
 
 type ProbeHarness = {
     audioProbe: Mock<(config: AudioDecoderConfig) => Promise<AudioDecoderSupport>>
@@ -34,8 +35,9 @@ type IdleGate = {
     waiterCount: () => number
 };
 
-const CAPABILITY_PROBE_TIMEOUT_MILLISECONDS = 2_000;
 const AAC_CODEC_STRING = 'mp4a.40.2';
+// The step label of the stereo AAC decode, as the store reports it
+const STEREO_AAC_DECODE = 'decode mp4a.40.2 2ch 48000Hz';
 const SURROUND_CHANNEL_COUNT = 6;
 const FINGERPRINT: CapabilityProbeFingerprint = Object.freeze({
     adapter: null,
@@ -66,6 +68,10 @@ function createHarness(videoOutputSupported = true): ProbeHarness {
         audioProbe,
         environment: {
             audioDecoder: { isConfigSupported: audioProbe },
+            browserIdentity: UNAFFECTED_BROWSER,
+            canHoldVideoFrameFormat: () => true,
+            // Room for the probes' calls side by side
+            hardwareConcurrency: 4,
             h264ProfileProbe: null,
             hevcRangeExtensionVectorLoader: vectorLoader,
             nativeAudioOutputProbe,
@@ -231,26 +237,29 @@ describe('capability probe warm-up', () => {
         expect(harness.videoProbe).toHaveBeenCalled();
     });
 
-    it('keeps a background timeout out of the scheduler and the page result, and a negotiation reruns it', async () => {
+    it('keeps a background timeout out of the manager and the page result, and a negotiation reruns it', async () => {
         const harness = createHarness();
-        // The first AAC decode never finishes; every later decode does
-        harness.nativeAudioOutputProbe.mockImplementationOnce(() => new Promise<boolean>(() => undefined));
+        // The first AAC decode outlasts its timeout, then settles before the manager would stop the page's probing; every later decode settles at once
+        harness.nativeAudioOutputProbe.mockImplementationOnce(() => new Promise<boolean>((resolve) => {
+            globalThis.setTimeout(() => resolve(true), 1.5 * CAPABILITY_PROBE_TIMEOUT_MILLISECONDS);
+        }));
         const probe = createProbe(harness);
         probe.warmUp();
         await vi.advanceTimersByTimeAsync(0);
         expect(countOutputProbes(harness, AAC_CODEC_STRING)).toBe(1);
+        const decodesBeforeTimeout = harness.nativeAudioOutputProbe.mock.calls.length;
 
         await vi.advanceTimersByTimeAsync(CAPABILITY_PROBE_TIMEOUT_MILLISECONDS);
         await vi.advanceTimersByTimeAsync(10 * BACKGROUND_PROBE_RECHECK_MILLISECONDS);
 
         // The timeout halts the background: no later decode starts, and no other probe begins
-        expect(harness.nativeAudioOutputProbe).toHaveBeenCalledOnce();
+        expect(harness.nativeAudioOutputProbe).toHaveBeenCalledTimes(decodesBeforeTimeout);
         expect(countSurroundConfigurations(harness)).toBe(0);
         expect(harness.videoProbe).not.toHaveBeenCalled();
 
         const capabilities = await probe.probe(MPEG2_ITEM);
 
-        // A poisoned scheduler would answer probe-timeout for every codec, and a kept background result would keep AAC's
+        // A stopped manager would answer probe-timeout for every codec, and a kept background result would keep AAC's
         expect(capabilities.audio.aac).toMatchObject({ status: 'supported' });
         expect(capabilities.audio.opus).toMatchObject({ status: 'supported' });
         expect(capabilities.nativeSurroundAudio?.aac).toMatchObject({ status: 'supported' });
@@ -431,7 +440,7 @@ describe('a probe that stops the page', () => {
         vi.useRealTimers();
     });
 
-    it('in the warm-up stops the warm-up of every later page, whose negotiations leave it out', async () => {
+    it('alone is blocked on every later page, which reads it unsupported and still warms up the rest', async () => {
         const storage = createMemoryStorage();
         const locks = createFakeWebLocks();
         const stoppedHarness = createHarness();
@@ -446,47 +455,61 @@ describe('a probe that stops the page', () => {
         const probe = createProbe(harness, { store });
         probe.warmUp();
         await vi.runAllTimersAsync();
-
-        // Every page load warmed up again, and stopped in the same decode, before a page remembered it
-        expect(harness.audioProbe).not.toHaveBeenCalled();
-        expect(harness.videoProbe).not.toHaveBeenCalled();
-
         const capabilities = await probe.probe(MPEG2_ITEM);
 
-        // The page stopped in the AAC decode, the one heavy step its probe had in flight
-        expect(store.readState()?.crashedProbes).toEqual([ { probe: 'native-audio', steps: [ 'decode aac' ] } ]);
-        expect(capabilities.audio.aac).toMatchObject({ reason: 'not-probed', status: 'not-probed' });
-        expect(capabilities.probeStates?.['native-audio']).toBe('not-probed');
+        // The page stopped in the AAC decode, the one call it had in flight
+        expect(store.readState()?.blockedSteps).toEqual([ STEREO_AAC_DECODE ]);
+        expect(capabilities.audio.aac).toMatchObject({ reason: 'stopped-page', status: 'unsupported' });
         expect(countOutputProbes(harness, AAC_CODEC_STRING)).toBe(0);
+        expect(capabilities.audio.opus).toMatchObject({ status: 'supported' });
         expect(capabilities.nativeSurroundAudio?.aac).toMatchObject({ status: 'supported' });
+        expect(harness.videoProbe).toHaveBeenCalled();
     });
 
-    it('in a negotiation is left out of a later page\'s negotiation, while the probes that settled keep their verdicts', async () => {
+    it('with other calls leaves suspects that a later page retries alone, then holds below what the stopped page ran together', async () => {
         const storage = createMemoryStorage();
         const locks = createFakeWebLocks();
         const stoppedHarness = createHarness();
-        // The first page stops in its 1080p HEVC decode
-        stoppedHarness.nativeVideoOutputProbe.mockImplementation((probeRequest: NativeVideoOutputProbeRequest): Promise<boolean> => (
-            probeRequest.expectedCodedWidth === 1_920 ? neverReturns() : Promise.resolve(true)
-        ));
+        // The first page stops in its 1080p and Ultra HD HEVC decodes, which it runs side by side
+        stoppedHarness.nativeVideoOutputProbe.mockImplementation(neverReturns);
         void createProbe(stoppedHarness, { store: createPageStore(storage, locks, 'page-1') }).probe(HEVC_ITEM);
         await vi.advanceTimersByTimeAsync(0);
-        expect(stoppedHarness.nativeVideoOutputProbe.mock.calls.map(([ probeRequest ]) => probeRequest.expectedCodedWidth)).toContain(1_920);
+        expect(stoppedHarness.nativeVideoOutputProbe).toHaveBeenCalledTimes(2);
         locks.stopPage('page-1');
 
         const harness = createHarness();
+        let decoding = 0;
+        let mostDecoding = 0;
+        harness.nativeVideoOutputProbe.mockImplementation(async (): Promise<boolean> => {
+            decoding += 1;
+            mostDecoding = Math.max(mostDecoding, decoding);
+            await new Promise<void>((resolve) => {
+                globalThis.setTimeout(resolve, CAPABILITY_PROBE_TIMEOUT_MILLISECONDS / 2);
+            });
+            decoding -= 1;
+            return true;
+        });
         const store = createPageStore(storage, locks, 'page-2');
         const crashListener = vi.fn();
         store.onCrash(crashListener);
-        const capabilities = await createProbe(harness, { store, waitForIdle: createIdleGate().waitForIdle }).probe(HEVC_ITEM);
+        const probe = createProbe(harness, { store, waitForIdle: createIdleGate().waitForIdle });
+        const capabilitiesPromise = probe.probe(HEVC_ITEM);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(store.readState()?.suspectSteps).toHaveLength(2);
+        await vi.runAllTimersAsync();
+        const capabilities = await capabilitiesPromise;
 
-        expect(crashListener).toHaveBeenCalledExactlyOnceWith([ { probe: 'native-sdr:hevc', steps: [ 'decode hevc' ] } ]);
-        expect(store.readState()?.crashedProbes).toEqual([ { probe: 'native-sdr:hevc', steps: [ 'decode hevc' ] } ]);
-        expect(capabilities.video.hevc).toMatchObject({ status: 'not-probed' });
-        expect(capabilities.probeStates?.['native-sdr:hevc']).toBe('not-probed');
-        expect(harness.nativeVideoOutputProbe.mock.calls.map(([ probeRequest ]) => probeRequest.expectedCodedWidth)).not.toContain(1_920);
+        expect(crashListener).toHaveBeenCalledOnce();
+        expect(crashListener.mock.calls[0][0].map(({ probe: crashedProbe }: { probe: string }) => crashedProbe).sort()).toEqual([ 'native-sdr:hevc', 'native-ultra-hd:hevc' ]);
+        expect(capabilities.video.hevc).toMatchObject({ status: 'supported' });
+        expect(capabilities.nativeUltraHDVideo?.hevc).toMatchObject({ status: 'supported' });
+        expect(harness.nativeVideoOutputProbe).toHaveBeenCalledTimes(2);
+        expect(mostDecoding).toBe(1);
+        // Both passed alone, so the crash came from running them together, and the ceiling now holds fewer calls at once
+        expect(store.readState()?.suspectSteps).toEqual([]);
+        expect(store.readState()?.blockedSteps).toEqual([]);
+        expect(store.readState()?.ceiling?.decoders).toBeLessThan(2);
         // The audio probes settled before the stop, so their stored verdicts answer at once
         expect(harness.audioProbe).not.toHaveBeenCalled();
-        expect(capabilities.audio.aac).toMatchObject({ status: 'supported' });
     });
 });

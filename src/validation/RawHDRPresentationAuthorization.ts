@@ -31,7 +31,7 @@ import type {
 import { createPlannedOutput, PresentationExecutor } from '../presentation/passes/PresentationExecutor';
 import { planPresentation } from '../presentation/passes/PresentationPlanner';
 import type { TexturePresentationGeometry } from '../presentation/PresentationGeometry';
-import { READBACK_CANVAS_FORMATS, VALIDATION_ERROR_FILTER } from '../presentation/WebGPUConstants';
+import { READBACK_CANVAS_FORMATS } from '../presentation/WebGPUConstants';
 import {
     getRawFormatBitDepth,
     RAW_VIDEO_PLANE_BYTES_PER_ROW_ALIGNMENT,
@@ -46,7 +46,7 @@ import {
     type GPUCanvasReadbackFailure
 } from './GPUCanvasReadback';
 import GPUAuthorizationDeadline, { GPU_AUTHORIZATION_TIMEOUT_MICROSECONDS } from './GPUAuthorizationDeadline';
-import { discardErrorScope } from './GPUErrorScope';
+import { captureValidationErrors } from './GPUErrorScope';
 
 export const RAW_HDR_AUTHORIZATION_VECTOR_VERSION = 2;
 export const RAW_HDR_AUTHORIZATION_TIMEOUT_MICROSECONDS = GPU_AUTHORIZATION_TIMEOUT_MICROSECONDS;
@@ -233,6 +233,14 @@ export type AuthorizationReferencePlan = {
 /** The probe operation a failure happened in, which a rejection's detail names. */
 export type AuthorizationStep = 'executor' | 'frame' | 'import' | 'readback' | 'render';
 
+/** One vector frame an authorization records through an executor into its target texture, mapped 1:1, under a command buffer label. */
+export type AuthorizationFrameRender = {
+    executor: PresentationExecutor
+    label: string
+    source: PresentationFrameSource
+    targetTexture: GPUTexture
+};
+
 /** How bounded readbacks compare with their CPU reference; failureDetail names the worst sample, null when accepted. */
 export type VectorObservationComparison = {
     accepted: boolean
@@ -343,6 +351,17 @@ export function describeAuthorizationDecision(
         return parts.join(' ');
     }
     return decision.shaderSignature === getReferenceSignature() ? null : `signature-stale: ${routeKey}`;
+}
+
+/**
+ * Returns whether a settled decision ended in a deadline cancellation, which the next request for its route probes again.
+ * Every probe started with a device counts its deadline from its own start, so a timeout also counts the time it spent behind
+ * the others, and a cancellation is no verdict on the route; the decision still reports why the route is not authorized until then.
+ */
+export function isRetriedAuthorizationDecision(decision: AuthorizationDecisionState | null): boolean {
+    const failureReason = decision?.failureReason;
+    // A cancellation's failure reason is the deadline's cancellation message
+    return typeof failureReason === 'string' && CANCELLATION_MESSAGES.has(failureReason);
 }
 
 function getRawFrameTransfer(metadata: InputColorMetadata): RawVideoFrameColorSpace['transfer'] {
@@ -525,6 +544,22 @@ export function encodeAuthorizationFrame(
         timestampMicroseconds: 0
     });
     return commandEncoder.finish();
+}
+
+/**
+ * Records each frame through its executor into its target texture and submits them together, in a validation scope popped before returning,
+ * so no other authorization's pop can take it; resolves to the submission's validation error, or null.
+ */
+export function submitAuthorizationFrames(device: GPUDevice, renders: readonly AuthorizationFrameRender[]): Promise<GPUError | null> {
+    return captureValidationErrors(device, (): void => {
+        device.queue.submit(renders.map((render: AuthorizationFrameRender): GPUCommandBuffer => encodeAuthorizationFrame(
+            device,
+            render.executor,
+            render.source,
+            render.targetTexture,
+            render.label
+        )));
+    }).validationError;
 }
 
 function createRawHDRReferencePlan(
@@ -980,7 +1015,6 @@ export class RawHDRPresentationAuthorizationRunner {
         let targetTexture: GPUTexture | null = null;
         let executor: PresentationExecutor | null = null;
         let pixelReader: GPUCanvasPixelReader | null = null;
-        let errorScopePushed = false;
         let step: AuthorizationStep = 'executor';
         const deadline = new GPUAuthorizationDeadline(device, RAW_HDR_AUTHORIZATION_TIMEOUT_MICROSECONDS);
         try {
@@ -1001,19 +1035,14 @@ export class RawHDRPresentationAuthorizationRunner {
                 },
                 usage: targetUsage.usage
             });
-            device.pushErrorScope(VALIDATION_ERROR_FILTER);
-            errorScopePushed = true;
-            device.queue.submit([ encodeAuthorizationFrame(
-                device,
+            const submission = submitAuthorizationFrames(device, [ {
                 executor,
-                { enhancementFrame: null, frame, kind: 'planes' },
-                targetTexture,
-                'WebGPU raw HDR authorization commands'
-            ) ]);
+                label: 'WebGPU raw HDR authorization commands',
+                source: { enhancementFrame: null, frame, kind: 'planes' },
+                targetTexture
+            } ]);
             await deadline.wait(waitForGPUCompletion(device, device.queue.onSubmittedWorkDone()));
-            const validationPromise = device.popErrorScope();
-            errorScopePushed = false;
-            const validationError = await deadline.wait(validationPromise);
+            const validationError = await deadline.wait(submission);
             if (validationError) {
                 return createRejectedDecision(probe, 'gpu-validation-failed', validationError.message);
             }
@@ -1069,9 +1098,6 @@ export class RawHDRPresentationAuthorizationRunner {
             return createRejectedDecision(probe, classifyFailure(error), describeAuthorizationError(step, error));
         } finally {
             deadline.destroy();
-            if (errorScopePushed) {
-                discardErrorScope(device);
-            }
             pixelReader?.destroy();
             executor?.destroy();
             targetTexture?.destroy();
@@ -1124,7 +1150,7 @@ export class RawHDRPresentationAuthorizationRegistry {
         }
     }
 
-    /** Returns the decision for one device, target format, and route, starting a probe only when none is cached. */
+    /** Returns the decision for one device, target format, and route, starting a probe only when none is cached or the cached one's deadline cancelled it. */
     public authorize(
         device: GPUDevice,
         targetFormat: GPUTextureFormat,
@@ -1133,7 +1159,7 @@ export class RawHDRPresentationAuthorizationRegistry {
         const cacheKey = createProbeKey(targetFormat, routeKey);
         const deviceCache = this.getDeviceCache(device);
         const cachedProbe = deviceCache.routes.get(cacheKey);
-        if (cachedProbe) {
+        if (cachedProbe && !isRetriedAuthorizationDecision(cachedProbe.decision)) {
             return cachedProbe.promise;
         }
 

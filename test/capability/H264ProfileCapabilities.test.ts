@@ -5,18 +5,27 @@ import H264ProfileCapabilityProbe, {
     getH264ProfileFromJellyfinValue,
     getSupportedH264JellyfinProfileNames,
     H264_JELLYFIN_PROFILE_NAMES,
+    H264_PROFILE_OUTPUT_PROBE_TIMEOUT_MILLISECONDS,
     H264_PROFILE_PROBE_CODED_HEIGHT,
     H264_PROFILE_PROBE_CODED_WIDTH,
-    H264_PROFILE_PROBE_TIMEOUT_MILLISECONDS,
     H264_PROFILES,
     supportsH264JellyfinProfile,
-    type H264ProbeCancellationSignal,
     type H264ProbeDecodedFrame,
     type H264ProbeDecoder,
     type H264ProbeDecoderCallbacks,
     type H264ProfileCapabilityEnvironment,
     type H264ProfileOutputProbeRequest
 } from 'webgpu-player/capability/H264ProfileCapabilities';
+import type { RecordedCapabilityProbeQueue } from 'webgpu-player/capability/CapabilityProbeSession';
+
+import {
+    CAPABILITY_PROBE_TIMEOUT_MILLISECONDS,
+    createCapabilityProbeSession,
+    createRecordedQueue,
+    createRecordingStore
+} from '../helpers/capabilityProbeSession';
+
+const H264_PROBE = 'h264-profiles';
 
 type ProfileProbeHarness = {
     configurationProbe: Mock
@@ -52,27 +61,8 @@ function createHarness(
     };
 }
 
-function createCancellationHarness(): {
-    cancel: () => void
-    signal: H264ProbeCancellationSignal
-} {
-    let cancelled = false;
-    let cancellationListener: (() => void) | null = null;
-    return {
-        cancel: (): void => {
-            cancelled = true;
-            cancellationListener?.();
-        },
-        signal: {
-            isCancelled: (): boolean => cancelled,
-            onCancel: (listener: () => void): (() => void) => {
-                cancellationListener = listener;
-                return (): void => {
-                    cancellationListener = null;
-                };
-            }
-        }
-    };
+function createQueue(): Promise<RecordedCapabilityProbeQueue> {
+    return createRecordedQueue(createCapabilityProbeSession(), H264_PROBE);
 }
 
 function createOutputProbeRequest(): H264ProfileOutputProbeRequest {
@@ -99,7 +89,7 @@ describe('H264ProfileCapabilityProbe', () => {
 
     it('probes and decodes every exact 1080p profile independently', async () => {
         const harness = createHarness(new Set(PROFILE_CODEC_STRINGS));
-        const capabilities = await new H264ProfileCapabilityProbe(harness.environment).probe();
+        const capabilities = await new H264ProfileCapabilityProbe(harness.environment).probe(await createQueue());
 
         expect(harness.configurationProbe.mock.calls.map(call => call[0])).toEqual(
             PROFILE_CODEC_STRINGS.map(codec => ({
@@ -169,7 +159,7 @@ describe('H264ProfileCapabilityProbe', () => {
 
     it('selects and checks only profiles with decoded-output evidence', async () => {
         const harness = createHarness(new Set(PROFILE_CODEC_STRINGS), new Set([ 'avc1.42C028', 'avc1.4D0028' ]));
-        const capabilities = await new H264ProfileCapabilityProbe(harness.environment).probe();
+        const capabilities = await new H264ProfileCapabilityProbe(harness.environment).probe(await createQueue());
 
         expect(getSupportedH264JellyfinProfileNames(capabilities)).toEqual([
             'constrained baseline',
@@ -184,7 +174,7 @@ describe('H264ProfileCapabilityProbe', () => {
 
     it('keeps partial configuration and output support fail-closed', async () => {
         const harness = createHarness(new Set([ 'avc1.42C028', 'avc1.640028' ]), new Set([ 'avc1.42C028' ]));
-        const capabilities = await new H264ProfileCapabilityProbe(harness.environment).probe();
+        const capabilities = await new H264ProfileCapabilityProbe(harness.environment).probe(await createQueue());
 
         expect(capabilities['constrained-baseline']).toMatchObject({
             evidence: 'decoded-output',
@@ -204,7 +194,10 @@ describe('H264ProfileCapabilityProbe', () => {
             reason: 'output-mismatch',
             status: 'unknown'
         });
-        expect(harness.outputProbe).toHaveBeenCalledTimes(2);
+        // High's mismatch came from a decode beside the other profiles' calls, so it decoded once more alone before it counted;
+        // the refused configurations were checked once, as a check is never confirmed
+        expect(harness.outputProbe.mock.calls.map(([ probeRequest ]) => probeRequest.profile)).toEqual([ 'constrained-baseline', 'high', 'high' ]);
+        expect(harness.configurationProbe).toHaveBeenCalledTimes(H264_PROFILES.length);
     });
 
     it('does not claim support from configuration evidence alone', async () => {
@@ -212,7 +205,7 @@ describe('H264ProfileCapabilityProbe', () => {
         const capabilities = await new H264ProfileCapabilityProbe({
             outputProbe: null,
             videoDecoder: harness.environment.videoDecoder
-        }).probe();
+        }).probe(await createQueue());
 
         for (const profile of H264_PROFILES) {
             expect(capabilities[profile]).toMatchObject({
@@ -228,7 +221,7 @@ describe('H264ProfileCapabilityProbe', () => {
         const capabilities = await new H264ProfileCapabilityProbe({
             outputProbe,
             videoDecoder: null
-        }).probe();
+        }).probe(await createQueue());
 
         for (const profile of H264_PROFILES) {
             expect(capabilities[profile]).toMatchObject({
@@ -240,23 +233,18 @@ describe('H264ProfileCapabilityProbe', () => {
         expect(outputProbe).not.toHaveBeenCalled();
     });
 
-    it('bounds capability calls that never settle and caches the result', async () => {
+    it('reads a configuration check the manager times out as a timeout, without a decode', async () => {
         vi.useFakeTimers();
         const configurationProbe = vi.fn(() => new Promise<VideoDecoderSupport>(() => undefined));
         const outputProbe = vi.fn(async (): Promise<boolean> => true);
-        const probe = new H264ProfileCapabilityProbe({
+        const probePromise = new H264ProfileCapabilityProbe({
             outputProbe,
             videoDecoder: { isConfigSupported: configurationProbe }
-        });
-        const firstPromise = probe.probe();
-        const secondPromise = probe.probe();
+        }).probe(await createQueue());
 
-        expect(firstPromise).toBe(secondPromise);
-        await vi.advanceTimersByTimeAsync(H264_PROFILE_PROBE_TIMEOUT_MILLISECONDS);
-        const capabilities = await firstPromise;
-        const third = await probe.probe();
+        await vi.advanceTimersByTimeAsync(CAPABILITY_PROBE_TIMEOUT_MILLISECONDS);
+        const capabilities = await probePromise;
 
-        expect(third).toBe(capabilities);
         for (const profile of H264_PROFILES) {
             expect(capabilities[profile]).toMatchObject({
                 evidence: 'none',
@@ -268,29 +256,21 @@ describe('H264ProfileCapabilityProbe', () => {
         expect(outputProbe).not.toHaveBeenCalled();
     });
 
-    it('aborts output probes that exceed their deadline', async () => {
+    it('reads a decode the manager times out as a timeout with configuration evidence', async () => {
         vi.useFakeTimers();
         const configurationProbe = vi.fn(async (
             configuration: VideoDecoderConfig
         ): Promise<VideoDecoderSupport> => ({ config: configuration, supported: true }));
-        const observedSignals: H264ProbeCancellationSignal[] = [];
-        const outputProbe = vi.fn((
-            _request: H264ProfileOutputProbeRequest,
-            cancellationSignal: H264ProbeCancellationSignal
-        ): Promise<boolean> => {
-            observedSignals.push(cancellationSignal);
-            return new Promise<boolean>(() => undefined);
-        });
+        const outputProbe = vi.fn((): Promise<boolean> => new Promise<boolean>(() => undefined));
         const probePromise = new H264ProfileCapabilityProbe({
             outputProbe,
             videoDecoder: { isConfigSupported: configurationProbe }
-        }).probe();
+        }).probe(await createQueue());
 
-        await vi.advanceTimersByTimeAsync(H264_PROFILE_PROBE_TIMEOUT_MILLISECONDS);
+        await vi.advanceTimersByTimeAsync(CAPABILITY_PROBE_TIMEOUT_MILLISECONDS);
         const capabilities = await probePromise;
 
-        expect(observedSignals).toHaveLength(H264_PROFILES.length);
-        expect(observedSignals.every(signal => signal.isCancelled())).toBe(true);
+        expect(outputProbe).toHaveBeenCalledTimes(H264_PROFILES.length);
         for (const profile of H264_PROFILES) {
             expect(capabilities[profile]).toMatchObject({
                 evidence: 'configuration',
@@ -298,6 +278,49 @@ describe('H264ProfileCapabilityProbe', () => {
                 status: 'unknown'
             });
         }
+    });
+
+    it('runs each profile\'s check and decode as steps of their own, admitted side by side', async () => {
+        const recordingStore = createRecordingStore();
+        const session = createCapabilityProbeSession({ store: recordingStore.store });
+        const pendingChecks: Array<() => void> = [];
+        const harness = createHarness(new Set(PROFILE_CODEC_STRINGS));
+        harness.configurationProbe.mockImplementation((configuration: VideoDecoderConfig) => new Promise<VideoDecoderSupport>((resolve) => {
+            pendingChecks.push(() => resolve({ config: configuration, supported: true }));
+        }));
+        const probePromise = new H264ProfileCapabilityProbe(harness.environment).probe(await createRecordedQueue(session, H264_PROBE));
+
+        await vi.waitFor(() => {
+            expect(pendingChecks).toHaveLength(H264_PROFILES.length);
+        });
+        // Every profile's check is in flight before any settles
+        expect(recordingStore.inFlight()).toHaveLength(H264_PROFILES.length);
+        expect(new Set(recordingStore.inFlight())).toEqual(new Set(PROFILE_CODEC_STRINGS.map(codec => `check ${codec} 1920x1080`)));
+        for (const resolveCheck of pendingChecks) {
+            resolveCheck();
+        }
+        await probePromise;
+
+        expect(recordingStore.markRunning.mock.calls.map(([ probe ]) => probe)).toEqual(Array(2 * H264_PROFILES.length).fill(H264_PROBE));
+        expect(new Set(recordingStore.markRunning.mock.calls.map(([ , step ]) => step))).toEqual(new Set(PROFILE_CODEC_STRINGS.flatMap(codec => [
+            `check ${codec} 1920x1080`,
+            `decode ${codec} 1920x1080`
+        ])));
+    });
+
+    it('reads a profile step a crash blocked as unsupported, without calling the browser', async () => {
+        const recordingStore = createRecordingStore({ blocked: new Set([ 'decode avc1.640028 1920x1080', 'check avc1.4D0028 1920x1080' ]) });
+        const session = createCapabilityProbeSession({ store: recordingStore.store });
+        const harness = createHarness(new Set(PROFILE_CODEC_STRINGS));
+
+        const capabilities = await new H264ProfileCapabilityProbe(harness.environment).probe(await createRecordedQueue(session, H264_PROBE));
+
+        expect(capabilities.high).toMatchObject({ evidence: 'configuration', reason: 'stopped-page', status: 'unsupported' });
+        expect(capabilities.main).toMatchObject({ evidence: 'none', reason: 'stopped-page', status: 'unsupported' });
+        expect(capabilities.baseline).toMatchObject({ reason: 'decode-output-verified', status: 'supported' });
+        expect(harness.configurationProbe.mock.calls.map(([ configuration ]) => configuration.codec)).not.toContain('avc1.4D0028');
+        expect(harness.outputProbe.mock.calls.map(([ probeRequest ]) => probeRequest.profile)).not.toContain('high');
+        expect(recordingStore.markRunning.mock.calls.map(([ , step ]) => step)).not.toContain('decode avc1.640028 1920x1080');
     });
 
     it('contains probe exceptions without hiding unaffected profiles', async () => {
@@ -314,7 +337,7 @@ describe('H264ProfileCapabilityProbe', () => {
             }
             return true;
         });
-        const capabilities = await new H264ProfileCapabilityProbe(harness.environment).probe();
+        const capabilities = await new H264ProfileCapabilityProbe(harness.environment).probe(await createQueue());
 
         expect(capabilities.baseline).toMatchObject({
             evidence: 'none',
@@ -351,7 +374,7 @@ describe('createH264ProfileOutputProbe', () => {
             createEncodedKeyFrame: (): unknown => ({})
         });
 
-        const outputMatches = await outputProbe(createOutputProbeRequest(), createCancellationHarness().signal);
+        const outputMatches = await outputProbe(createOutputProbeRequest());
 
         expect(outputMatches).toBe(true);
         expect(frameClose).toHaveBeenCalledOnce();
@@ -383,7 +406,7 @@ describe('createH264ProfileOutputProbe', () => {
             createEncodedKeyFrame: (data: Uint8Array): unknown => ({ data })
         });
 
-        const outputMatches = await outputProbe(createOutputProbeRequest(), createCancellationHarness().signal);
+        const outputMatches = await outputProbe(createOutputProbeRequest());
 
         expect(outputMatches).toBe(false);
         expect(receivedChunk).toEqual({ data: new Uint8Array([ 0x00, 0x00, 0x00, 0x01 ]) });
@@ -415,31 +438,36 @@ describe('createH264ProfileOutputProbe', () => {
             createEncodedKeyFrame: (): unknown => ({})
         });
 
-        const outputMatches = await outputProbe(createOutputProbeRequest(), createCancellationHarness().signal);
+        const outputMatches = await outputProbe(createOutputProbeRequest());
 
         expect(outputMatches).toBe(false);
         expect(frameClose).toHaveBeenCalledTimes(2);
         expect(decoderClose).toHaveBeenCalledOnce();
     });
 
-    it('closes the decoder when cancellation interrupts a stalled decode', async () => {
-        const decoderClose = vi.fn();
-        const outputProbe = createH264ProfileOutputProbe({
-            createDecoder: (): H264ProbeDecoder => ({
-                close: decoderClose,
-                configure: vi.fn(),
-                decode: vi.fn(),
-                flush: () => new Promise<void>(() => undefined)
-            }),
-            createEncodedKeyFrame: (): unknown => ({})
-        });
-        const cancellationHarness = createCancellationHarness();
-        const outputPromise = outputProbe(createOutputProbeRequest(), cancellationHarness.signal);
+    it('closes the decoder of a stalled decode once its bound passes, so the call settles', async () => {
+        vi.useFakeTimers();
+        try {
+            const decoderClose = vi.fn();
+            const outputProbe = createH264ProfileOutputProbe({
+                createDecoder: (): H264ProbeDecoder => ({
+                    close: decoderClose,
+                    configure: vi.fn(),
+                    decode: vi.fn(),
+                    flush: () => new Promise<void>(() => undefined)
+                }),
+                createEncodedKeyFrame: (): unknown => ({})
+            });
+            const outputPromise = outputProbe(createOutputProbeRequest());
+            const settled = expect(outputPromise).rejects.toThrow('timed out');
 
-        cancellationHarness.cancel();
+            await vi.advanceTimersByTimeAsync(H264_PROFILE_OUTPUT_PROBE_TIMEOUT_MILLISECONDS);
 
-        await expect(outputPromise).rejects.toThrow('aborted');
-        expect(decoderClose).toHaveBeenCalledOnce();
+            await settled;
+            expect(decoderClose).toHaveBeenCalledOnce();
+        } finally {
+            vi.useRealTimers();
+        }
     });
 
     it('closes the decoder when the runtime reports a decode error', async () => {
@@ -454,7 +482,7 @@ describe('createH264ProfileOutputProbe', () => {
             createEncodedKeyFrame: (): unknown => ({})
         });
 
-        await expect(outputProbe(createOutputProbeRequest(), createCancellationHarness().signal)).rejects.toThrow('Invalid H264 sample');
+        await expect(outputProbe(createOutputProbeRequest())).rejects.toThrow('Invalid H264 sample');
         expect(decoderClose).toHaveBeenCalledOnce();
     });
 });

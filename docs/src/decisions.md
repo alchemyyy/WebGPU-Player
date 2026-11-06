@@ -38,26 +38,77 @@ Commit hashes refer to the Jellyfin Web fork's `webgpu-player` branch, where the
   A probe outside the selection reads `not-probed`, never a verdict, so an unprobed codec is not advertised.
 - Probe downloads run in parallel and outside the decode timeouts (10-08).
   The exact probes armed their timeouts before downloading their vectors and binaries, and the range-extension probes downloaded inside the queue's 2 s timed slot, so a slow cold link failed a capable decoder as unsupported or timed out every later probe.
-  A run now starts every selected probe's downloads at once and each probe decodes only once its own are done; decoding stays one probe at a time.
+  A run now starts every selected probe's downloads at once and each probe decodes only once its own are done; decoding then stayed one probe at a time, until the probe manager ran a negotiation's steps in parallel (see "A negotiation's probe steps run in parallel within derived limits, and the background's one at a time", 11-05).
   Worker scripts and glue were warmed in the HTTP cache rather than spawned early, so no worker or compile competed with a running probe's real-time-factor measurement.
   The exact probes and their measurements left with the CPU decoders (10-13), so only the range-extension probes download vectors, and nothing is warmed.
 - Probes warm in idle time and their verdicts persist per fingerprint (10-27).
   Even per item, a page's first negotiation waited for its probes, about 2.6 s cold on some clients, and every page load paid it again.
   A warm-up competes with browsing, so each background step waits for an idle period with a 2 s timeout, for no playback, and for 10 s after a negotiation, the time its playback takes to start; its downloads are low priority.
-  A negotiation promotes a background probe it needs and never waits behind more than the one background step in the queue; a background timeout halts only the background, so it never poisons a negotiation's probes.
+  A negotiation promotes a background probe it needs and never waits behind more than the one background step already running, which since the probe manager (11-05) a negotiation's steps may even join; a background timeout halts only the background, so it never poisons a negotiation's probes.
   Clients that ask to save data or have fewer than four threads get no warm-up, since speculative work costs them most; their stored verdicts still rerun after use.
   Only verdicts are stored, keyed by a fingerprint of the host build, the adapter, and the full browser and OS versions, because the user agent alone carries only a major version and a frozen OS.
   What no fingerprint shows, a driver or codec pack change, the acceleration setting, or a software fallback after a GPU process crash, is caught by rerunning each stored verdict after use and by clearing the store when a start it may have admitted fails before its first frame.
 - A probe that stops the page never runs again for its fingerprint, and a browser it stopped probes in the background no more (11-05).
+  Since the step quarantine (see "A stopped page quarantines its steps, not its probes", 11-05), the quarantine is per step, probes are no longer skipped whole, and the background keeps probing.
   On iOS, a host that starts the warm-up at load reloaded about every 8 s, in Safari and in an app's web view, until Safari reported that a problem repeatedly occurred, as it does when a page's WebContent process keeps ending.
   On WebKit the warm-up runs a probe's first browser call after two 2 s idle bounds, and a probe whose browser call ends the WebContent process reaches no verdict, so every reload runs it again.
-  Each page now records a probe while the browser works on it, under a Web Lock of the page's own, and the next page reads the record of a page whose lock is free as a crash: the probe reads `not-probed` from then on, and the warm-up and the refreshes stop.
+  Each page now records a probe while the browser works on it, under a Web Lock of the page's own, and the next page reads the record of a page whose lock is free as a crash: the probe read `not-probed` from then on, and the warm-up and the refreshes stopped, until the step quarantine replaced both.
   Web Locks, rather than a record in sessionStorage, tell a stopped page from one that runs, since a crash may come back in another tab or a recreated web view, and another tab's live record must never read as a crash.
   A page holds its lock only while it has a record, and lets go of both as it enters the back-forward cache: Chrome 156 caches a page that holds or held a Web Lock, but evicts it once another page requests a lock it holds, and no page asks for the lock of a page without a record.
-  Only the browser calls are recorded, the configuration checks and each heavy step until its own work settles, so a page closed while it downloads or waits for a turn records nothing; nor does a hidden page, which a browser may end without a crash.
+  Only the browser calls were recorded, the configuration checks and each heavy step until its own work settled, so a page closed while it downloads or waits for a turn records nothing; nor does a hidden page, which a browser may end without a crash.
   A crash is kept per fingerprint like a verdict, so a new build or browser version probes again, and the store names the probe that stopped the page in `readStoredCapabilityProbeVerdictState()`.
   Each recorded call also carries a short label of the step, such as `check mp4a.40.2` or `decode aac`, which the record keeps and the crash inherits, and the page that finds a crash tells the host through `onCapabilityProbeCrash`, because a probe name alone did not say which call ended the WebContent process, and an affected user can report the crash without Web Inspector.
-  Crashes and records stored before the labels read as crashes without steps, so the schema version stayed 1.
+  Crashes and records stored before the labels read as crashes without steps, so the schema version stayed 1; the step quarantine moved it to 2.
+- Audio probes copy each AudioData in its own format (11-05).
+  Safari 26.0 to 26.3 ends the WebContent process in `AudioData.copyTo(..., { format: 'f32-planar', planeIndex })` with a plane index of 2 or more on its interleaved multi-channel output (WebKit bug 302521, fixed in Safari 26.4).
+  The 5.1 and 7.1 audio steps asked exactly that, the likely cause of a WebContent crash on iOS at load, when a host starts the warm-up then.
+  `copyAudioDataPlanes` copies interleaved data once and planar data once per plane, in the data's own format, and converts to float in JavaScript, so the browser never converts a sample layout; Mediabunny avoids the same call at playback.
+- Known browser defects are a declared table (11-05).
+  A step that matches `capability/BrowserDefects.ts` never runs and reads `unsupported` with the reason `browser-defect`, because a call that may end the page is not worth a verdict.
+  Its entry is WebKit bug 308322 (rdar 170845543): AAC decoding with more than 2 channels on WebKit before Safari 27, or of unknown version, since AudioToolbox can return no format description for the raw AudioSpecificConfig and the first decode dereferences it; fixed in Safari 27 (WebKit 625).
+  iOS 26 freezes the OS version in the user agent at 18.x and a web view has no `Version/`, so an unknown version counts as affected.
+  It is not confirmed that the engine's configurations trigger it; the step is skipped as a precaution.
+- Raw format probes first ask whether the browser has the pixel format (11-05).
+  `canHoldVideoFrameFormat` builds a 2x2 VideoFrame of the format, and a `TypeError` means the browser has no such format, as every shipping Safari lacks the 10-bit and 12-bit formats.
+  The raw HDR, range-extension, AV1 raw format, and H.264 raw format probes then read `unsupported` with `output-copy-unsupported` without downloading their vector or decoding.
+- A negotiation's probe steps run in parallel within derived limits, and the background's one at a time (11-05).
+  The heavy queue ran one probe at a time, so a cold page waited for the sum of its decodes.
+  `CapabilityProbeManager` admits every browser call as a step with a cost from the codec specs; a negotiation's steps run side by side while the running decoders and bytes stay within limits, and a step larger than the limits runs alone.
+  A background step that is not promoted starts only when nothing runs and no negotiation step waits, and none joins it but a negotiation's, so playback never waits on the warm-up and a crash in the background alone names its one call.
+  In Chrome, a full warm-up ran 105 calls with at most one in flight.
+  The byte limit is the largest cost any probe definition can issue, so parallel probing never holds more than the heaviest single test's own estimate, and the decoder limit is `navigator.hardwareConcurrency`, else 1.
+  A step holds its reservation until its call settles, not until its timeout, since a timed-out decoder still holds its memory; timeouts count from admission, so queue time never fails a decoder.
+  A timed call still unsettled one more timeout after its own stops the page's probing, because the browser has then stopped answering; a background timeout still halts only the background.
+  The MSE AC-3/E-AC-3 playbacks run through the same manager as untimed `play` steps, since each playback bounds its own stages, and each H.264 profile's check and decode is a step of its own rather than one step for every profile.
+  A decode whose call overlapped another and settles with a negative result runs again alone, timed anew, and its caller gets that result (`confirm`); a call that ran alone, a timeout, or an error is never rerun.
+  A hardware decoder pool may refuse a decoder only because the calls beside it hold theirs, and a refusal would be stored as `unsupported` for the fingerprint.
+  In Chrome, a parallel negotiation confirmed 12 decodes that fail there, the HEVC range extensions and 12-bit AV1 among them, and reached the verdicts of a run one call at a time.
+  One wrapper, `CapabilityProbeSession.record`, blocks, orders, and records every step, so no probe can reach the browser around the quarantine.
+- A stopped page quarantines its steps, not its probes (11-05).
+  With steps in parallel, a stopped page may have several calls in flight, and blocking every probe they belong to would hide working decoders.
+  One label in flight is blocked for the fingerprint and reads `unsupported` with the reason `stopped-page`.
+  Several labels become suspects, which the next round retries once, each alone (`{ alone: true }`) and after the steps ahead of it, with the decoder limit at 1 until the last suspect settles: a suspect that stops the page alone is blocked, and the others clear.
+  Another step that stops the page alone in that round is blocked too, but it is not the suspects' culprit, since it was not in their crash.
+  When no suspect is the culprit, the crash came from concurrency, and the store caps each dimension the crash held some of, decoders and bytes, one below its in-flight total, which caps the limits for the fingerprint.
+  A dimension the crash held none of, such as the bytes of checks alone, says nothing about that dimension, so it stays uncapped (`CapabilityProbeCeiling` holds null for it).
+  The background keeps probing, running probes that hold suspects last; fingerprints include the build key, so the quarantine resets on every build or browser update.
+- External HDR authorization decodes as recorded probe steps (11-05).
+  It is the one authorization that opens a hardware decoder, so a crash in its check or decode would end the page with no record, and every reload would run it again.
+  Its check and decode now run through the page's probe session under the probes `external-hdr-authorization:hevc` and `external-hdr-authorization:av1`, so they are quarantined like capability probe steps, and a blocked or defective step rejects the route as `stopped-page` or `browser-defect`.
+  The decode step decodes, imports, renders, and reads back within the manager's step timeout, and returns decisions rather than the frame, so no frame outlives its reservation.
+  The routes of one codec and target format asked for in one task share one check and one decode, and a codec's batches run one after another, so a device never holds two of that codec's decoders; a deadline that passes during the check opens none.
+  External Dolby Vision returns `video-frame-creation-failed` before compiling anything when the browser cannot hold an `I420P10` VideoFrame, as shipping Safari cannot.
+- Authorization error scopes are pushed and popped in one task (11-05).
+  The runners at device creation, 36 while external HDR still started there, share the device's one error scope stack, so a runner that popped its scope after an await could take another runner's.
+  Each runner, and the canvas readback, now pushes and pops its validation scope around its submit in the same task, and awaits the popped result later.
+- An authorization timeout is not kept (11-05).
+  A runner's 5 s deadline counts the time it waits behind the other runners on the device, so a `timeout` or `device-lost` decision says nothing about the route.
+  Such a decision stays visible, and the next authorize call probes the route again.
+- External HDR authorization starts on first use (11-05).
+  It was the only authorization at device creation that runs a hardware decode, so a page that never plays HDR, such as a phone whose host probes only at playback, still did decoder work at load.
+  Device creation now prewarms only the raw SDR, raw HDR, and Dolby Vision authorizations, none of which decodes.
+  The HEVC PQ and HLG keys start together, sharing one decode, when an HDR negotiation waits for them (`waitForExternalHDRAuthorizationPrewarm`) or a playback that requests the external HDR route starts them (`prewarmExternalHDRPresentationAuthorization`); the AV1 keys still authorize when their route is first used.
+  The first HDR negotiation pays one 1080p decode instead.
 - A host may turn off the refresh of stored verdicts after use (11-05).
   A host that runs probes only at playback, such as on a phone used as a remote control or on iOS WebKit, which a probe can end, wants no probe outside a negotiation, and a refresh is one.
   `configureCustomDecodeCapabilityBackground({ refreshAfterUse: false })` keeps a used stored verdict as the page's result without a rerun, so what no fingerprint shows is then caught only by clearing the store when a start it may have admitted fails before its first frame.
@@ -362,6 +413,7 @@ These were settled on stock Chrome on Windows, with a Chromium 153 source audit.
   Chromium's AV1 decoders take a frame's color from the sequence header and fall back to the configuration, so both are rewritten; on the hardware decoder, the neutralized frame then reports limited BT.709 and stays opaque.
   Each rewritten header must itself declare limited BT.2020 with the non-constant-luminance matrix and the route's transfer, and only the HLG code point proves HLG, because AV1 has no alternative transfer characteristics message.
   The AV1 keys have their own lossless vector and authorize on first use rather than at device creation, because only AV1 HDR items need them and the HEVC keys alone shape a host's transcode ranges.
+  The HEVC keys then started with the device; since 11-05 they start on first use too (see "External HDR authorization starts on first use").
 - Startup is bounded by progress, not by a fixed timer (10-07).
   A 72 Mbps 4K TrueHD source under six concurrent players produced no audio within a fixed 20 s bound and fell back to a server transcode that also stalled; the stage that stalled was not recorded.
   The controller fails after 20 s without progress, or at 60 s regardless, and the fallback message names the counters it reached.

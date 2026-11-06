@@ -9,6 +9,8 @@ import {
     HEVC_RANGE_EXTENSION_VARIANTS
 } from 'webgpu-player/capability/HEVCRangeExtensionCapabilities';
 
+import { UNAFFECTED_BROWSER } from '../helpers/capabilityProbeSession';
+
 type CapabilityHarness = {
     environment: WebCodecsCapabilityEnvironment
     vectorLoader: Mock
@@ -47,6 +49,8 @@ function createEnvironment(
     return {
         environment: {
             audioDecoder: null,
+            browserIdentity: UNAFFECTED_BROWSER,
+            canHoldVideoFrameFormat: () => true,
             h264ProfileProbe: null,
             hevcRangeExtensionVectorLoader: vectorLoader,
             nativeAudioOutputProbe: null,
@@ -125,6 +129,20 @@ describe('HEVC range-extension capability probe', () => {
         });
         expect(capabilities.hevcRangeExtensions?.['main12-420'].status).toBe('supported');
         expect(capabilities.hevcRangeExtensions?.['main444-12'].status).toBe('supported');
+    });
+
+    it('reads a format no VideoFrame can hold as a copy failure, without a download or a decoder call', async () => {
+        const harness = createEnvironment();
+        harness.environment.canHoldVideoFrameFormat = (format): boolean => format !== 'I422P12';
+        const definition = HEVC_RANGE_EXTENSION_PROBE_DEFINITIONS['main422-12'];
+
+        const capabilities = await new CustomDecodeCapabilityProbe(harness.environment).probe();
+
+        expect(capabilities.hevcRangeExtensions?.['main422-12']).toMatchObject({ reason: 'output-copy-unsupported', status: 'unsupported' });
+        expect(capabilities.hevcRangeExtensions?.['main444-12'].status).toBe('supported');
+        expect(harness.vectorLoader.mock.calls.map(([ assetPath ]) => assetPath)).not.toContain(definition.assetPath);
+        expect(vi.mocked(harness.videoDecoder.isConfigSupported).mock.calls).not.toContainEqual([ definition.config ]);
+        expect(harness.outputProbe.mock.calls.map(([ request ]) => (request as RawHDRVideoOutputProbeRequest).expectedFormat)).not.toContain('I422P12');
     });
 
     it('reports vector-loading failures as unknown instead of widening support', async () => {

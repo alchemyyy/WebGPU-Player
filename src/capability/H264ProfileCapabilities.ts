@@ -1,4 +1,9 @@
-export const H264_PROFILE_PROBE_TIMEOUT_MILLISECONDS = 2_000;
+import { CAPABILITY_PROBE_TIMEOUT } from './CapabilityProbeManager';
+import { CapabilityProbeBlock, type CapabilityProbeStepOutcome, type RecordedCapabilityProbeQueue } from './CapabilityProbeSession';
+import { describeVideoConfigCheck, describeVideoDecode, type VideoCapabilityProbeStep } from './CapabilityProbeSteps';
+
+/** How long an output probe waits for its decode before it closes the decoder; the probe manager times the step on its own. */
+export const H264_PROFILE_OUTPUT_PROBE_TIMEOUT_MILLISECONDS = 2_000;
 export const H264_PROFILE_PROBE_CODED_WIDTH = 1_920;
 export const H264_PROFILE_PROBE_CODED_HEIGHT = 1_080;
 
@@ -31,7 +36,10 @@ export type H264ProfileCapabilityReason =
     | 'decode-output-verified'
     | 'output-mismatch'
     | 'probe-exception'
-    | 'probe-timeout';
+    | 'probe-timeout'
+    // The step never ran: a declared browser defect crashes it, or it stopped an earlier page alone
+    | 'browser-defect'
+    | 'stopped-page';
 export type H264ProfileCapabilityEvidence =
     | 'none'
     | 'configuration'
@@ -103,15 +111,7 @@ export type H264ProfileOutputProbeRequest = Readonly<{
     profile: H264Profile
 }>;
 
-export type H264ProfileOutputProbe = (
-    probeRequest: H264ProfileOutputProbeRequest,
-    cancellationSignal: H264ProbeCancellationSignal
-) => Promise<boolean>;
-
-export type H264ProbeCancellationSignal = Readonly<{
-    isCancelled: () => boolean
-    onCancel: (listener: () => void) => () => void
-}>;
+export type H264ProfileOutputProbe = (probeRequest: H264ProfileOutputProbeRequest) => Promise<boolean>;
 
 export type H264ProfileCapabilityEnvironment = Readonly<{
     outputProbe?: H264ProfileOutputProbe | null
@@ -153,7 +153,6 @@ type H264ProbeDefinition = Readonly<{
 const H264_PROBE_FRAME_WIDTH = 64;
 const H264_PROBE_FRAME_HEIGHT = 64;
 const H264_PROBE_FRAME_TIMESTAMP = 0;
-const H264_PROBE_TIMEOUT = Symbol('h264-profile-probe-timeout');
 
 // Single black Annex B keyframes generated with libx264 at level 4.0
 const H264_CONSTRAINED_BASELINE_KEY_FRAME = new Uint8Array([
@@ -240,16 +239,12 @@ function frameMatchesRequest(frame: H264ProbeDecodedFrame, probeRequest: H264Pro
         && frame.timestamp === probeRequest.expectedTimestamp;
 }
 
-/** Creates an output probe that passes only when decoding the keyframe yields a single frame with the expected dimensions and timestamp. */
+/**
+ * Creates an output probe that passes only when decoding the keyframe yields a single frame with the expected dimensions and timestamp.
+ * A decode still pending after H264_PROFILE_OUTPUT_PROBE_TIMEOUT_MILLISECONDS rejects, and its decoder is closed, so the call settles.
+ */
 export function createH264ProfileOutputProbe(runtime: H264ProbeDecodeRuntime): H264ProfileOutputProbe {
-    return async (
-        probeRequest: H264ProfileOutputProbeRequest,
-        cancellationSignal: H264ProbeCancellationSignal
-    ): Promise<boolean> => {
-        if (cancellationSignal.isCancelled()) {
-            throw new Error('H264 output probe was aborted');
-        }
-
+    return async (probeRequest: H264ProfileOutputProbeRequest): Promise<boolean> => {
         let acceptingOutput = true;
         let decoder: H264ProbeDecoder | null = null;
         let outputCount = 0;
@@ -260,14 +255,12 @@ export function createH264ProfileOutputProbe(runtime: H264ProbeDecodeRuntime): H
             rejectOutput = reject;
             resolveOutput = resolve;
         });
-        let rejectAbort: ((error: Error) => void) | null = null;
-        const abortPromise = new Promise<never>((_resolve, reject) => {
-            rejectAbort = reject;
+        let timeout: ReturnType<typeof globalThis.setTimeout> | null = null;
+        const deadline = new Promise<never>((_resolve, reject) => {
+            timeout = globalThis.setTimeout((): void => {
+                reject(new Error('H264 output probe timed out'));
+            }, H264_PROFILE_OUTPUT_PROBE_TIMEOUT_MILLISECONDS);
         });
-        const abort = (): void => {
-            rejectAbort?.(new Error('H264 output probe was aborted'));
-        };
-        const removeCancellationListener = cancellationSignal.onCancel(abort);
 
         try {
             decoder = runtime.createDecoder({
@@ -291,12 +284,14 @@ export function createH264ProfileOutputProbe(runtime: H264ProbeDecodeRuntime): H
             decoder.decode(runtime.createEncodedKeyFrame(probeRequest.encodedKeyFrame));
             await Promise.race([
                 Promise.all([ decoder.flush(), outputPromise ]),
-                abortPromise
+                deadline
             ]);
             return outputCount === 1 && outputMatches;
         } finally {
             acceptingOutput = false;
-            removeCancellationListener();
+            if (timeout !== null) {
+                globalThis.clearTimeout(timeout);
+            }
             decoder?.close();
         }
     };
@@ -348,61 +343,6 @@ function createDefaultEnvironment(): H264ProfileCapabilityEnvironment {
     };
 }
 
-function waitForProbe<Value>(
-    operation: (cancellationSignal: H264ProbeCancellationSignal) => Promise<Value>
-): Promise<Value | typeof H264_PROBE_TIMEOUT> {
-    return new Promise<Value | typeof H264_PROBE_TIMEOUT>((resolve, reject) => {
-        let cancelled = false;
-        const cancellationListeners: Array<() => void> = [];
-        const cancellationSignal: H264ProbeCancellationSignal = Object.freeze({
-            isCancelled: (): boolean => cancelled,
-            onCancel: (listener: () => void): (() => void) => {
-                if (cancelled) {
-                    listener();
-                    return (): void => undefined;
-                }
-                cancellationListeners.push(listener);
-                return (): void => {
-                    const listenerIndex = cancellationListeners.indexOf(listener);
-                    if (listenerIndex >= 0) {
-                        cancellationListeners.splice(listenerIndex, 1);
-                    }
-                };
-            }
-        });
-        let settled = false;
-        const timeout = globalThis.setTimeout((): void => {
-            if (settled) {
-                return;
-            }
-            settled = true;
-            cancelled = true;
-            const listeners = cancellationListeners.splice(0, cancellationListeners.length);
-            for (const listener of listeners) {
-                listener();
-            }
-            resolve(H264_PROBE_TIMEOUT);
-        }, H264_PROFILE_PROBE_TIMEOUT_MILLISECONDS);
-
-        const operationPromise = Promise.resolve().then(() => operation(cancellationSignal));
-        operationPromise.then((value: Value): void => {
-            if (settled) {
-                return;
-            }
-            settled = true;
-            globalThis.clearTimeout(timeout);
-            resolve(value);
-        }, (error: unknown): void => {
-            if (settled) {
-                return;
-            }
-            settled = true;
-            globalThis.clearTimeout(timeout);
-            reject(error);
-        });
-    });
-}
-
 function createCapability(
     definition: H264ProbeDefinition,
     status: H264ProfileCapabilityStatus,
@@ -421,29 +361,49 @@ function createCapability(
     });
 }
 
+// Each profile's configuration check, and its decode of a keyframe at the configured size, whose frames come out 8-bit 4:2:0
+function describeProfileSteps(definition: H264ProbeDefinition): Readonly<{ check: VideoCapabilityProbeStep, decode: VideoCapabilityProbeStep }> {
+    return {
+        check: describeVideoConfigCheck(definition.configuration),
+        decode: describeVideoDecode(definition.configuration, 'I420')
+    };
+}
+
+/** Returns every browser call the profile probes can make, so the probe manager's limits cover the largest. */
+export function describeH264ProfileProbeSteps(): VideoCapabilityProbeStep[] {
+    return H264_PROFILES.flatMap((profile: H264Profile): VideoCapabilityProbeStep[] => {
+        const { check, decode } = describeProfileSteps(H264_PROBE_DEFINITIONS[profile]);
+        return [ check, decode ];
+    });
+}
+
 async function probeProfile(
     definition: H264ProbeDefinition,
-    environment: H264ProfileCapabilityEnvironment
+    environment: H264ProfileCapabilityEnvironment,
+    queue: RecordedCapabilityProbeQueue
 ): Promise<H264ProfileCapability> {
-    if (!environment.videoDecoder) {
+    const { videoDecoder, outputProbe } = environment;
+    if (!videoDecoder) {
         return createCapability(definition, 'unknown', 'api-unavailable', 'none');
     }
 
-    let configurationSupport: VideoDecoderSupport | typeof H264_PROBE_TIMEOUT;
+    const steps = describeProfileSteps(definition);
+    let configurationSupport: CapabilityProbeStepOutcome<VideoDecoderSupport>;
     try {
-        configurationSupport = await waitForProbe(() => (
-            environment.videoDecoder!.isConfigSupported({ ...definition.configuration })
-        ));
+        configurationSupport = await queue.check(() => videoDecoder.isConfigSupported({ ...definition.configuration }), steps.check);
     } catch {
         return createCapability(definition, 'unknown', 'probe-exception', 'none');
     }
-    if (configurationSupport === H264_PROBE_TIMEOUT) {
+    if (configurationSupport === CAPABILITY_PROBE_TIMEOUT) {
         return createCapability(definition, 'unknown', 'probe-timeout', 'none');
+    }
+    if (configurationSupport instanceof CapabilityProbeBlock) {
+        return createCapability(definition, 'unsupported', configurationSupport.reason, 'none');
     }
     if (configurationSupport.supported !== true) {
         return createCapability(definition, 'unsupported', 'config-unsupported', 'configuration');
     }
-    if (!environment.outputProbe) {
+    if (!outputProbe) {
         return createCapability(definition, 'unknown', 'config-supported-only', 'configuration');
     }
 
@@ -457,16 +417,18 @@ async function probeProfile(
         expectedTimestamp: H264_PROBE_FRAME_TIMESTAMP,
         profile: definition.profile
     });
-    let outputMatches: boolean | typeof H264_PROBE_TIMEOUT;
+    let outputMatches: CapabilityProbeStepOutcome<boolean>;
     try {
-        outputMatches = await waitForProbe((cancellationSignal: H264ProbeCancellationSignal) => (
-            environment.outputProbe!(probeRequest, cancellationSignal)
-        ));
+        // A decoder pool may refuse the decode only for the decoders of the calls beside it, so the manager confirms a mismatch alone
+        outputMatches = await queue.runTimed(() => outputProbe(probeRequest), steps.decode, { confirm: (matches): boolean => !matches });
     } catch {
         return createCapability(definition, 'unknown', 'probe-exception', 'configuration');
     }
-    if (outputMatches === H264_PROBE_TIMEOUT) {
+    if (outputMatches === CAPABILITY_PROBE_TIMEOUT) {
         return createCapability(definition, 'unknown', 'probe-timeout', 'configuration');
+    }
+    if (outputMatches instanceof CapabilityProbeBlock) {
+        return createCapability(definition, 'unsupported', outputMatches.reason, 'configuration');
     }
     if (!outputMatches) {
         return createCapability(definition, 'unknown', 'output-mismatch', 'configuration');
@@ -474,26 +436,19 @@ async function probeProfile(
     return createCapability(definition, 'supported', 'decode-output-verified', 'decoded-output');
 }
 
-/** Measures H264 profile support once and returns immutable fail-closed results. */
+/** Measures H264 profile support and returns immutable fail-closed results. */
 export default class H264ProfileCapabilityProbe {
     private readonly environment: H264ProfileCapabilityEnvironment;
-    private resultPromise: Promise<H264ProfileCapabilities> | null = null;
 
     public constructor(environment: H264ProfileCapabilityEnvironment = createDefaultEnvironment()) {
         this.environment = environment;
     }
 
-    public probe(): Promise<H264ProfileCapabilities> {
-        this.resultPromise ??= this.runProbe();
-        return this.resultPromise;
-    }
-
-    private async runProbe(): Promise<H264ProfileCapabilities> {
-        const probes: Promise<H264ProfileCapability>[] = [];
-        for (const profile of H264_PROFILES) {
-            probes.push(probeProfile(H264_PROBE_DEFINITIONS[profile], this.environment));
-        }
-        const results = await Promise.all(probes);
+    /** Probes every profile; each profile's check and decode are steps of their own on the queue, which admits them beside the others. */
+    public async probe(queue: RecordedCapabilityProbeQueue): Promise<H264ProfileCapabilities> {
+        const results = await Promise.all(H264_PROFILES.map((profile: H264Profile): Promise<H264ProfileCapability> => (
+            probeProfile(H264_PROBE_DEFINITIONS[profile], this.environment, queue)
+        )));
         const capabilities = {} as Record<H264Profile, H264ProfileCapability>;
         for (let profileIndex = 0; profileIndex < H264_PROFILES.length; profileIndex += 1) {
             capabilities[H264_PROFILES[profileIndex]] = results[profileIndex];

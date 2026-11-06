@@ -1,4 +1,4 @@
-// The capability probe store: the stored verdicts' fingerprint and age, the latest start's probe wait, and buttons that clear the store and warm the probes.
+// The capability probe store: the stored verdicts' fingerprint and age, the quarantined steps and ceiling, the latest start's probe wait, and buttons that clear the store and warm the probes.
 import {
     clearStoredCapabilityProbeVerdicts,
     readStoredCapabilityProbeVerdictState,
@@ -39,7 +39,10 @@ function describeBrowser(state: CapabilityProbeStoreState): string {
     return state.fingerprint.userAgent;
 }
 
-/** Describes the stored verdicts in terse lines: their count and age, the build key, the adapter, the browser, and each probe that stopped a page, with its steps. */
+/**
+ * Describes the stored verdicts in terse lines: their count and age, the build key, the adapter, the browser, and each probe that stopped a page, with its steps,
+ * the blocked steps, the suspect steps awaiting their lone retry, and the concurrency ceiling when present.
+ */
 export function describeStoredProbeVerdicts(state: CapabilityProbeStoreState | null): string {
     if (state === null) {
         return NOTHING_STORED_TEXT;
@@ -57,7 +60,14 @@ export function describeStoredProbeVerdicts(state: CapabilityProbeStoreState | n
             'crashed',
             probe,
             steps.length > 0 ? `(${steps.join(', ')})` : null
-        ]))
+        ])),
+        ...state.blockedSteps.map((step: string): string => joinTextParts([ 'blocked', step ])),
+        ...state.suspectSteps.map((step: string): string => joinTextParts([ 'suspect', step ])),
+        ...(state.ceiling === null ? [] : [ joinTextParts([
+            'ceiling',
+            state.ceiling.bytes === null ? null : `${state.ceiling.bytes} bytes`,
+            state.ceiling.decoders === null ? null : `${state.ceiling.decoders} decoders`
+        ]) ])
     ].join(LINE_SEPARATOR);
 }
 

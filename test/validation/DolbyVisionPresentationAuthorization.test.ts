@@ -43,6 +43,8 @@ import {
     type RawHDRVectorObservation
 } from 'webgpu-player/validation/RawHDRPresentationAuthorization';
 import { createSDRColorMetadata } from 'webgpu-player/color/ColorMetadata';
+import { microsecondsToMilliseconds } from 'webgpu-player/MediaTime';
+import { GPU_AUTHORIZATION_TIMEOUT_MICROSECONDS } from 'webgpu-player/validation/GPUAuthorizationDeadline';
 
 import {
     createWebGPUDeviceHarness,
@@ -63,6 +65,7 @@ type PlaneGeometry = [string, number, number];
 const TARGET_FORMAT: GPUTextureFormat = 'bgra8unorm';
 const UNREADABLE_TARGET_FORMAT: GPUTextureFormat = 'rgba16float';
 const SINGLE_SCENARIO_SAMPLE_COUNT = 9;
+const AUTHORIZATION_TIMEOUT_MILLISECONDS = microsecondsToMilliseconds(GPU_AUTHORIZATION_TIMEOUT_MICROSECONDS);
 const DUAL_SCENARIO_SAMPLE_COUNT = 18;
 // The size the reduced-resolution FEL probe composes beside the 16x8 BL vector
 const ENHANCEMENT_LAYER_WIDTH = 8;
@@ -158,6 +161,7 @@ describe('Dolby Vision presentation authorization', () => {
     });
 
     afterEach(() => {
+        vi.useRealTimers();
         vi.clearAllMocks();
         restoreWebGPUGlobals();
     });
@@ -364,6 +368,25 @@ describe('Dolby Vision presentation authorization', () => {
             failureDetail: decision.failureDetail,
             failureReason: 'pixel-mismatch'
         });
+    });
+
+    it('probes again after its deadline cancelled the probe, and keeps the decision the probe reached', async () => {
+        vi.useFakeTimers();
+        vi.mocked(PresentationExecutor.create).mockImplementationOnce(() => new Promise<PresentationExecutor>(() => undefined));
+        const harness = createDeviceHarness(createExpectedObservations());
+        const registry = new DolbyVisionPresentationAuthorizationRegistry();
+        const timedOut = registry.authorize(harness.device, TARGET_FORMAT);
+
+        await vi.advanceTimersByTimeAsync(AUTHORIZATION_TIMEOUT_MILLISECONDS);
+
+        await expect(timedOut).resolves.toMatchObject({ failureReason: 'timeout', status: 'rejected' });
+        expect(registry.getAuthorizationFailure(harness.device, TARGET_FORMAT, 'I420P10'))
+            .toBe(`timeout: ${DOLBY_VISION_AUTHORIZATION_ROUTE_KEY} executor`);
+        const retried = registry.authorize(harness.device, TARGET_FORMAT);
+        expect(retried).not.toBe(timedOut);
+        await expect(retried).resolves.toMatchObject({ failureReason: null, status: 'authorized' });
+        expect(registry.authorize(harness.device, TARGET_FORMAT)).toBe(retried);
+        expect(PresentationExecutor.create).toHaveBeenCalledTimes(2);
     });
 
     it.each([ 8, 10, 12 ])('builds dual-layer Profile 4 MEL and FEL vectors at %i bits', bitDepth => {

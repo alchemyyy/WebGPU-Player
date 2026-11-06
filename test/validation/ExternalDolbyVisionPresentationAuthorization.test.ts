@@ -11,8 +11,14 @@ vi.mock('webgpu-player/presentation/passes/PresentationPlanner', async importOri
     return { ...originalModule, planPresentation: vi.fn(originalModule.planPresentation) };
 });
 
+// jsdom has no VideoFrame, so each test's browser holds I420P10 frames unless the test says otherwise
+vi.mock('webgpu-player/capability/VideoFrameFormatSupport', () => ({ canHoldVideoFrameFormat: vi.fn(() => true) }));
+
 import { createHDRToSDRRenderSettings } from 'webgpu-player/presentation/RenderSettings';
 import type { ColorTriplet } from 'webgpu-player/color/ColorPipeline';
+import { canHoldVideoFrameFormat } from 'webgpu-player/capability/VideoFrameFormatSupport';
+import { microsecondsToMilliseconds } from 'webgpu-player/MediaTime';
+import { GPU_AUTHORIZATION_TIMEOUT_MICROSECONDS } from 'webgpu-player/validation/GPUAuthorizationDeadline';
 import { createDolbyVisionAuthorizationRPUVector } from 'webgpu-player/capability/vectors/DolbyVisionAuthorizationVector';
 import { createBuiltinChain } from 'webgpu-player/presentation/passes/builtin/BuiltinChains';
 import type { PlanRequest } from 'webgpu-player/presentation/passes/PassTypes';
@@ -51,6 +57,7 @@ const TARGET_FORMAT: GPUTextureFormat = 'bgra8unorm';
 const INPUT_PROBE_FORMAT: GPUTextureFormat = 'rgba16float';
 const INPUT_PROBE_SIGNAL_NAME = 'external-dolby-vision-input-probe';
 const VECTOR_SAMPLE_COUNT = 9;
+const AUTHORIZATION_TIMEOUT_MILLISECONDS = microsecondsToMilliseconds(GPU_AUTHORIZATION_TIMEOUT_MICROSECONDS);
 // Within the probe's 8/1023 input bound, and far outside it
 const PRESERVED_INPUT_OFFSET = 4 / 1_023;
 const CORRUPTED_SIGNAL_OFFSET = 0.1;
@@ -148,6 +155,7 @@ describe('External Dolby Vision presentation authorization', () => {
     });
 
     afterEach(() => {
+        vi.useRealTimers();
         vi.clearAllMocks();
         restoreWebGPUGlobals();
         vi.restoreAllMocks();
@@ -351,6 +359,43 @@ describe('External Dolby Vision presentation authorization', () => {
         });
         expect(createFrameFactory).not.toHaveBeenCalled();
         expect(PresentationExecutor.create).not.toHaveBeenCalled();
+    });
+
+    it('rejects a browser that holds no I420P10 frame before compiling either executor', async () => {
+        vi.mocked(canHoldVideoFrameFormat).mockReturnValueOnce(false);
+        const harness = createDeviceHarness(createExpectedObservations());
+        const createFrameFactory = vi.fn(() => createFrame(vi.fn()));
+        const runner = new ExternalDolbyVisionPresentationAuthorizationRunner(createFrameFactory);
+
+        await expect(runner.validate(harness.device, TARGET_FORMAT)).resolves.toMatchObject({
+            failureDetail: 'I420P10 unsupported',
+            failureReason: 'video-frame-creation-failed',
+            status: 'rejected'
+        });
+        expect(canHoldVideoFrameFormat).toHaveBeenCalledWith('I420P10');
+        expect(PresentationExecutor.create).not.toHaveBeenCalled();
+        expect(harness.createShaderModule).not.toHaveBeenCalled();
+        expect(harness.textures).toEqual([]);
+        expect(createFrameFactory).not.toHaveBeenCalled();
+    });
+
+    it('probes again after its deadline cancelled the probe, and keeps the decision the probe reached', async () => {
+        vi.useFakeTimers();
+        vi.mocked(PresentationExecutor.create).mockImplementationOnce(() => new Promise<PresentationExecutor>(() => undefined));
+        const harness = createDeviceHarness(createExpectedObservations());
+        const runner = new ExternalDolbyVisionPresentationAuthorizationRunner((): VideoFrame => createFrame(vi.fn()));
+        const registry = new ExternalDolbyVisionPresentationAuthorizationRegistry(runner);
+        const timedOut = registry.authorize(harness.device, TARGET_FORMAT);
+
+        await vi.advanceTimersByTimeAsync(AUTHORIZATION_TIMEOUT_MILLISECONDS);
+
+        await expect(timedOut).resolves.toMatchObject({ failureReason: 'timeout', status: 'rejected' });
+        expect(registry.getAuthorizationFailure(harness.device, TARGET_FORMAT))
+            .toBe(`timeout: ${EXTERNAL_DOLBY_VISION_AUTHORIZATION_ROUTE_KEY} executor`);
+        const retried = registry.authorize(harness.device, TARGET_FORMAT);
+        expect(retried).not.toBe(timedOut);
+        await expect(retried).resolves.toMatchObject({ failureReason: null, status: 'authorized' });
+        expect(registry.authorize(harness.device, TARGET_FORMAT)).toBe(retried);
     });
 
     it('includes both reference shaders and the target in the stable signature', () => {

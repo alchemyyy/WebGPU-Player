@@ -11,9 +11,11 @@ import CapabilityProbeStore, {
     readCapabilityProbeFingerprint,
     readStoredCapabilityProbeVerdictState,
     type CapabilityProbeFingerprint,
+    type CapabilityProbeQuarantine,
     type CapabilityProbeStorage,
     type CrashedCapabilityProbe
 } from 'webgpu-player/capability/CapabilityProbeStore';
+import type { CapabilityProbeStepCost } from 'webgpu-player/capability/CapabilityProbeSteps';
 
 import { createFakeWebLocks, type FakeWebLocks } from '../helpers/fakeWebLocks';
 
@@ -22,6 +24,12 @@ const UNSUPPORTED_OPUS = Object.freeze({ codec: 'opus', codecString: 'opus', rea
 const TIMED_OUT_FLAC = Object.freeze({ codec: 'flac', codecString: 'flac', reason: 'probe-timeout', status: 'unknown' });
 const SUPPORTED_HEVC = Object.freeze({ codec: 'hevc', codecString: 'hvc1.1.6.L120.90', reason: 'decode-output-verified', status: 'supported' });
 const WRITE_TIME_MILLISECONDS = 1_000_000;
+// A configuration check opens a decoder and holds no decoded bytes
+const CHECK_COST: CapabilityProbeStepCost = Object.freeze({ bytes: 0, decoders: 1 });
+const EMPTY_QUARANTINE: CapabilityProbeQuarantine = Object.freeze({ blocked: new Set<string>(), ceiling: null, suspects: new Map<string, ReadonlySet<string>>() });
+
+/** A browser call a page has open: its probe, its step label, and what it holds, a check's by default. */
+type OpenCall = Readonly<{ cost?: CapabilityProbeStepCost, probe: string, step: string }>;
 
 function createFingerprint(buildKey: string): CapabilityProbeFingerprint {
     return {
@@ -190,9 +198,12 @@ describe('CapabilityProbeStore', () => {
 
         expect(store.readState()).toEqual({
             ageMilliseconds: 5_000,
+            blockedSteps: [],
+            ceiling: null,
             crashedProbes: [],
             fingerprint: createFingerprint('build-1'),
             probes: [ 'native-sdr:hevc' ],
+            suspectSteps: [],
             writtenAtMilliseconds: WRITE_TIME_MILLISECONDS
         });
     });
@@ -231,82 +242,323 @@ describe('CapabilityProbeStore', () => {
 describe('the run journal', () => {
     /** Reads the probes each page's record holds, with their steps, by page. */
     function readRunRecords(storage: CapabilityProbeStorage): Record<string, readonly CrashedCapabilityProbe[]> {
+        return Object.fromEntries(Object.entries(readRawRunRecords(storage)).map(([ pageId, runs ]) => [ pageId, runs.probes ]));
+    }
+
+    /** Reads what each page's record says its open calls hold together, by page. */
+    function readRunTotals(storage: CapabilityProbeStorage): Record<string, CapabilityProbeStepCost> {
+        return Object.fromEntries(Object.entries(readRawRunRecords(storage)).map(([ pageId, runs ]) => [ pageId, runs.inFlight ]));
+    }
+
+    function readRawRunRecords(storage: CapabilityProbeStorage): Record<string, { inFlight: CapabilityProbeStepCost, probes: readonly CrashedCapabilityProbe[] }> {
         const text = storage.getItem(CAPABILITY_PROBE_RUNS_KEY);
         if (text === null) {
             return {};
         }
-        const entry = JSON.parse(text) as { pages: Record<string, { probes: readonly CrashedCapabilityProbe[] }> };
-        return Object.fromEntries(Object.entries(entry.pages).map(([ pageId, runs ]) => [ pageId, runs.probes ]));
+        // The store wrote the entry in this layout
+        const entry = JSON.parse(text) as { pages: Record<string, { inFlight: CapabilityProbeStepCost, probes: readonly CrashedCapabilityProbe[] }> };
+        return entry.pages;
     }
 
-    it('reads as crashed the probes a stopped page had in a browser call, with the step it was in, and drops their verdicts', async () => {
+    /** Opens a page's run journal, opens its calls, and stops the page in them, as a crash does. */
+    async function stopPageInCalls(options: PageOptions, calls: readonly OpenCall[]): Promise<void> {
+        const page = createPageStore(options);
+        await page.readQuarantine();
+        for (const { cost = CHECK_COST, probe, step } of calls) {
+            await page.markRunning(probe, step, cost);
+        }
+        // Nothing ends the calls, so the page's record stays
+        options.locks.stopPage(options.pageId);
+    }
+
+    const HEVC_DECODE_COST: CapabilityProbeStepCost = Object.freeze({ bytes: 3_000, decoders: 1 });
+    const AAC_DECODE_COST: CapabilityProbeStepCost = Object.freeze({ bytes: 1_000, decoders: 1 });
+    // Two configuration checks and two decodes, in flight together on one page
+    const CONCURRENT_CALLS: readonly OpenCall[] = [
+        { probe: 'native-audio', step: 'check mp4a.40.2 2ch 48000Hz' },
+        { probe: 'native-audio', step: 'check opus 2ch 48000Hz' },
+        { cost: AAC_DECODE_COST, probe: 'native-audio', step: 'decode mp4a.40.2 2ch 48000Hz' },
+        { cost: HEVC_DECODE_COST, probe: 'native-sdr:hevc', step: 'decode hvc1.1.6.L120.90 1920x1080' }
+    ];
+    const CONCURRENT_TOTALS: CapabilityProbeStepCost = {
+        bytes: AAC_DECODE_COST.bytes + HEVC_DECODE_COST.bytes,
+        decoders: CONCURRENT_CALLS.length
+    };
+
+    it('blocks the one step a stopped page had in flight, and drops the verdicts of its probe', async () => {
         const storage = createMemoryStorage();
         const locks = createFakeWebLocks();
         const stoppedPage = createPageStore({ locks, pageId: 'page-1', storage });
         await stoppedPage.write('native-sdr:hevc', SUPPORTED_HEVC);
         await stoppedPage.write('native-audio', [ SUPPORTED_AAC ]);
-        expect(await stoppedPage.readCrashedProbes()).toEqual(new Set());
-        await stoppedPage.markRunning('native-sdr:hevc', 'decode hevc');
-        // The page stops in the call, so nothing ends it and its record stays
+        expect(await stoppedPage.readQuarantine()).toEqual(EMPTY_QUARANTINE);
+        // Two calls of one step are still one step
+        await stoppedPage.markRunning('native-sdr:hevc', 'decode hevc', HEVC_DECODE_COST);
+        await stoppedPage.markRunning('native-sdr:hevc', 'decode hevc', HEVC_DECODE_COST);
         locks.stopPage('page-1');
 
         const laterPage = createPageStore({ locks, pageId: 'page-2', storage });
 
-        expect(await laterPage.readCrashedProbes()).toEqual(new Set([ 'native-sdr:hevc' ]));
+        expect(await laterPage.readQuarantine()).toEqual({ blocked: new Set([ 'decode hevc' ]), ceiling: null, suspects: new Map() });
         expect(await laterPage.read('native-sdr:hevc')).toBeNull();
         expect(laterPage.readState()).toMatchObject({
+            blockedSteps: [ 'decode hevc' ],
+            ceiling: null,
             crashedProbes: [ { probe: 'native-sdr:hevc', steps: [ 'decode hevc' ] } ],
-            probes: [ 'native-audio' ]
+            probes: [ 'native-audio' ],
+            suspectSteps: []
         });
         expect(readRunRecords(storage)).toEqual({});
     });
 
-    it('keeps every step a probe has in flight, and carries them into the crash, joined with the steps already stored', async () => {
+    it('makes suspects of the steps a stopped page had in flight together, and drops the verdicts of their probes', async () => {
+        const storage = createMemoryStorage();
+        const locks = createFakeWebLocks();
+        const writer = createStore(storage);
+        await writer.write('native-audio', [ SUPPORTED_AAC ]);
+        await writer.write('native-sdr:hevc', SUPPORTED_HEVC);
+        await writer.write('native-sdr:vp8', { ...SUPPORTED_HEVC, codec: 'vp8', codecString: 'vp8' });
+        await stopPageInCalls({ locks, pageId: 'page-1', storage }, CONCURRENT_CALLS);
+        const laterPage = createPageStore({ locks, pageId: 'page-2', storage });
+        const listener = vi.fn();
+        laterPage.onCrash(listener);
+
+        expect(await laterPage.readQuarantine()).toEqual({
+            blocked: new Set(),
+            ceiling: null,
+            suspects: new Map([
+                [ 'check mp4a.40.2 2ch 48000Hz', new Set([ 'native-audio' ]) ],
+                [ 'check opus 2ch 48000Hz', new Set([ 'native-audio' ]) ],
+                [ 'decode hvc1.1.6.L120.90 1920x1080', new Set([ 'native-sdr:hevc' ]) ],
+                [ 'decode mp4a.40.2 2ch 48000Hz', new Set([ 'native-audio' ]) ]
+            ])
+        });
+        expect(listener).toHaveBeenCalledExactlyOnceWith([
+            { probe: 'native-audio', steps: [ 'check mp4a.40.2 2ch 48000Hz', 'check opus 2ch 48000Hz', 'decode mp4a.40.2 2ch 48000Hz' ] },
+            { probe: 'native-sdr:hevc', steps: [ 'decode hvc1.1.6.L120.90 1920x1080' ] }
+        ]);
+        expect(laterPage.readState()).toMatchObject({
+            blockedSteps: [],
+            crashedProbes: [
+                { probe: 'native-audio', steps: [ 'check mp4a.40.2 2ch 48000Hz', 'check opus 2ch 48000Hz', 'decode mp4a.40.2 2ch 48000Hz' ] },
+                { probe: 'native-sdr:hevc', steps: [ 'decode hvc1.1.6.L120.90 1920x1080' ] }
+            ],
+            probes: [ 'native-sdr:vp8' ],
+            suspectSteps: [ 'check mp4a.40.2 2ch 48000Hz', 'check opus 2ch 48000Hz', 'decode hvc1.1.6.L120.90 1920x1080', 'decode mp4a.40.2 2ch 48000Hz' ]
+        });
+    });
+
+    it('sets the ceiling below what a crash\'s calls held once all its suspects pass alone, keeping the lower of each limit', async () => {
+        const storage = createMemoryStorage();
+        const locks = createFakeWebLocks();
+        await stopPageInCalls({ locks, pageId: 'page-1', storage }, CONCURRENT_CALLS);
+        const bisectingPage = createPageStore({ locks, pageId: 'page-2', storage });
+        const { suspects } = await bisectingPage.readQuarantine();
+
+        // A step that is no suspect changes nothing
+        bisectingPage.resolveSuspect('check vp8 640x360');
+        // The ceiling waits for the last suspect
+        for (const step of suspects.keys()) {
+            expect((await bisectingPage.readQuarantine()).ceiling).toBeNull();
+            bisectingPage.resolveSuspect(step);
+        }
+
+        const firstCeiling = { bytes: CONCURRENT_TOTALS.bytes - 1, decoders: CONCURRENT_TOTALS.decoders - 1 };
+        expect(await createPageStore({ locks, pageId: 'page-3', storage }).readQuarantine()).toEqual({ blocked: new Set(), ceiling: firstCeiling, suspects: new Map() });
+        expect(bisectingPage.readState()).toMatchObject({ blockedSteps: [], ceiling: firstCeiling, crashedProbes: [], suspectSteps: [] });
+
+        // A later concurrency crash with fewer bytes but more decoders in flight lowers only the bytes
+        const fewerBytesCost: CapabilityProbeStepCost = { bytes: 10, decoders: 1 };
+        await stopPageInCalls({ locks, pageId: 'page-4', storage }, [
+            ...CONCURRENT_CALLS.map((call: OpenCall): OpenCall => ({ ...call, cost: fewerBytesCost })),
+            { cost: fewerBytesCost, probe: 'native-sdr:vp8', step: 'decode vp8 640x360' }
+        ]);
+        const secondBisectingPage = createPageStore({ locks, pageId: 'page-5', storage });
+        for (const step of (await secondBisectingPage.readQuarantine()).suspects.keys()) {
+            secondBisectingPage.resolveSuspect(step);
+        }
+
+        expect((await createPageStore({ locks, pageId: 'page-6', storage }).readQuarantine()).ceiling).toEqual({
+            bytes: fewerBytesCost.bytes * (CONCURRENT_CALLS.length + 1) - 1,
+            decoders: firstCeiling.decoders
+        });
+    });
+
+    /** Stops a page in calls together, then lets a later page pass every suspect alone, and resolves the ceiling that leaves. */
+    async function passConcurrencyCrash(storage: CapabilityProbeStorage, locks: FakeWebLocks, pageIds: readonly [ string, string ], calls: readonly OpenCall[]): Promise<CapabilityProbeQuarantine['ceiling']> {
+        const [ stoppedPageId, bisectingPageId ] = pageIds;
+        await stopPageInCalls({ locks, pageId: stoppedPageId, storage }, calls);
+        const bisectingPage = createPageStore({ locks, pageId: bisectingPageId, storage });
+        for (const step of (await bisectingPage.readQuarantine()).suspects.keys()) {
+            bisectingPage.resolveSuspect(step);
+        }
+        return (await bisectingPage.readQuarantine()).ceiling;
+    }
+
+    it('caps only the dimensions a concurrency crash held some of, and a later crash only lowers each cap', async () => {
+        const storage = createMemoryStorage();
+        const locks = createFakeWebLocks();
+        const checks = CONCURRENT_CALLS.slice(0, 2);
+
+        // Checks hold no decoded bytes, so their crash says nothing of bytes
+        const checksCeiling = await passConcurrencyCrash(storage, locks, [ 'page-1', 'page-2' ], checks);
+        expect(checksCeiling).toEqual({ bytes: null, decoders: checks.length - 1 });
+        expect(createPageStore({ locks, pageId: 'page-3', storage }).readState()?.ceiling).toEqual(checksCeiling);
+
+        // A crash that held bytes caps them strictly below its total, and keeps the lower decoder cap
+        const decodesCeiling = await passConcurrencyCrash(storage, locks, [ 'page-4', 'page-5' ], CONCURRENT_CALLS);
+        expect(decodesCeiling).toEqual({ bytes: CONCURRENT_TOTALS.bytes - 1, decoders: checksCeiling?.decoders });
+
+        // A later crash of no bytes keeps the bytes cap
+        expect(await passConcurrencyCrash(storage, locks, [ 'page-6', 'page-7' ], checks)).toEqual(decodesCeiling);
+    });
+
+    it('reads a stored ceiling of two amounts as both capped', async () => {
+        const storage = createMemoryStorage();
+        const locks = createFakeWebLocks();
+        await passConcurrencyCrash(storage, locks, [ 'page-1', 'page-2' ], CONCURRENT_CALLS);
+        const entry = JSON.parse(storage.getItem(CAPABILITY_PROBE_STORE_KEY) ?? '{}') as { quarantine: Record<string, unknown> };
+        const amounts = { bytes: 1_024, decoders: 2 };
+        storage.setItem(CAPABILITY_PROBE_STORE_KEY, JSON.stringify({ ...entry, quarantine: { ...entry.quarantine, ceiling: amounts } }));
+
+        expect((await createPageStore({ locks, pageId: 'page-3', storage }).readQuarantine()).ceiling).toEqual(amounts);
+    });
+
+    it('keeps the bisect open when a step that was no suspect stops a page alone', async () => {
+        const storage = createMemoryStorage();
+        const locks = createFakeWebLocks();
+        await stopPageInCalls({ locks, pageId: 'page-1', storage }, CONCURRENT_CALLS);
+        const unrelated: OpenCall = { cost: HEVC_DECODE_COST, probe: 'native-sdr:vp8', step: 'decode vp8 640x360' };
+        await stopPageInCalls({ locks, pageId: 'page-2', storage }, [ unrelated ]);
+        const bisectingPage = createPageStore({ locks, pageId: 'page-3', storage });
+        const quarantine = await bisectingPage.readQuarantine();
+
+        expect(quarantine.blocked).toEqual(new Set([ unrelated.step ]));
+        expect(quarantine.suspects.size).toBe(CONCURRENT_CALLS.length);
+        for (const step of quarantine.suspects.keys()) {
+            bisectingPage.resolveSuspect(step);
+        }
+
+        // Every suspect passed alone, so the first crash came from running them together
+        expect(await bisectingPage.readQuarantine()).toEqual({
+            blocked: new Set([ unrelated.step ]),
+            ceiling: { bytes: CONCURRENT_TOTALS.bytes - 1, decoders: CONCURRENT_TOTALS.decoders - 1 },
+            suspects: new Map()
+        });
+    });
+
+    it('keeps the bisect open when a blocked step stops a page alone again, and adds the probe to it', async () => {
+        const storage = createMemoryStorage();
+        const locks = createFakeWebLocks();
+        const blockedStep = 'decode vp8 640x360';
+        await stopPageInCalls({ locks, pageId: 'page-1', storage }, [ { cost: HEVC_DECODE_COST, probe: 'native-sdr:vp8', step: blockedStep } ]);
+        await stopPageInCalls({ locks, pageId: 'page-2', storage }, CONCURRENT_CALLS);
+        await stopPageInCalls({ locks, pageId: 'page-3', storage }, [ { cost: HEVC_DECODE_COST, probe: 'native-sdr:vp8-alpha', step: blockedStep } ]);
+        const bisectingPage = createPageStore({ locks, pageId: 'page-4', storage });
+        for (const step of (await bisectingPage.readQuarantine()).suspects.keys()) {
+            bisectingPage.resolveSuspect(step);
+        }
+
+        expect((await bisectingPage.readQuarantine()).ceiling).toEqual({ bytes: CONCURRENT_TOTALS.bytes - 1, decoders: CONCURRENT_TOTALS.decoders - 1 });
+        expect(bisectingPage.readState()?.crashedProbes).toEqual([
+            { probe: 'native-sdr:vp8', steps: [ blockedStep ] },
+            { probe: 'native-sdr:vp8-alpha', steps: [ blockedStep ] }
+        ]);
+    });
+
+    it('blocks a suspect that stops a page again alone, and leaves no ceiling once the others pass', async () => {
+        const storage = createMemoryStorage();
+        const locks = createFakeWebLocks();
+        await stopPageInCalls({ locks, pageId: 'page-1', storage }, CONCURRENT_CALLS);
+        const culprit = 'decode hvc1.1.6.L120.90 1920x1080';
+        await stopPageInCalls({ locks, pageId: 'page-2', storage }, [ { cost: HEVC_DECODE_COST, probe: 'native-sdr:hevc', step: culprit } ]);
+        const laterPage = createPageStore({ locks, pageId: 'page-3', storage });
+        const quarantine = await laterPage.readQuarantine();
+
+        expect(quarantine.blocked).toEqual(new Set([ culprit ]));
+        expect([ ...quarantine.suspects.keys() ]).not.toContain(culprit);
+        for (const step of quarantine.suspects.keys()) {
+            laterPage.resolveSuspect(step);
+        }
+        expect(await laterPage.readQuarantine()).toEqual({ blocked: new Set([ culprit ]), ceiling: null, suspects: new Map() });
+
+        // The culprit ended that bisect: a later concurrency crash, all of whose suspects pass, sets the ceiling
+        await stopPageInCalls({ locks, pageId: 'page-4', storage }, CONCURRENT_CALLS.slice(0, 2));
+        const nextBisectingPage = createPageStore({ locks, pageId: 'page-5', storage });
+        for (const step of (await nextBisectingPage.readQuarantine()).suspects.keys()) {
+            nextBisectingPage.resolveSuspect(step);
+        }
+        expect((await nextBisectingPage.readQuarantine()).ceiling).toEqual({ bytes: null, decoders: 1 });
+    });
+
+    it('makes no suspect again of a blocked step in flight with others', async () => {
+        const storage = createMemoryStorage();
+        const locks = createFakeWebLocks();
+        const blockedCall: OpenCall = { probe: 'native-audio', step: 'check mp4a.40.2 2ch 48000Hz' };
+        const otherCall: OpenCall = { probe: 'native-sdr:hevc', step: 'check hvc1.1.6.L120.90 1920x1080' };
+        await stopPageInCalls({ locks, pageId: 'page-1', storage }, [ blockedCall ]);
+        await stopPageInCalls({ locks, pageId: 'page-2', storage }, [ blockedCall, otherCall ]);
+
+        expect(await createPageStore({ locks, pageId: 'page-3', storage }).readQuarantine()).toEqual({
+            blocked: new Set([ blockedCall.step ]),
+            ceiling: null,
+            suspects: new Map([ [ otherCall.step, new Set([ otherCall.probe ]) ] ])
+        });
+    });
+
+    it('keeps every step a probe has in flight with what the calls hold, and tells each finder only of the crashes it found', async () => {
         const storage = createMemoryStorage();
         const locks = createFakeWebLocks();
         const firstStoppedPage = createPageStore({ locks, pageId: 'page-1', storage });
-        await firstStoppedPage.readCrashedProbes();
-        // Configuration checks of one probe run side by side
-        await firstStoppedPage.markRunning('native-audio', 'check opus');
-        await firstStoppedPage.markRunning('native-audio', 'check mp4a.40.2');
-        await firstStoppedPage.markRunning('native-sdr:hevc', 'check hvc1.1.6.L120.90');
+        await firstStoppedPage.readQuarantine();
+        await firstStoppedPage.markRunning('native-audio', 'check opus', CHECK_COST);
+        await firstStoppedPage.markRunning('native-audio', 'check mp4a.40.2', CHECK_COST);
+        await firstStoppedPage.markRunning('native-sdr:hevc', 'decode hevc', HEVC_DECODE_COST);
         const secondStoppedPage = createPageStore({ locks, pageId: 'page-3', storage });
-        await secondStoppedPage.readCrashedProbes();
-        await secondStoppedPage.markRunning('native-audio', 'decode aac');
+        await secondStoppedPage.readQuarantine();
+        await secondStoppedPage.markRunning('native-audio', 'decode aac', AAC_DECODE_COST);
 
         expect(readRunRecords(storage)).toEqual({
             'page-1': [
                 { probe: 'native-audio', steps: [ 'check mp4a.40.2', 'check opus' ] },
-                { probe: 'native-sdr:hevc', steps: [ 'check hvc1.1.6.L120.90' ] }
+                { probe: 'native-sdr:hevc', steps: [ 'decode hevc' ] }
             ],
             'page-3': [ { probe: 'native-audio', steps: [ 'decode aac' ] } ]
+        });
+        expect(readRunTotals(storage)).toEqual({
+            'page-1': { bytes: HEVC_DECODE_COST.bytes, decoders: 3 },
+            'page-3': AAC_DECODE_COST
         });
 
         locks.stopPage('page-1');
         const firstFinder = createPageStore({ locks, pageId: 'page-2', storage });
         const firstFinderListener = vi.fn();
         firstFinder.onCrash(firstFinderListener);
-        await firstFinder.readCrashedProbes();
+        await firstFinder.readQuarantine();
 
         expect(firstFinderListener).toHaveBeenCalledExactlyOnceWith([
             { probe: 'native-audio', steps: [ 'check mp4a.40.2', 'check opus' ] },
-            { probe: 'native-sdr:hevc', steps: [ 'check hvc1.1.6.L120.90' ] }
+            { probe: 'native-sdr:hevc', steps: [ 'decode hevc' ] }
         ]);
 
         locks.stopPage('page-3');
         const secondFinder = createPageStore({ locks, pageId: 'page-4', storage });
         const secondFinderListener = vi.fn();
         secondFinder.onCrash(secondFinderListener);
-        await secondFinder.readCrashedProbes();
+        await secondFinder.readQuarantine();
 
         // The listener hears only the crash its page found, while the entry joins its steps with those stored before
         expect(secondFinderListener).toHaveBeenCalledExactlyOnceWith([ { probe: 'native-audio', steps: [ 'decode aac' ] } ]);
-        expect(secondFinder.readState()?.crashedProbes).toEqual([
-            { probe: 'native-audio', steps: [ 'check mp4a.40.2', 'check opus', 'decode aac' ] },
-            { probe: 'native-sdr:hevc', steps: [ 'check hvc1.1.6.L120.90' ] }
-        ]);
+        expect(secondFinder.readState()).toMatchObject({
+            blockedSteps: [ 'decode aac' ],
+            crashedProbes: [
+                { probe: 'native-audio', steps: [ 'check mp4a.40.2', 'check opus', 'decode aac' ] },
+                { probe: 'native-sdr:hevc', steps: [ 'decode hevc' ] }
+            ],
+            suspectSteps: [ 'check mp4a.40.2', 'check opus', 'decode hevc' ]
+        });
         // The first finder reads no crash again once its journal is open
-        await firstFinder.readCrashedProbes();
+        await firstFinder.readQuarantine();
         expect(firstFinderListener).toHaveBeenCalledOnce();
     });
 
@@ -314,23 +566,20 @@ describe('the run journal', () => {
         const storage = createMemoryStorage();
         const locks = createFakeWebLocks();
         const runningPage = createPageStore({ locks, pageId: 'page-1', storage });
-        await runningPage.readCrashedProbes();
-        await runningPage.markRunning('native-audio', 'check mp4a.40.2');
+        await runningPage.readQuarantine();
+        await runningPage.markRunning('native-audio', 'check mp4a.40.2', CHECK_COST);
         const laterPage = createPageStore({ locks, pageId: 'page-2', storage });
         const listener = vi.fn();
         laterPage.onCrash(listener);
 
-        expect(await laterPage.readCrashedProbes()).toEqual(new Set());
+        expect(await laterPage.readQuarantine()).toEqual(EMPTY_QUARANTINE);
         expect(listener).not.toHaveBeenCalled();
     });
 
     it('records the crash and tells every other listener when a crash listener throws', async () => {
         const storage = createMemoryStorage();
         const locks = createFakeWebLocks();
-        const stoppedPage = createPageStore({ locks, pageId: 'page-1', storage });
-        await stoppedPage.readCrashedProbes();
-        await stoppedPage.markRunning('native-audio', 'decode aac');
-        locks.stopPage('page-1');
+        await stopPageInCalls({ locks, pageId: 'page-1', storage }, [ { cost: AAC_DECODE_COST, probe: 'native-audio', step: 'decode aac' } ]);
         const laterPage = createPageStore({ locks, pageId: 'page-2', storage });
         const throwingListener = vi.fn((): void => {
             throw new Error('Listener failed');
@@ -339,57 +588,33 @@ describe('the run journal', () => {
         laterPage.onCrash(throwingListener);
         laterPage.onCrash(listener);
 
-        expect(await laterPage.readCrashedProbes()).toEqual(new Set([ 'native-audio' ]));
+        expect((await laterPage.readQuarantine()).blocked).toEqual(new Set([ 'decode aac' ]));
         expect(throwingListener).toHaveBeenCalledOnce();
         expect(listener).toHaveBeenCalledExactlyOnceWith([ { probe: 'native-audio', steps: [ 'decode aac' ] } ]);
         expect(laterPage.readState()?.crashedProbes).toEqual([ { probe: 'native-audio', steps: [ 'decode aac' ] } ]);
-    });
-
-    it('reads a crash and a page record of the previous release, which name probes alone, as crashes without steps', async () => {
-        const storage = createMemoryStorage();
-        const locks = createFakeWebLocks();
-        await createStore(storage).write('native-audio', [ SUPPORTED_AAC ]);
-        const entry = JSON.parse(storage.getItem(CAPABILITY_PROBE_STORE_KEY) ?? '{}') as { fingerprint: string };
-        storage.setItem(CAPABILITY_PROBE_STORE_KEY, JSON.stringify({ ...entry, crashed: [ 'h264-profiles' ] }));
-        storage.setItem(CAPABILITY_PROBE_RUNS_KEY, JSON.stringify({
-            pages: { 'page-1': { fingerprint: entry.fingerprint, probes: [ 'native-sdr:hevc' ] } },
-            schema: CAPABILITY_PROBE_STORE_SCHEMA_VERSION
-        }));
-        const laterPage = createPageStore({ locks, pageId: 'page-2', storage });
-        const listener = vi.fn();
-        laterPage.onCrash(listener);
-
-        expect(await laterPage.readCrashedProbes()).toEqual(new Set([ 'h264-profiles', 'native-sdr:hevc' ]));
-        expect(listener).toHaveBeenCalledExactlyOnceWith([ { probe: 'native-sdr:hevc', steps: [] } ]);
-        expect(laterPage.readState()).toMatchObject({
-            crashedProbes: [ { probe: 'h264-profiles', steps: [] }, { probe: 'native-sdr:hevc', steps: [] } ],
-            probes: [ 'native-audio' ]
-        });
-        // The entry is written back in the current shape
-        expect(JSON.parse(storage.getItem(CAPABILITY_PROBE_STORE_KEY) ?? '{}')).toMatchObject({
-            crashed: [ { probe: 'h264-profiles', steps: [] }, { probe: 'native-sdr:hevc', steps: [] } ]
-        });
-        expect(readRunRecords(storage)).toEqual({});
     });
 
     it('leaves the record of a page that still runs, which drops each step once its last call ends, and the record with the last step', async () => {
         const storage = createMemoryStorage();
         const locks = createFakeWebLocks();
         const runningPage = createPageStore({ locks, pageId: 'page-1', storage });
-        await runningPage.readCrashedProbes();
-        const endFirstCall = await runningPage.markRunning('native-audio', 'check mp4a.40.2');
-        const endSecondCall = await runningPage.markRunning('native-audio', 'check mp4a.40.2');
-        const endThirdCall = await runningPage.markRunning('native-audio', 'check opus');
+        await runningPage.readQuarantine();
+        const endFirstCall = await runningPage.markRunning('native-audio', 'decode mp4a.40.2', AAC_DECODE_COST);
+        const endSecondCall = await runningPage.markRunning('native-audio', 'decode mp4a.40.2', AAC_DECODE_COST);
+        const endThirdCall = await runningPage.markRunning('native-audio', 'check opus', CHECK_COST);
 
-        expect(await createPageStore({ locks, pageId: 'page-2', storage }).readCrashedProbes()).toEqual(new Set());
-        expect(readRunRecords(storage)).toEqual({ 'page-1': [ { probe: 'native-audio', steps: [ 'check mp4a.40.2', 'check opus' ] } ] });
+        expect(await createPageStore({ locks, pageId: 'page-2', storage }).readQuarantine()).toEqual(EMPTY_QUARANTINE);
+        expect(readRunRecords(storage)).toEqual({ 'page-1': [ { probe: 'native-audio', steps: [ 'check opus', 'decode mp4a.40.2' ] } ] });
+        expect(readRunTotals(storage)).toEqual({ 'page-1': { bytes: 2 * AAC_DECODE_COST.bytes, decoders: 3 } });
 
-        // Each end counts once, so the record keeps the step for the call still open
+        // Each end counts once, so the record keeps the step for the call still open, and holds what that call holds
         endFirstCall();
         endFirstCall();
-        expect(readRunRecords(storage)).toEqual({ 'page-1': [ { probe: 'native-audio', steps: [ 'check mp4a.40.2', 'check opus' ] } ] });
+        await vi.waitFor(() => expect(readRunTotals(storage)).toEqual({ 'page-1': { bytes: AAC_DECODE_COST.bytes, decoders: 2 } }));
+        expect(readRunRecords(storage)).toEqual({ 'page-1': [ { probe: 'native-audio', steps: [ 'check opus', 'decode mp4a.40.2' ] } ] });
         endSecondCall();
         await vi.waitFor(() => expect(readRunRecords(storage)).toEqual({ 'page-1': [ { probe: 'native-audio', steps: [ 'check opus' ] } ] }));
+        expect(readRunTotals(storage)).toEqual({ 'page-1': CHECK_COST });
         endThirdCall();
         expect(readRunRecords(storage)).toEqual({});
     });
@@ -412,11 +637,11 @@ describe('the run journal', () => {
                 return true;
             }
         });
-        await page.readCrashedProbes();
-        await page.markRunning('native-audio', 'check mp4a.40.2');
+        await page.readQuarantine();
+        await page.markRunning('native-audio', 'check mp4a.40.2', CHECK_COST);
 
         setVisible(false);
-        await page.markRunning('native-surround-audio', 'check ec-3');
+        await page.markRunning('native-surround-audio', 'check ec-3', CHECK_COST);
         expect(readRunRecords(storage)).toEqual({});
         setVisible(true);
         // Showing again writes the record once the page holds its lock
@@ -428,46 +653,55 @@ describe('the run journal', () => {
         setVisible(false);
         locks.stopPage('page-1');
 
-        expect(await createPageStore({ locks, pageId: 'page-2', storage }).readCrashedProbes()).toEqual(new Set());
+        expect(await createPageStore({ locks, pageId: 'page-2', storage }).readQuarantine()).toEqual(EMPTY_QUARANTINE);
     });
 
     it('takes no crash from a stopped page of another fingerprint, and drops its record', async () => {
         const storage = createMemoryStorage();
         const locks = createFakeWebLocks();
-        const earlierBuildPage = createPageStore({ fingerprint: createFingerprint('build-1'), locks, pageId: 'page-1', storage });
-        await earlierBuildPage.readCrashedProbes();
-        await earlierBuildPage.markRunning('native-audio', 'check mp4a.40.2');
-        locks.stopPage('page-1');
-
+        await stopPageInCalls({ fingerprint: createFingerprint('build-1'), locks, pageId: 'page-1', storage }, [ { probe: 'native-audio', step: 'check mp4a.40.2' } ]);
         const laterBuildPage = createPageStore({ fingerprint: createFingerprint('build-2'), locks, pageId: 'page-2', storage });
+        await laterBuildPage.write('native-audio', [ SUPPORTED_AAC ]);
+        const listener = vi.fn();
+        laterBuildPage.onCrash(listener);
 
-        expect(await laterBuildPage.readCrashedProbes()).toEqual(new Set());
+        expect(await laterBuildPage.readQuarantine()).toEqual(EMPTY_QUARANTINE);
+        expect(listener).not.toHaveBeenCalled();
+        expect(await laterBuildPage.read('native-audio')).toEqual([ SUPPORTED_AAC ]);
         expect(readRunRecords(storage)).toEqual({});
     });
 
-    it('keeps the crashed probes through later verdicts, until a clear', async () => {
+    it('keeps the quarantine through later verdicts, until a clear removes it all', async () => {
         const storage = createMemoryStorage();
         const locks = createFakeWebLocks();
-        const stoppedPage = createPageStore({ locks, pageId: 'page-1', storage });
-        await stoppedPage.readCrashedProbes();
-        await stoppedPage.markRunning('native-audio', 'decode aac');
-        locks.stopPage('page-1');
-        const laterPage = createPageStore({ locks, pageId: 'page-2', storage });
-        await laterPage.readCrashedProbes();
+        // A ceiling, then a blocked step, then suspects
+        await stopPageInCalls({ locks, pageId: 'page-1', storage }, CONCURRENT_CALLS.slice(0, 2));
+        const bisectingPage = createPageStore({ locks, pageId: 'page-2', storage });
+        for (const step of (await bisectingPage.readQuarantine()).suspects.keys()) {
+            bisectingPage.resolveSuspect(step);
+        }
+        await stopPageInCalls({ locks, pageId: 'page-3', storage }, [ { cost: AAC_DECODE_COST, probe: 'native-audio', step: 'decode aac' } ]);
+        await stopPageInCalls({ locks, pageId: 'page-4', storage }, CONCURRENT_CALLS.slice(2));
+        const laterPage = createPageStore({ locks, pageId: 'page-5', storage });
+        const quarantine = await laterPage.readQuarantine();
+        expect(quarantine.blocked.size).toBe(1);
+        expect(quarantine.suspects.size).toBe(2);
+        expect(quarantine.ceiling).not.toBeNull();
 
         await laterPage.write('native-sdr:hevc', SUPPORTED_HEVC);
-        expect(await laterPage.readCrashedProbes()).toEqual(new Set([ 'native-audio' ]));
+        expect(await laterPage.readQuarantine()).toEqual(quarantine);
 
         laterPage.clear();
-        expect(await laterPage.readCrashedProbes()).toEqual(new Set());
+        expect(await laterPage.readQuarantine()).toEqual(EMPTY_QUARANTINE);
+        expect(laterPage.readState()).toBeNull();
     });
 
     it('records no run without Web Locks, which tell a stopped page from one that runs', async () => {
         const storage = createMemoryStorage();
         const store = createStore(storage);
 
-        expect(await store.readCrashedProbes()).toEqual(new Set());
-        await store.markRunning('native-audio', 'check mp4a.40.2');
+        expect(await store.readQuarantine()).toEqual(EMPTY_QUARANTINE);
+        await store.markRunning('native-audio', 'check mp4a.40.2', CHECK_COST);
 
         expect(storage.entries.size).toBe(0);
     });
@@ -593,8 +827,8 @@ describe('the page store', () => {
         vi.stubGlobal('navigator', { locks: locks.forPage('the-page'), userAgent: 'Mozilla/5.0' });
         configureCapabilityProbeStore({ buildKey: 'asset-key-webpack-hash' });
         const store = getDefaultCapabilityProbeStore();
-        await store.readCrashedProbes();
-        const endCall = await store.markRunning('native-audio', 'check mp4a.40.2');
+        await store.readQuarantine();
+        const endCall = await store.markRunning('native-audio', 'check mp4a.40.2', CHECK_COST);
         expect(globalThis.localStorage.getItem(CAPABILITY_PROBE_RUNS_KEY)).not.toBeNull();
 
         globalThis.dispatchEvent(new Event('pagehide'));
@@ -622,13 +856,13 @@ describe('the page store', () => {
             readFingerprint: () => readCapabilityProbeFingerprint('asset-key-webpack-hash'),
             storage: () => globalThis.localStorage
         });
-        await stoppedPage.readCrashedProbes();
-        await stoppedPage.markRunning('native-audio', 'decode aac');
+        await stoppedPage.readQuarantine();
+        await stoppedPage.markRunning('native-audio', 'decode aac', CHECK_COST);
         locks.stopPage('stopped-page');
         const listener = vi.fn();
         const removeListener = onCapabilityProbeCrash(listener);
 
-        expect(await getDefaultCapabilityProbeStore().readCrashedProbes()).toEqual(new Set([ 'native-audio' ]));
+        expect((await getDefaultCapabilityProbeStore().readQuarantine()).blocked).toEqual(new Set([ 'decode aac' ]));
         removeListener();
 
         expect(listener).toHaveBeenCalledExactlyOnceWith([ { probe: 'native-audio', steps: [ 'decode aac' ] } ]);

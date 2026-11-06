@@ -19,7 +19,6 @@ import { waitForGPUCompletion } from '../GPUCompletion';
 import { createBuiltinChain } from '../presentation/passes/builtin/BuiltinChains';
 import type { BuiltinChain, BuiltinChainConfiguration } from '../presentation/passes/PassTypes';
 import type { PresentationExecutor } from '../presentation/passes/PresentationExecutor';
-import { VALIDATION_ERROR_FILTER } from '../presentation/WebGPUConstants';
 import {
     createExternalAV1HDRAuthorizationTemporalUnit,
     EXTERNAL_AV1_HDR_AUTHORIZATION_CODEC,
@@ -42,9 +41,13 @@ import {
     EXTERNAL_HDR_AUTHORIZATION_VECTOR_VERSION,
     type ExternalHDRAuthorizationVectorSample
 } from '../capability/vectors/ExternalHDRAuthorizationVector';
+import { CAPABILITY_PROBE_TIMEOUT } from '../capability/CapabilityProbeManager';
+import { CapabilityProbeBlock, type default as CapabilityProbeSession } from '../capability/CapabilityProbeSession';
+import { describeVideoConfigCheck, describeVideoDecode, type VideoCapabilityProbeStep } from '../capability/CapabilityProbeSteps';
+import { getDefaultCapabilityProbeSession } from '../capability/CustomDecodeCapabilities';
+import { millisecondsToMicroseconds } from '../MediaTime';
 import GPUAuthorizationDeadline from './GPUAuthorizationDeadline';
 import { GPUCanvasPixelReader } from './GPUCanvasReadback';
-import { discardErrorScope } from './GPUErrorScope';
 import {
     calculateRawHDRAuthorizationOutputDither,
     createAuthorizationExecutor,
@@ -52,11 +55,12 @@ import {
     describeAuthorizationDecision,
     describeAuthorizationError,
     describeReadbackFailure,
-    encodeAuthorizationFrame,
     evaluateRawHDRVectorObservations,
     getAuthorizationTargetUsage,
     isAuthorizationTargetFormat,
+    isRetriedAuthorizationDecision,
     READBACK_CODE_SCALE,
+    submitAuthorizationFrames,
     type AuthorizationReferencePlan,
     type AuthorizationStep,
     type RawHDRVectorObservation
@@ -65,6 +69,13 @@ import {
 const EXTERNAL_HDR_AUTHORIZATION_TOLERANCE = 10 / READBACK_CODE_SCALE;
 const MAXIMUM_10_BIT_CODE = 1_023;
 const PROBE_KEY_SEPARATOR = '\u0000';
+// The probe each codec's steps are journaled under, so a page that stops in one names this authorization; the plugin's crash report takes names of up to 64 characters
+const EXTERNAL_HDR_AUTHORIZATION_PROBE_NAMES: Readonly<Record<ExternalHDRVideoCodec, string>> = {
+    av1: 'external-hdr-authorization:av1',
+    hevc: 'external-hdr-authorization:hevc'
+};
+// Both vectors decode to 10-bit 4:2:0 frames, which the route imports without a copy
+const DECODED_FRAME_FORMAT = 'I420P10';
 
 /** The codecs whose hardware frames the external HDR route presents, each with its own color neutralization and vector. */
 export type ExternalHDRVideoCodec = 'av1' | 'hevc';
@@ -83,7 +94,8 @@ readonly ExternalHDRAuthorizationRouteKey[] = [
     'external-av1-main10-bt709-limited:hlg-v1'
 ];
 
-// The HEVC keys shape a host's HEVC transcode ranges, so they start with the device; the AV1 keys authorize on first use
+// The HEVC keys shape a host's HEVC transcode ranges, so an HDR negotiation or playback starts both together, on first use, and they share one
+// decode; the AV1 keys authorize when their own route is first used
 const PREWARMED_ROUTE_KEYS: readonly ExternalHDRAuthorizationRouteKey[] = [
     'external-hevc-main10-bt709-limited:pq-v1',
     'external-hevc-main10-bt709-limited:hlg-v1'
@@ -132,6 +144,7 @@ const EXTERNAL_HDR_AUTHORIZATION_VECTORS: Readonly<Record<ExternalHDRVideoCodec,
 };
 
 export type ExternalHDRAuthorizationFailureReason =
+    | 'browser-defect'
     | 'decode-failed'
     | 'decoder-api-unavailable'
     | 'decoder-config-unsupported'
@@ -143,6 +156,7 @@ export type ExternalHDRAuthorizationFailureReason =
     | 'pixel-mismatch'
     | 'readback-failed'
     | 'route-unsupported'
+    | 'stopped-page'
     | 'target-format-unsupported'
     | 'timeout'
     | 'unexpected-error';
@@ -191,11 +205,32 @@ type CachedRouteProbe = {
     promise: Promise<ExternalHDRRouteAuthorizationDecision>
 };
 
+/** The routes of one target format and codec that share one check and one decode of the codec's vector. */
+type CodecBatch = {
+    decisions: Promise<readonly ExternalHDRRouteAuthorizationDecision[]>
+    routeKeys: ExternalHDRAuthorizationRouteKey[]
+};
+
 type DeviceProbeCache = {
+    /** Settles once the device's latest batch of each codec settles, which the codec's next batch waits for, so the device never holds two of the codec's hardware decoders */
+    codecTails: Map<ExternalHDRVideoCodec, Promise<void>>
+    /** The batch of each target format and codec that has not started yet, which a route asked for meanwhile joins */
+    openBatches: Map<string, CodecBatch>
     /** The reference chain's shader signature per target format and route, which planning makes stable per device */
     referenceSignatures: Map<string, string>
     routes: Map<string, CachedRouteProbe>
 };
+
+/** A route a batch renders once its executor exists, with its slot among the batch's decisions. */
+type BatchRoute = {
+    index: number
+    plan: NonNullable<AuthorizationReferencePlan['plan']>
+    probe: RouteProbeIdentity
+    settings: HDRToSDRRenderSettings
+    targetUsage: GPUTextureUsageFlags
+};
+
+type RenderableRoute = BatchRoute & { executor: PresentationExecutor };
 
 /** The device, target, route, and reference shader one probe renders, which every decision of the probe carries. */
 type RouteProbeIdentity = {
@@ -376,25 +411,8 @@ async function flushVideoDecoderUntilAbort(decoder: VideoDecoder, signal?: Abort
     }
 }
 
-/** Decodes one codec's neutralized 10-bit vector and requires Chromium's opaque hardware output. */
-export async function createExternalHDRAuthorizationFrame(codec: ExternalHDRVideoCodec, signal?: AbortSignal): Promise<VideoFrame> {
-    if (
-        typeof VideoDecoder === 'undefined'
-        || typeof EncodedVideoChunk === 'undefined'
-        || typeof VideoDecoder.isConfigSupported !== 'function'
-    ) {
-        throw new Error('decoder-api-unavailable');
-    }
-    if (signal?.aborted) {
-        throw new DOMException('External HDR authorization decode was aborted', 'AbortError');
-    }
-
-    const vector = EXTERNAL_HDR_AUTHORIZATION_VECTORS[codec];
-    const neutralizedAccessUnit = vector.createNeutralizedAccessUnit();
-    if (!neutralizedAccessUnit) {
-        throw new Error('decoder-output-mismatch');
-    }
-    const configuration: VideoDecoderConfig = {
+function createDecoderConfiguration(vector: ExternalHDRAuthorizationVector): VideoDecoderConfig {
+    return {
         codec: vector.decoderCodec,
         codedHeight: vector.codedHeight,
         codedWidth: vector.codedWidth,
@@ -407,11 +425,34 @@ export async function createExternalHDRAuthorizationFrame(codec: ExternalHDRVide
         hardwareAcceleration: 'prefer-hardware',
         optimizeForLatency: true
     };
-    // eslint-disable-next-line compat/compat -- Authorization is capability-gated
-    const support = await VideoDecoder.isConfigSupported(configuration);
-    if (!support.supported) {
-        throw new Error('decoder-config-unsupported');
+}
+
+function isDecoderAPIAvailable(): boolean {
+    if (typeof VideoDecoder === 'undefined' || typeof EncodedVideoChunk === 'undefined') {
+        return false;
     }
+    // eslint-disable-next-line compat/compat -- Feature detection
+    return typeof VideoDecoder.isConfigSupported === 'function';
+}
+
+/**
+ * Decodes one codec's neutralized 10-bit vector and requires Chromium's opaque hardware output.
+ * The caller checks the configuration first; an aborted signal opens no decoder.
+ */
+export async function createExternalHDRAuthorizationFrame(codec: ExternalHDRVideoCodec, signal?: AbortSignal): Promise<VideoFrame> {
+    if (!isDecoderAPIAvailable()) {
+        throw new Error('decoder-api-unavailable');
+    }
+    if (signal?.aborted) {
+        throw new DOMException('External HDR authorization decode was aborted', 'AbortError');
+    }
+
+    const vector = EXTERNAL_HDR_AUTHORIZATION_VECTORS[codec];
+    const neutralizedAccessUnit = vector.createNeutralizedAccessUnit();
+    if (!neutralizedAccessUnit) {
+        throw new Error('decoder-output-mismatch');
+    }
+    const configuration = createDecoderConfiguration(vector);
 
     const decodeState: {
         decoderError: DOMException | null
@@ -502,8 +543,6 @@ function classifyFailure(error: unknown, step: AuthorizationStep): ExternalHDRAu
             return 'decode-failed';
         case 'decoder-api-unavailable':
             return 'decoder-api-unavailable';
-        case 'decoder-config-unsupported':
-            return 'decoder-config-unsupported';
         case 'decoder-output-mismatch':
             return 'decoder-output-mismatch';
         case 'device-lost':
@@ -548,20 +587,154 @@ function createRejectedDecision(
     };
 }
 
-/** Runs native decode, external import, the route's built-in default chain, and readback. */
+/** What a step answers instead of its call's value: the timeout result, or the block that kept it from running. */
+type StepRefusal = CapabilityProbeBlock | typeof CAPABILITY_PROBE_TIMEOUT;
+
+function isStepRefusal(outcome: unknown): outcome is StepRefusal {
+    return outcome === CAPABILITY_PROBE_TIMEOUT || outcome instanceof CapabilityProbeBlock;
+}
+
+/** Renders one route from the decoded frame into a target of its own and compares its readback with the CPU reference, within the decode step's deadline. */
+async function renderRoute(
+    device: GPUDevice,
+    route: RenderableRoute,
+    frame: VideoFrame,
+    deadline: GPUAuthorizationDeadline
+): Promise<ExternalHDRRouteAuthorizationDecision> {
+    const { probe } = route;
+    let targetTexture: GPUTexture | null = null;
+    let pixelReader: GPUCanvasPixelReader | null = null;
+    let step: AuthorizationStep = 'render';
+    try {
+        targetTexture = device.createTexture({
+            dimension: '2d',
+            format: probe.targetFormat,
+            label: 'WebGPU external HDR authorization target',
+            size: {
+                depthOrArrayLayers: 1,
+                height: frame.displayHeight,
+                width: frame.displayWidth
+            },
+            usage: route.targetUsage
+        });
+
+        // The executor imports the frame while it encodes, so an encode failure is an import failure; the scope is popped before
+        // this returns, so no other authorization's pop takes it, and a pop whose result never comes is never popped again
+        step = 'import';
+        const validationResult = submitAuthorizationFrames(device, [ {
+            executor: route.executor,
+            label: 'WebGPU external HDR authorization commands',
+            source: { kind: 'external', source: frame },
+            targetTexture
+        } ]);
+        step = 'render';
+        await deadline.wait(waitForGPUCompletion(device, device.queue.onSubmittedWorkDone()));
+        const validationError = await deadline.wait(validationResult);
+        if (validationError) {
+            return createRejectedDecision(probe, 'gpu-validation-failed', validationError.message);
+        }
+
+        step = 'readback';
+        const samples = getRouteVector(probe.routeKey).samples;
+        const activePixelReader = new GPUCanvasPixelReader({
+            device,
+            format: probe.targetFormat,
+            maximumReadbacks: samples.length
+        });
+        pixelReader = activePixelReader;
+        const readback = await deadline.wait(
+            activePixelReader.readPixels(samples, targetTexture),
+            (): void => activePixelReader.destroy()
+        );
+        if (readback.failure || !readback.linearRGB) {
+            return createRejectedDecision(probe, 'readback-failed', describeReadbackFailure(readback.failure));
+        }
+        const linearRGB = readback.linearRGB;
+        const actualObservations: RawHDRVectorObservation[] = samples.map((sample, sampleIndex): RawHDRVectorObservation => ({
+            linearRGB: linearRGB[sampleIndex],
+            sampleX: sample.sampleX,
+            sampleY: sample.sampleY
+        }));
+        const expectedObservations = createExpectedExternalHDRAuthorizationObservations(probe.routeKey, route.settings);
+        const comparison = evaluateRawHDRVectorObservations(
+            expectedObservations,
+            actualObservations,
+            EXTERNAL_HDR_AUTHORIZATION_TOLERANCE
+        );
+        if (comparison.failureDetail !== null) {
+            return createRejectedDecision(
+                probe,
+                'pixel-mismatch',
+                comparison.failureDetail,
+                actualObservations.length,
+                comparison.maximumChannelError
+            );
+        }
+        return {
+            authorizedRouteKeys: [ probe.routeKey ],
+            device,
+            failureDetail: null,
+            failureReason: null,
+            vectorVersion: getRouteVector(probe.routeKey).version,
+            maximumChannelError: comparison.maximumChannelError,
+            renderSettingsVersion: RENDER_SETTINGS_VERSION,
+            routeKey: probe.routeKey,
+            sampleCount: actualObservations.length,
+            shaderSignature: probe.shaderSignature,
+            status: 'authorized',
+            targetFormat: probe.targetFormat
+        };
+    } catch (error) {
+        return createRejectedDecision(probe, classifyFailure(error, step), describeAuthorizationError(step, error));
+    } finally {
+        pixelReader?.destroy();
+        targetTexture?.destroy();
+    }
+}
+
+/**
+ * Runs native decode, external import, each route's built-in default chain, and readback, for routes of one codec.
+ * The configuration check and the decode are steps of the page's capability probe session, so a page that stops in either names it there,
+ * and the decode step's call renders every route from its one frame, so the routes share one hardware decoder.
+ */
 export class ExternalHDRPresentationAuthorizationRunner {
     public constructor(
-        private readonly createFrame: ExternalHDRAuthorizationFrameFactory =
-        createExternalHDRAuthorizationFrame
+        private readonly createFrame: ExternalHDRAuthorizationFrameFactory = createExternalHDRAuthorizationFrame,
+        private readonly getSession: () => CapabilityProbeSession = getDefaultCapabilityProbeSession
     ) {}
 
+    /** Authorizes routes of one codec on a device and target format, and returns their decisions in the routes' order. */
     public async validate(
         device: GPUDevice,
         targetFormat: GPUTextureFormat,
-        routeKey: ExternalHDRAuthorizationRouteKey
-    ): Promise<ExternalHDRRouteAuthorizationDecision> {
-        const metadata = createMetadata(routeKey);
-        const settings = createSettings(metadata);
+        codec: ExternalHDRVideoCodec,
+        routeKeys: readonly ExternalHDRAuthorizationRouteKey[]
+    ): Promise<ExternalHDRRouteAuthorizationDecision[]> {
+        const decisions: ExternalHDRRouteAuthorizationDecision[] = [];
+        const routes: BatchRoute[] = [];
+        for (const [ index, routeKey ] of routeKeys.entries()) {
+            const route = this.prepareRoute(device, targetFormat, codec, routeKey, index);
+            if ('status' in route) {
+                decisions[index] = route;
+            } else {
+                routes.push(route);
+            }
+        }
+        if (routes.length > 0) {
+            await this.renderRoutes(device, codec, routes, decisions);
+        }
+        return decisions;
+    }
+
+    // Returns what the route renders through, or its rejection when deciding it needs no decoder
+    private prepareRoute(
+        device: GPUDevice,
+        targetFormat: GPUTextureFormat,
+        codec: ExternalHDRVideoCodec,
+        routeKey: ExternalHDRAuthorizationRouteKey,
+        index: number
+    ): BatchRoute | ExternalHDRRouteAuthorizationDecision {
+        const settings = createSettings(createMetadata(routeKey));
         const reference = createExternalHDRReferencePlan(device, targetFormat, routeKey);
         const probe: RouteProbeIdentity = {
             device,
@@ -569,7 +742,7 @@ export class ExternalHDRPresentationAuthorizationRunner {
             shaderSignature: createExternalHDRShaderSignature(targetFormat, routeKey, reference.shaderCode),
             targetFormat
         };
-        if (!EXTERNAL_HDR_AUTHORIZATION_ROUTE_KEYS.includes(routeKey)) {
+        if (!EXTERNAL_HDR_AUTHORIZATION_ROUTE_KEYS.includes(routeKey) || getRouteVideoCodec(routeKey) !== codec) {
             return createRejectedDecision(probe, 'route-unsupported', routeKey);
         }
         if (!isAuthorizationTargetFormat(targetFormat)) {
@@ -579,130 +752,174 @@ export class ExternalHDRPresentationAuthorizationRunner {
         if (targetUsage.usage === null) {
             return createRejectedDecision(probe, 'gpu-api-unavailable', targetUsage.failure);
         }
-        const plan = reference.plan;
-        if (!plan) {
+        if (!reference.plan) {
             return createRejectedDecision(probe, 'unexpected-error', reference.failure ?? routeKey);
         }
+        return { index, plan: reference.plan, probe, settings, targetUsage: targetUsage.usage };
+    }
 
-        let targetTexture: GPUTexture | null = null;
-        let executor: PresentationExecutor | null = null;
-        let pixelReader: GPUCanvasPixelReader | null = null;
-        let frame: VideoFrame | null = null;
-        let frameAbortController: AbortController | null = null;
-        let errorScopePushed = false;
-        let step: AuthorizationStep = 'executor';
+    // Checks the codec's configuration, builds the routes' executors, and decodes the vector once for all of them, filling in their decisions
+    private async renderRoutes(
+        device: GPUDevice,
+        codec: ExternalHDRVideoCodec,
+        routes: readonly BatchRoute[],
+        decisions: ExternalHDRRouteAuthorizationDecision[]
+    ): Promise<void> {
+        const rejectRoutes = (rejected: readonly BatchRoute[], reason: ExternalHDRAuthorizationFailureReason, detail: string): void => {
+            for (const route of rejected) {
+                decisions[route.index] = createRejectedDecision(route.probe, reason, detail);
+            }
+        };
+        if (!isDecoderAPIAvailable()) {
+            rejectRoutes(routes, 'decoder-api-unavailable', 'VideoDecoder undefined');
+            return;
+        }
+        const configuration = createDecoderConfiguration(EXTERNAL_HDR_AUTHORIZATION_VECTORS[codec]);
+        const checkStep: VideoCapabilityProbeStep = describeVideoConfigCheck(configuration);
+        const decodeStep: VideoCapabilityProbeStep = describeVideoDecode(configuration, DECODED_FRAME_FORMAT);
         const deadline = new GPUAuthorizationDeadline(device);
+        const executors: PresentationExecutor[] = [];
+        // The decode step's answer, and its call once the manager starts it, which renders with the executors until it settles
+        const decode: { call: Promise<unknown> | null, callSettled: boolean, outcome: Promise<unknown> | null } = {
+            call: null,
+            callSettled: false,
+            outcome: null
+        };
+        let step: AuthorizationStep = 'frame';
         try {
-            executor = await createAuthorizationExecutor(device, plan, deadline);
-            if (plan.usesRenderSettings) {
-                executor.writeRenderSettings(createRenderSettingsUniformData(settings).buffer);
+            const session = this.getSession();
+            // The store records no step before the page's quarantine is read, and the quarantine names the steps that never run
+            await deadline.wait(session.readQuarantine());
+            const queue = session.record(session.manager.queue, EXTERNAL_HDR_AUTHORIZATION_PROBE_NAMES[codec]);
+            // A deadline that passes during the check rejects here, so no executor is built and no decoder opens for routes already rejected
+            // eslint-disable-next-line compat/compat -- Authorization is capability-gated
+            const support = await deadline.wait(queue.check(() => VideoDecoder.isConfigSupported(configuration), checkStep));
+            if (isStepRefusal(support)) {
+                rejectRoutes(routes, support === CAPABILITY_PROBE_TIMEOUT ? 'timeout' : support.reason, checkStep.label);
+                return;
+            }
+            if (support.supported !== true) {
+                rejectRoutes(routes, 'decoder-config-unsupported', checkStep.label);
+                return;
+            }
+
+            step = 'executor';
+            const renderable = await this.createExecutors(device, routes, deadline, executors, decisions);
+            if (renderable.length === 0) {
+                return;
             }
 
             step = 'frame';
             // eslint-disable-next-line compat/compat -- WebGPU custom decode targets modern Chromium
-            frameAbortController = new AbortController();
-            const activeFrameAbortController = frameAbortController;
-            const framePromise = this.createFrame(getRouteVideoCodec(routeKey), activeFrameAbortController.signal);
-            void framePromise.then((resolvedFrame: VideoFrame): void => {
-                if (activeFrameAbortController.signal.aborted) {
-                    resolvedFrame.close();
-                }
-            }, (): void => undefined);
-            frame = await deadline.wait(framePromise, (): void => activeFrameAbortController.abort());
-            frameAbortController = null;
-            targetTexture = device.createTexture({
-                dimension: '2d',
-                format: targetFormat,
-                label: 'WebGPU external HDR authorization target',
-                size: {
-                    depthOrArrayLayers: 1,
-                    height: frame.displayHeight,
-                    width: frame.displayWidth
-                },
-                usage: targetUsage.usage
-            });
-
-            device.pushErrorScope(VALIDATION_ERROR_FILTER);
-            errorScopePushed = true;
-            // The executor imports the frame while it encodes, so an encode failure is an import failure
-            step = 'import';
-            const commandBuffer = encodeAuthorizationFrame(
-                device,
-                executor,
-                { kind: 'external', source: frame },
-                targetTexture,
-                'WebGPU external HDR authorization commands'
-            );
-            step = 'render';
-            device.queue.submit([ commandBuffer ]);
-            await deadline.wait(waitForGPUCompletion(device, device.queue.onSubmittedWorkDone()));
-            const validationError = await deadline.wait(device.popErrorScope());
-            errorScopePushed = false;
-            if (validationError) {
-                return createRejectedDecision(probe, 'gpu-validation-failed', validationError.message);
+            const decodeAbortController = new AbortController();
+            const outcome = queue.runTimed(() => {
+                const call = this.decodeAndRender(device, codec, renderable, decodeAbortController.signal, session.manager.timeoutMilliseconds);
+                decode.call = call;
+                void call.finally((): void => {
+                    decode.callSettled = true;
+                });
+                return call;
+            }, decodeStep);
+            decode.outcome = outcome;
+            const rendered = await deadline.wait(outcome, (): void => decodeAbortController.abort());
+            if (isStepRefusal(rendered)) {
+                rejectRoutes(renderable, rendered === CAPABILITY_PROBE_TIMEOUT ? 'timeout' : rendered.reason, decodeStep.label);
+                return;
             }
-
-            step = 'readback';
-            const samples = getRouteVector(routeKey).samples;
-            pixelReader = new GPUCanvasPixelReader({
-                device,
-                format: targetFormat,
-                maximumReadbacks: samples.length
-            });
-            const readback = await deadline.wait(
-                pixelReader.readPixels(samples, targetTexture),
-                (): void => pixelReader?.destroy()
-            );
-            if (readback.failure || !readback.linearRGB) {
-                return createRejectedDecision(probe, 'readback-failed', describeReadbackFailure(readback.failure));
+            for (const [ renderIndex, route ] of renderable.entries()) {
+                decisions[route.index] = rendered[renderIndex];
             }
-            const linearRGB = readback.linearRGB;
-            const actualObservations: RawHDRVectorObservation[] = samples.map((sample, sampleIndex): RawHDRVectorObservation => ({
-                linearRGB: linearRGB[sampleIndex],
-                sampleX: sample.sampleX,
-                sampleY: sample.sampleY
-            }));
-            const expectedObservations = createExpectedExternalHDRAuthorizationObservations(routeKey, settings);
-            const comparison = evaluateRawHDRVectorObservations(
-                expectedObservations,
-                actualObservations,
-                EXTERNAL_HDR_AUTHORIZATION_TOLERANCE
-            );
-            if (comparison.failureDetail !== null) {
-                return createRejectedDecision(
-                    probe,
-                    'pixel-mismatch',
-                    comparison.failureDetail,
-                    actualObservations.length,
-                    comparison.maximumChannelError
-                );
-            }
-            return {
-                authorizedRouteKeys: [ routeKey ],
-                device,
-                failureDetail: null,
-                failureReason: null,
-                vectorVersion: getRouteVector(routeKey).version,
-                maximumChannelError: comparison.maximumChannelError,
-                renderSettingsVersion: RENDER_SETTINGS_VERSION,
-                routeKey,
-                sampleCount: actualObservations.length,
-                shaderSignature: probe.shaderSignature,
-                status: 'authorized',
-                targetFormat
-            };
         } catch (error) {
-            return createRejectedDecision(probe, classifyFailure(error, step), describeAuthorizationError(step, error));
+            for (const route of routes) {
+                decisions[route.index] ??= createRejectedDecision(route.probe, classifyFailure(error, step), describeAuthorizationError(step, error));
+            }
         } finally {
             deadline.destroy();
-            frameAbortController?.abort();
-            if (errorScopePushed) {
-                discardErrorScope(device);
+            const releaseExecutors = (): void => {
+                for (const executor of executors) {
+                    executor.destroy();
+                }
+            };
+            // A decode step this gave up on may still render with the executors; its own deadline ends it soon after
+            const outcome = decode.outcome;
+            if (outcome === null || decode.callSettled) {
+                releaseExecutors();
+            } else {
+                void outcome.then(() => decode.call, () => decode.call).then(releaseExecutors, releaseExecutors);
             }
+        }
+    }
+
+    // Builds each route's executor within the deadline; a route whose executor fails is rejected alone
+    private async createExecutors(
+        device: GPUDevice,
+        routes: readonly BatchRoute[],
+        deadline: GPUAuthorizationDeadline,
+        executors: PresentationExecutor[],
+        decisions: ExternalHDRRouteAuthorizationDecision[]
+    ): Promise<RenderableRoute[]> {
+        const created = await Promise.all(routes.map(async (route: BatchRoute): Promise<RenderableRoute | null> => {
+            try {
+                const executor = await createAuthorizationExecutor(device, route.plan, deadline);
+                executors.push(executor);
+                if (route.plan.usesRenderSettings) {
+                    executor.writeRenderSettings(createRenderSettingsUniformData(route.settings).buffer);
+                }
+                return { ...route, executor };
+            } catch (error) {
+                decisions[route.index] = createRejectedDecision(route.probe, classifyFailure(error, 'executor'), describeAuthorizationError('executor', error));
+                return null;
+            }
+        }));
+        return created.filter((route: RenderableRoute | null): route is RenderableRoute => route !== null);
+    }
+
+    // The decode step's call: decodes the vector once and renders every route from the frame within the step's own timeout. It returns plain
+    // decisions, never the frame, since the manager drops a value that comes after the step timed out, and with it the duty to close the frame,
+    // and it stops all probing once a call outlives that timeout by as long again
+    private async decodeAndRender(
+        device: GPUDevice,
+        codec: ExternalHDRVideoCodec,
+        routes: readonly RenderableRoute[],
+        signal: AbortSignal,
+        stepTimeoutMilliseconds: number
+    ): Promise<ExternalHDRRouteAuthorizationDecision[]> {
+        const deadline = new GPUAuthorizationDeadline(device, millisecondsToMicroseconds(stepTimeoutMilliseconds));
+        // eslint-disable-next-line compat/compat -- WebGPU custom decode targets modern Chromium
+        const frameAbortController = new AbortController();
+        const abortFrame = (): void => frameAbortController.abort();
+        signal.addEventListener('abort', abortFrame, { once: true });
+        if (signal.aborted) {
+            abortFrame();
+        }
+        let frame: VideoFrame | null = null;
+        try {
+            const framePromise = this.createFrame(codec, frameAbortController.signal);
+            // A frame that arrives after the wait gave up is closed on arrival
+            void framePromise.then((lateFrame: VideoFrame): void => {
+                if (frameAbortController.signal.aborted) {
+                    lateFrame.close();
+                }
+            }, (): void => undefined);
+            frame = await deadline.wait(framePromise, abortFrame);
+            const decisions: ExternalHDRRouteAuthorizationDecision[] = [];
+            for (const route of routes) {
+                if (signal.aborted) {
+                    throw new DOMException('External HDR authorization decode was aborted', 'AbortError');
+                }
+                decisions.push(await renderRoute(device, route, frame, deadline));
+            }
+            return decisions;
+        } catch (error) {
+            return routes.map((route: RenderableRoute): ExternalHDRRouteAuthorizationDecision => createRejectedDecision(
+                route.probe,
+                classifyFailure(error, 'frame'),
+                describeAuthorizationError('frame', error)
+            ));
+        } finally {
+            deadline.destroy();
+            signal.removeEventListener('abort', abortFrame);
             frame?.close();
-            pixelReader?.destroy();
-            executor?.destroy();
-            targetTexture?.destroy();
         }
     }
 }
@@ -766,7 +983,11 @@ export class ExternalHDRPresentationAuthorizationRegistry {
         }
     }
 
-    /** Returns one deduplicated exact-device, target, decoder, and shader decision. */
+    /**
+     * Returns one deduplicated exact-device, target, decoder, and shader decision. Routes of a codec asked for together share one check
+     * and one decode, and a codec's next batch waits for its last. A timeout or a lost device says nothing about the route, so it is not kept:
+     * the next call probes the route again.
+     */
     public authorize(
         device: GPUDevice,
         targetFormat: GPUTextureFormat,
@@ -775,16 +996,17 @@ export class ExternalHDRPresentationAuthorizationRegistry {
         const cacheKey = createProbeKey(targetFormat, routeKey);
         const deviceCache = this.getDeviceCache(device);
         const cachedProbe = deviceCache.routes.get(cacheKey);
-        if (cachedProbe) {
+        if (cachedProbe && !isRetriedAuthorizationDecision(cachedProbe.decision)) {
             return cachedProbe.promise;
         }
 
+        const batch = this.joinBatch(device, deviceCache, targetFormat, getRouteVideoCodec(routeKey));
+        const routeIndex = batch.routeKeys.push(routeKey) - 1;
         const probe = { decision: null } as CachedRouteProbe;
-        probe.promise = Promise.resolve().then(() => (
-            this.runner.validate(device, targetFormat, routeKey)
-        )).then(
-            (decision: ExternalHDRRouteAuthorizationDecision):
+        probe.promise = batch.decisions.then(
+            (decisions: readonly ExternalHDRRouteAuthorizationDecision[]):
             ExternalHDRRouteAuthorizationDecision => {
+                const decision = decisions[routeIndex];
                 probe.decision = decision;
                 return decision;
             },
@@ -805,6 +1027,31 @@ export class ExternalHDRPresentationAuthorizationRegistry {
         );
         deviceCache.routes.set(cacheKey, probe);
         return probe.promise;
+    }
+
+    // Returns the open batch of the target format and codec, or opens one that starts once the codec's last batch on the device settles,
+    // and no sooner than the next microtask, so the routes asked for in one task, as prewarm's are, share its decode
+    private joinBatch(
+        device: GPUDevice,
+        deviceCache: DeviceProbeCache,
+        targetFormat: GPUTextureFormat,
+        codec: ExternalHDRVideoCodec
+    ): CodecBatch {
+        const batchKey = `${targetFormat}${PROBE_KEY_SEPARATOR}${codec}`;
+        const openBatch = deviceCache.openBatches.get(batchKey);
+        if (openBatch) {
+            return openBatch;
+        }
+        const routeKeys: ExternalHDRAuthorizationRouteKey[] = [];
+        const previousBatch = deviceCache.codecTails.get(codec) ?? Promise.resolve();
+        const decisions = previousBatch.then((): Promise<ExternalHDRRouteAuthorizationDecision[]> => {
+            deviceCache.openBatches.delete(batchKey);
+            return this.runner.validate(device, targetFormat, codec, routeKeys);
+        });
+        const batch: CodecBatch = { decisions, routeKeys };
+        deviceCache.openBatches.set(batchKey, batch);
+        deviceCache.codecTails.set(codec, decisions.then((): void => undefined, (): void => undefined));
+        return batch;
     }
 
     /** Checks only settled evidence for the route's current reference shader and never waits optimistically. */
@@ -922,7 +1169,7 @@ export class ExternalHDRPresentationAuthorizationRegistry {
         if (cached) {
             return cached;
         }
-        const created: DeviceProbeCache = { referenceSignatures: new Map(), routes: new Map() };
+        const created: DeviceProbeCache = { codecTails: new Map(), openBatches: new Map(), referenceSignatures: new Map(), routes: new Map() };
         this.devices.set(device, created);
         void device.lost.then((): void => {
             this.devices.delete(device);

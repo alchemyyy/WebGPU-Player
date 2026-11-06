@@ -7,10 +7,16 @@ import {
     createNativeMediaAudioProbeVector,
     type NativeMediaAudioProbeVectorChannelCount
 } from './vectors/NativeMediaAudioCapabilityVectors';
+import { CAPABILITY_PROBE_TIMEOUT } from './CapabilityProbeManager';
+import { CapabilityProbeBlock, type default as CapabilityProbeSession, type RecordedCapabilityProbeQueue } from './CapabilityProbeSession';
+import { describeAudioPlayback } from './CapabilityProbeSteps';
+import { getDefaultCapabilityProbeSession } from './CustomDecodeCapabilities';
 
 export const NATIVE_MEDIA_AUDIO_CODECS = [ 'ac3', 'eac3' ] as const;
 export const NATIVE_MEDIA_AUDIO_SAMPLE_RATE = 48_000;
 export const NATIVE_MEDIA_AUDIO_CHANNEL_COUNTS = [ 2, 6 ] as const;
+/** The probe the store records the native media audio playbacks under. */
+export const NATIVE_MEDIA_AUDIO_PROBE = 'native-media-audio';
 
 export type NativeMediaAudioCodec = typeof NATIVE_MEDIA_AUDIO_CODECS[number];
 export type NativeMediaAudioChannelCount = typeof NATIVE_MEDIA_AUDIO_CHANNEL_COUNTS[number];
@@ -23,7 +29,10 @@ export type NativeMediaAudioCapabilityReason =
     | 'playback-failed'
     | 'playback-not-advanced'
     | 'probe-exception'
-    | 'probe-timeout';
+    | 'probe-timeout'
+    // The playback never ran: a declared browser defect crashes it, or it stopped an earlier page alone
+    | 'browser-defect'
+    | 'stopped-page';
 
 export type NativeMediaAudioRoute = {
     channelCount: NativeMediaAudioChannelCount
@@ -67,6 +76,8 @@ export type NativeMediaAudioExactProbeResult = {
 export type NativeMediaAudioCapabilityEnvironment = {
     exactPlaybackProbe?: (request: Readonly<NativeMediaAudioExactProbeRequest>) => Promise<NativeMediaAudioExactProbeResult>
     isTypeSupported?: ((mimeType: string) => boolean) | null
+    /** The session whose manager runs each playback as a step of its own, beside the WebCodecs probes; the page's when absent */
+    session?: CapabilityProbeSession
 };
 
 type NativeMediaAudioDefinition = {
@@ -82,6 +93,150 @@ const DEFINITIONS: readonly NativeMediaAudioDefinition[] = [
     { codec: 'ac3', codecString: 'ac-3', mimeType: `${MP4_AUDIO_MIME_TYPE}; codecs="ac-3"` },
     { codec: 'eac3', codecString: 'ec-3', mimeType: `${MP4_AUDIO_MIME_TYPE}; codecs="ec-3"` }
 ];
+
+// ISO/IEC 14496-12 boxes, from which a vector's decoded length is read
+const BOX_HEADER_BYTE_LENGTH = 8;
+const BOX_TYPE_OFFSET = 4;
+const BOX_TYPE_BYTE_LENGTH = 4;
+// A size of 1 moves the size to a 64-bit field after the type; a size of 0 runs the box to the end of its parent
+const LARGE_BOX_SIZE_MARKER = 1;
+const LARGE_BOX_HEADER_BYTE_LENGTH = 16;
+const BOX_TO_END_MARKER = 0;
+const UINT32_BYTE_LENGTH = 4;
+const UINT64_BYTE_LENGTH = 8;
+// A full box's payload opens with its version byte and 24 bits of flags
+const FULL_BOX_HEADER_BYTE_LENGTH = 4;
+const FULL_BOX_FLAGS_MASK = 0xFF_FFFF;
+// mdhd (section 8.4.2): creation and modification times precede the timescale, 64-bit in version 1
+const MDHD_VERSION_WITH_64_BIT_TIMES = 1;
+// tfhd (section 8.8.7): the optional fields before default_sample_duration, in order
+const TFHD_BASE_DATA_OFFSET_PRESENT = 0x00_0001;
+const TFHD_SAMPLE_DESCRIPTION_INDEX_PRESENT = 0x00_0002;
+const TFHD_DEFAULT_SAMPLE_DURATION_PRESENT = 0x00_0008;
+// trex (section 8.8.3): track_ID and default_sample_description_index precede default_sample_duration
+const TREX_DEFAULT_SAMPLE_DURATION_OFFSET = 2 * UINT32_BYTE_LENGTH;
+// trun (section 8.8.8): the optional fields, in order
+const TRUN_DATA_OFFSET_PRESENT = 0x00_0001;
+const TRUN_FIRST_SAMPLE_FLAGS_PRESENT = 0x00_0004;
+const TRUN_SAMPLE_DURATION_PRESENT = 0x00_0100;
+const TRUN_SAMPLE_SIZE_PRESENT = 0x00_0200;
+const TRUN_SAMPLE_FLAGS_PRESENT = 0x00_0400;
+const TRUN_SAMPLE_COMPOSITION_TIME_OFFSET_PRESENT = 0x00_0800;
+
+// A box's payload, after its header, within the vector
+type ISOBox = Readonly<{ end: number, start: number, type: string }>;
+
+function readChildBoxes(view: DataView, start: number, end: number): ISOBox[] {
+    const boxes: ISOBox[] = [];
+    let offset = start;
+    while (offset < end) {
+        if (offset + BOX_HEADER_BYTE_LENGTH > end) {
+            throw new RangeError('An ISO box header is truncated');
+        }
+        const compactSize = view.getUint32(offset);
+        const type = String.fromCharCode(...new Uint8Array(view.buffer, view.byteOffset + offset + BOX_TYPE_OFFSET, BOX_TYPE_BYTE_LENGTH));
+        let headerByteLength = BOX_HEADER_BYTE_LENGTH;
+        let size = compactSize;
+        if (compactSize === LARGE_BOX_SIZE_MARKER) {
+            headerByteLength = LARGE_BOX_HEADER_BYTE_LENGTH;
+            size = Number(view.getBigUint64(offset + BOX_HEADER_BYTE_LENGTH));
+        } else if (compactSize === BOX_TO_END_MARKER) {
+            size = end - offset;
+        }
+        if (size < headerByteLength || offset + size > end) {
+            throw new RangeError(`The ISO box ${type} overruns its parent`);
+        }
+        boxes.push({ end: offset + size, start: offset + headerByteLength, type });
+        offset += size;
+    }
+    return boxes;
+}
+
+function findChildBoxes(view: DataView, parent: ISOBox, type: string): ISOBox[] {
+    return readChildBoxes(view, parent.start, parent.end).filter((box: ISOBox): boolean => box.type === type);
+}
+
+function requireChildBox(view: DataView, parent: ISOBox, type: string): ISOBox {
+    const [ box ] = findChildBoxes(view, parent, type);
+    if (!box) {
+        throw new RangeError(`The ISO box ${parent.type} has no ${type}`);
+    }
+    return box;
+}
+
+// Reads a track fragment's default sample duration, or null when tfhd leaves it to trex
+function readTrackFragmentDefaultDuration(view: DataView, tfhd: ISOBox): number | null {
+    const flags = view.getUint32(tfhd.start) & FULL_BOX_FLAGS_MASK;
+    if ((flags & TFHD_DEFAULT_SAMPLE_DURATION_PRESENT) === 0) {
+        return null;
+    }
+    // track_ID is always present
+    let offset = tfhd.start + FULL_BOX_HEADER_BYTE_LENGTH + UINT32_BYTE_LENGTH;
+    if ((flags & TFHD_BASE_DATA_OFFSET_PRESENT) !== 0) {
+        offset += UINT64_BYTE_LENGTH;
+    }
+    if ((flags & TFHD_SAMPLE_DESCRIPTION_INDEX_PRESENT) !== 0) {
+        offset += UINT32_BYTE_LENGTH;
+    }
+    return view.getUint32(offset);
+}
+
+// Sums a track run's sample durations, each its own or the fragment's default
+function readTrackRunDuration(view: DataView, trun: ISOBox, defaultDuration: number): number {
+    const flags = view.getUint32(trun.start) & FULL_BOX_FLAGS_MASK;
+    const sampleCount = view.getUint32(trun.start + FULL_BOX_HEADER_BYTE_LENGTH);
+    if ((flags & TRUN_SAMPLE_DURATION_PRESENT) === 0) {
+        return sampleCount * defaultDuration;
+    }
+    let offset = trun.start + FULL_BOX_HEADER_BYTE_LENGTH + UINT32_BYTE_LENGTH;
+    for (const optionalField of [ TRUN_DATA_OFFSET_PRESENT, TRUN_FIRST_SAMPLE_FLAGS_PRESENT ]) {
+        if ((flags & optionalField) !== 0) {
+            offset += UINT32_BYTE_LENGTH;
+        }
+    }
+    const sampleFields = [
+        TRUN_SAMPLE_DURATION_PRESENT,
+        TRUN_SAMPLE_SIZE_PRESENT,
+        TRUN_SAMPLE_FLAGS_PRESENT,
+        TRUN_SAMPLE_COMPOSITION_TIME_OFFSET_PRESENT
+    ].filter((field: number): boolean => (flags & field) !== 0);
+    let duration = 0;
+    for (let sampleIndex = 0; sampleIndex < sampleCount; sampleIndex += 1) {
+        // The duration is the first per-sample field
+        duration += view.getUint32(offset);
+        offset += sampleFields.length * UINT32_BYTE_LENGTH;
+    }
+    return duration;
+}
+
+/**
+ * Reads the PCM frames a single-track fragmented MP4 audio vector decodes to: the durations of its fragments' samples, in its track's
+ * timescale, at the sample rate. A playback buffers that much, so the probe manager counts it against the page's decoded bytes.
+ */
+function readFragmentedMP4FrameCount(vector: Uint8Array, sampleRate: number): number {
+    const view = new DataView(vector.buffer, vector.byteOffset, vector.byteLength);
+    const file: ISOBox = { end: view.byteLength, start: 0, type: 'file' };
+    const moov = requireChildBox(view, file, 'moov');
+    const mdhd = requireChildBox(view, requireChildBox(view, requireChildBox(view, moov, 'trak'), 'mdia'), 'mdhd');
+    const timeByteLength = view.getUint8(mdhd.start) === MDHD_VERSION_WITH_64_BIT_TIMES ? UINT64_BYTE_LENGTH : UINT32_BYTE_LENGTH;
+    const timescale = view.getUint32(mdhd.start + FULL_BOX_HEADER_BYTE_LENGTH + (2 * timeByteLength));
+    const [ mvex ] = findChildBoxes(view, moov, 'mvex');
+    const [ trex ] = mvex ? findChildBoxes(view, mvex, 'trex') : [];
+    const trackDefaultDuration = trex ? view.getUint32(trex.start + FULL_BOX_HEADER_BYTE_LENGTH + TREX_DEFAULT_SAMPLE_DURATION_OFFSET) : 0;
+    let duration = 0;
+    for (const moof of findChildBoxes(view, file, 'moof')) {
+        for (const traf of findChildBoxes(view, moof, 'traf')) {
+            const defaultDuration = readTrackFragmentDefaultDuration(view, requireChildBox(view, traf, 'tfhd')) ?? trackDefaultDuration;
+            for (const trun of findChildBoxes(view, traf, 'trun')) {
+                duration += readTrackRunDuration(view, trun, defaultDuration);
+            }
+        }
+    }
+    if (timescale === 0) {
+        throw new RangeError('The vector track has no timescale');
+    }
+    return Math.ceil(duration * sampleRate / timescale);
+}
 
 function getDefaultIsTypeSupported(): ((mimeType: string) => boolean) | null {
     if (typeof globalThis.MediaSource !== 'function' || typeof globalThis.MediaSource.isTypeSupported !== 'function') {
@@ -286,7 +441,8 @@ async function probeNativeMediaAudioLayout(
     definition: NativeMediaAudioDefinition,
     channelCount: NativeMediaAudioChannelCount,
     isTypeSupported: ((mimeType: string) => boolean) | null,
-    exactPlaybackProbe: (probeInput: Readonly<NativeMediaAudioExactProbeRequest>) => Promise<NativeMediaAudioExactProbeResult>
+    exactPlaybackProbe: (probeInput: Readonly<NativeMediaAudioExactProbeRequest>) => Promise<NativeMediaAudioExactProbeResult>,
+    queue: RecordedCapabilityProbeQueue
 ): Promise<NativeMediaAudioLayoutProbeOutcome> {
     if (!isTypeSupported) {
         return {
@@ -317,10 +473,27 @@ async function probeNativeMediaAudioLayout(
         sampleRate: NATIVE_MEDIA_AUDIO_SAMPLE_RATE
     };
     try {
-        const result = await exactPlaybackProbe({
-            ...route,
-            vector: createNativeMediaAudioProbeVector(definition.codec, channelCount as NativeMediaAudioProbeVectorChannelCount)
-        });
+        const vector = createNativeMediaAudioProbeVector(definition.codec, channelCount as NativeMediaAudioProbeVectorChannelCount);
+        const step = describeAudioPlayback(
+            { codec: definition.codecString, numberOfChannels: channelCount, sampleRate: NATIVE_MEDIA_AUDIO_SAMPLE_RATE },
+            readFragmentedMP4FrameCount(vector, NATIVE_MEDIA_AUDIO_SAMPLE_RATE)
+        );
+        // A playback bounds each of its stages itself, so the manager waits for it instead of timing it; a decoder pool may refuse
+        // the playback's decoder only for the decoders of the calls beside it, so the manager confirms a failed playback alone
+        const result = await queue.run(() => exactPlaybackProbe({ ...route, vector }), step, { confirm: (playback): boolean => !playback.supported });
+        if (result === CAPABILITY_PROBE_TIMEOUT) {
+            // The manager stopped the page's probing before the playback could start
+            return {
+                capability: createUnavailableLayout(definition, channelCount, 'probe-timeout', 'unknown'),
+                probed: false
+            };
+        }
+        if (result instanceof CapabilityProbeBlock) {
+            return {
+                capability: createUnavailableLayout(definition, channelCount, result.reason, 'unsupported'),
+                probed: false
+            };
+        }
         return {
             capability: {
                 ...route,
@@ -345,6 +518,10 @@ export async function probeNativeMediaAudioCapabilities(
         getDefaultIsTypeSupported() :
         environment.isTypeSupported;
     const exactPlaybackProbe = environment.exactPlaybackProbe ?? runDefaultExactPlaybackProbe;
+    const session = environment.session ?? getDefaultCapabilityProbeSession();
+    // A playback that stopped an earlier page alone never runs again, and the limits follow the quarantine
+    await session.readQuarantine();
+    const queue = session.record(session.manager.queue, NATIVE_MEDIA_AUDIO_PROBE);
     const capabilityPromises: Array<Promise<NativeMediaAudioCodecCapability>> = [];
     const probeOutcomes: NativeMediaAudioLayoutProbeOutcome[] = [];
     let probeCount = 0;
@@ -355,7 +532,7 @@ export async function probeNativeMediaAudioCapabilities(
         capabilityPromises.push((async (): Promise<NativeMediaAudioCodecCapability> => {
             const layoutPromises: Array<Promise<NativeMediaAudioLayoutProbeOutcome>> = [];
             for (const channelCount of NATIVE_MEDIA_AUDIO_CHANNEL_COUNTS) {
-                layoutPromises.push(probeNativeMediaAudioLayout(definition, channelCount, isTypeSupported, exactPlaybackProbe));
+                layoutPromises.push(probeNativeMediaAudioLayout(definition, channelCount, isTypeSupported, exactPlaybackProbe, queue));
             }
             const outcomes = await Promise.all(layoutPromises);
             const layouts = {} as Record<NativeMediaAudioChannelCount, NativeMediaAudioLayoutCapability>;
