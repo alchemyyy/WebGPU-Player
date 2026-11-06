@@ -7,10 +7,12 @@ import CapabilityProbeStore, {
     clearStoredCapabilityProbeVerdicts,
     configureCapabilityProbeStore,
     getDefaultCapabilityProbeStore,
+    onCapabilityProbeCrash,
     readCapabilityProbeFingerprint,
     readStoredCapabilityProbeVerdictState,
     type CapabilityProbeFingerprint,
-    type CapabilityProbeStorage
+    type CapabilityProbeStorage,
+    type CrashedCapabilityProbe
 } from 'webgpu-player/capability/CapabilityProbeStore';
 
 import { createFakeWebLocks, type FakeWebLocks } from '../helpers/fakeWebLocks';
@@ -227,24 +229,24 @@ describe('CapabilityProbeStore', () => {
 });
 
 describe('the run journal', () => {
-    /** Reads the probes each page's record holds, by page. */
-    function readRunRecords(storage: CapabilityProbeStorage): Record<string, readonly string[]> {
+    /** Reads the probes each page's record holds, with their steps, by page. */
+    function readRunRecords(storage: CapabilityProbeStorage): Record<string, readonly CrashedCapabilityProbe[]> {
         const text = storage.getItem(CAPABILITY_PROBE_RUNS_KEY);
         if (text === null) {
             return {};
         }
-        const entry = JSON.parse(text) as { pages: Record<string, { probes: readonly string[] }> };
+        const entry = JSON.parse(text) as { pages: Record<string, { probes: readonly CrashedCapabilityProbe[] }> };
         return Object.fromEntries(Object.entries(entry.pages).map(([ pageId, runs ]) => [ pageId, runs.probes ]));
     }
 
-    it('reads as crashed the probes a stopped page had in a browser call, and drops their verdicts', async () => {
+    it('reads as crashed the probes a stopped page had in a browser call, with the step it was in, and drops their verdicts', async () => {
         const storage = createMemoryStorage();
         const locks = createFakeWebLocks();
         const stoppedPage = createPageStore({ locks, pageId: 'page-1', storage });
         await stoppedPage.write('native-sdr:hevc', SUPPORTED_HEVC);
         await stoppedPage.write('native-audio', [ SUPPORTED_AAC ]);
         expect(await stoppedPage.readCrashedProbes()).toEqual(new Set());
-        await stoppedPage.markRunning('native-sdr:hevc');
+        await stoppedPage.markRunning('native-sdr:hevc', 'decode hevc');
         // The page stops in the call, so nothing ends it and its record stays
         locks.stopPage('page-1');
 
@@ -252,26 +254,143 @@ describe('the run journal', () => {
 
         expect(await laterPage.readCrashedProbes()).toEqual(new Set([ 'native-sdr:hevc' ]));
         expect(await laterPage.read('native-sdr:hevc')).toBeNull();
-        expect(laterPage.readState()).toMatchObject({ crashedProbes: [ 'native-sdr:hevc' ], probes: [ 'native-audio' ] });
+        expect(laterPage.readState()).toMatchObject({
+            crashedProbes: [ { probe: 'native-sdr:hevc', steps: [ 'decode hevc' ] } ],
+            probes: [ 'native-audio' ]
+        });
         expect(readRunRecords(storage)).toEqual({});
     });
 
-    it('leaves the record of a page that still runs, which drops it once its last call ends', async () => {
+    it('keeps every step a probe has in flight, and carries them into the crash, joined with the steps already stored', async () => {
+        const storage = createMemoryStorage();
+        const locks = createFakeWebLocks();
+        const firstStoppedPage = createPageStore({ locks, pageId: 'page-1', storage });
+        await firstStoppedPage.readCrashedProbes();
+        // Configuration checks of one probe run side by side
+        await firstStoppedPage.markRunning('native-audio', 'check opus');
+        await firstStoppedPage.markRunning('native-audio', 'check mp4a.40.2');
+        await firstStoppedPage.markRunning('native-sdr:hevc', 'check hvc1.1.6.L120.90');
+        const secondStoppedPage = createPageStore({ locks, pageId: 'page-3', storage });
+        await secondStoppedPage.readCrashedProbes();
+        await secondStoppedPage.markRunning('native-audio', 'decode aac');
+
+        expect(readRunRecords(storage)).toEqual({
+            'page-1': [
+                { probe: 'native-audio', steps: [ 'check mp4a.40.2', 'check opus' ] },
+                { probe: 'native-sdr:hevc', steps: [ 'check hvc1.1.6.L120.90' ] }
+            ],
+            'page-3': [ { probe: 'native-audio', steps: [ 'decode aac' ] } ]
+        });
+
+        locks.stopPage('page-1');
+        const firstFinder = createPageStore({ locks, pageId: 'page-2', storage });
+        const firstFinderListener = vi.fn();
+        firstFinder.onCrash(firstFinderListener);
+        await firstFinder.readCrashedProbes();
+
+        expect(firstFinderListener).toHaveBeenCalledExactlyOnceWith([
+            { probe: 'native-audio', steps: [ 'check mp4a.40.2', 'check opus' ] },
+            { probe: 'native-sdr:hevc', steps: [ 'check hvc1.1.6.L120.90' ] }
+        ]);
+
+        locks.stopPage('page-3');
+        const secondFinder = createPageStore({ locks, pageId: 'page-4', storage });
+        const secondFinderListener = vi.fn();
+        secondFinder.onCrash(secondFinderListener);
+        await secondFinder.readCrashedProbes();
+
+        // The listener hears only the crash its page found, while the entry joins its steps with those stored before
+        expect(secondFinderListener).toHaveBeenCalledExactlyOnceWith([ { probe: 'native-audio', steps: [ 'decode aac' ] } ]);
+        expect(secondFinder.readState()?.crashedProbes).toEqual([
+            { probe: 'native-audio', steps: [ 'check mp4a.40.2', 'check opus', 'decode aac' ] },
+            { probe: 'native-sdr:hevc', steps: [ 'check hvc1.1.6.L120.90' ] }
+        ]);
+        // The first finder reads no crash again once its journal is open
+        await firstFinder.readCrashedProbes();
+        expect(firstFinderListener).toHaveBeenCalledOnce();
+    });
+
+    it('tells no crash listener on a page that finds no stopped page', async () => {
         const storage = createMemoryStorage();
         const locks = createFakeWebLocks();
         const runningPage = createPageStore({ locks, pageId: 'page-1', storage });
         await runningPage.readCrashedProbes();
-        const endFirstCall = await runningPage.markRunning('native-audio');
-        const endSecondCall = await runningPage.markRunning('native-audio');
+        await runningPage.markRunning('native-audio', 'check mp4a.40.2');
+        const laterPage = createPageStore({ locks, pageId: 'page-2', storage });
+        const listener = vi.fn();
+        laterPage.onCrash(listener);
+
+        expect(await laterPage.readCrashedProbes()).toEqual(new Set());
+        expect(listener).not.toHaveBeenCalled();
+    });
+
+    it('records the crash and tells every other listener when a crash listener throws', async () => {
+        const storage = createMemoryStorage();
+        const locks = createFakeWebLocks();
+        const stoppedPage = createPageStore({ locks, pageId: 'page-1', storage });
+        await stoppedPage.readCrashedProbes();
+        await stoppedPage.markRunning('native-audio', 'decode aac');
+        locks.stopPage('page-1');
+        const laterPage = createPageStore({ locks, pageId: 'page-2', storage });
+        const throwingListener = vi.fn((): void => {
+            throw new Error('Listener failed');
+        });
+        const listener = vi.fn();
+        laterPage.onCrash(throwingListener);
+        laterPage.onCrash(listener);
+
+        expect(await laterPage.readCrashedProbes()).toEqual(new Set([ 'native-audio' ]));
+        expect(throwingListener).toHaveBeenCalledOnce();
+        expect(listener).toHaveBeenCalledExactlyOnceWith([ { probe: 'native-audio', steps: [ 'decode aac' ] } ]);
+        expect(laterPage.readState()?.crashedProbes).toEqual([ { probe: 'native-audio', steps: [ 'decode aac' ] } ]);
+    });
+
+    it('reads a crash and a page record of the previous release, which name probes alone, as crashes without steps', async () => {
+        const storage = createMemoryStorage();
+        const locks = createFakeWebLocks();
+        await createStore(storage).write('native-audio', [ SUPPORTED_AAC ]);
+        const entry = JSON.parse(storage.getItem(CAPABILITY_PROBE_STORE_KEY) ?? '{}') as { fingerprint: string };
+        storage.setItem(CAPABILITY_PROBE_STORE_KEY, JSON.stringify({ ...entry, crashed: [ 'h264-profiles' ] }));
+        storage.setItem(CAPABILITY_PROBE_RUNS_KEY, JSON.stringify({
+            pages: { 'page-1': { fingerprint: entry.fingerprint, probes: [ 'native-sdr:hevc' ] } },
+            schema: CAPABILITY_PROBE_STORE_SCHEMA_VERSION
+        }));
+        const laterPage = createPageStore({ locks, pageId: 'page-2', storage });
+        const listener = vi.fn();
+        laterPage.onCrash(listener);
+
+        expect(await laterPage.readCrashedProbes()).toEqual(new Set([ 'h264-profiles', 'native-sdr:hevc' ]));
+        expect(listener).toHaveBeenCalledExactlyOnceWith([ { probe: 'native-sdr:hevc', steps: [] } ]);
+        expect(laterPage.readState()).toMatchObject({
+            crashedProbes: [ { probe: 'h264-profiles', steps: [] }, { probe: 'native-sdr:hevc', steps: [] } ],
+            probes: [ 'native-audio' ]
+        });
+        // The entry is written back in the current shape
+        expect(JSON.parse(storage.getItem(CAPABILITY_PROBE_STORE_KEY) ?? '{}')).toMatchObject({
+            crashed: [ { probe: 'h264-profiles', steps: [] }, { probe: 'native-sdr:hevc', steps: [] } ]
+        });
+        expect(readRunRecords(storage)).toEqual({});
+    });
+
+    it('leaves the record of a page that still runs, which drops each step once its last call ends, and the record with the last step', async () => {
+        const storage = createMemoryStorage();
+        const locks = createFakeWebLocks();
+        const runningPage = createPageStore({ locks, pageId: 'page-1', storage });
+        await runningPage.readCrashedProbes();
+        const endFirstCall = await runningPage.markRunning('native-audio', 'check mp4a.40.2');
+        const endSecondCall = await runningPage.markRunning('native-audio', 'check mp4a.40.2');
+        const endThirdCall = await runningPage.markRunning('native-audio', 'check opus');
 
         expect(await createPageStore({ locks, pageId: 'page-2', storage }).readCrashedProbes()).toEqual(new Set());
-        expect(readRunRecords(storage)).toEqual({ 'page-1': [ 'native-audio' ] });
+        expect(readRunRecords(storage)).toEqual({ 'page-1': [ { probe: 'native-audio', steps: [ 'check mp4a.40.2', 'check opus' ] } ] });
 
-        // Each end counts once, so the record stays for the call still open
+        // Each end counts once, so the record keeps the step for the call still open
         endFirstCall();
         endFirstCall();
-        expect(readRunRecords(storage)).toEqual({ 'page-1': [ 'native-audio' ] });
+        expect(readRunRecords(storage)).toEqual({ 'page-1': [ { probe: 'native-audio', steps: [ 'check mp4a.40.2', 'check opus' ] } ] });
         endSecondCall();
+        await vi.waitFor(() => expect(readRunRecords(storage)).toEqual({ 'page-1': [ { probe: 'native-audio', steps: [ 'check opus' ] } ] }));
+        endThirdCall();
         expect(readRunRecords(storage)).toEqual({});
     });
 
@@ -294,14 +413,16 @@ describe('the run journal', () => {
             }
         });
         await page.readCrashedProbes();
-        await page.markRunning('native-audio');
+        await page.markRunning('native-audio', 'check mp4a.40.2');
 
         setVisible(false);
-        await page.markRunning('native-surround-audio');
+        await page.markRunning('native-surround-audio', 'check ec-3');
         expect(readRunRecords(storage)).toEqual({});
         setVisible(true);
         // Showing again writes the record once the page holds its lock
-        await vi.waitFor(() => expect(readRunRecords(storage)).toEqual({ 'page-1': [ 'native-audio', 'native-surround-audio' ] }));
+        await vi.waitFor(() => expect(readRunRecords(storage)).toEqual({
+            'page-1': [ { probe: 'native-audio', steps: [ 'check mp4a.40.2' ] }, { probe: 'native-surround-audio', steps: [ 'check ec-3' ] } ]
+        }));
 
         // A hidden page's browser may end it, and a page that unloads hides first
         setVisible(false);
@@ -315,7 +436,7 @@ describe('the run journal', () => {
         const locks = createFakeWebLocks();
         const earlierBuildPage = createPageStore({ fingerprint: createFingerprint('build-1'), locks, pageId: 'page-1', storage });
         await earlierBuildPage.readCrashedProbes();
-        await earlierBuildPage.markRunning('native-audio');
+        await earlierBuildPage.markRunning('native-audio', 'check mp4a.40.2');
         locks.stopPage('page-1');
 
         const laterBuildPage = createPageStore({ fingerprint: createFingerprint('build-2'), locks, pageId: 'page-2', storage });
@@ -329,7 +450,7 @@ describe('the run journal', () => {
         const locks = createFakeWebLocks();
         const stoppedPage = createPageStore({ locks, pageId: 'page-1', storage });
         await stoppedPage.readCrashedProbes();
-        await stoppedPage.markRunning('native-audio');
+        await stoppedPage.markRunning('native-audio', 'decode aac');
         locks.stopPage('page-1');
         const laterPage = createPageStore({ locks, pageId: 'page-2', storage });
         await laterPage.readCrashedProbes();
@@ -346,7 +467,7 @@ describe('the run journal', () => {
         const store = createStore(storage);
 
         expect(await store.readCrashedProbes()).toEqual(new Set());
-        await store.markRunning('native-audio');
+        await store.markRunning('native-audio', 'check mp4a.40.2');
 
         expect(storage.entries.size).toBe(0);
     });
@@ -473,7 +594,7 @@ describe('the page store', () => {
         configureCapabilityProbeStore({ buildKey: 'asset-key-webpack-hash' });
         const store = getDefaultCapabilityProbeStore();
         await store.readCrashedProbes();
-        const endCall = await store.markRunning('native-audio');
+        const endCall = await store.markRunning('native-audio', 'check mp4a.40.2');
         expect(globalThis.localStorage.getItem(CAPABILITY_PROBE_RUNS_KEY)).not.toBeNull();
 
         globalThis.dispatchEvent(new Event('pagehide'));
@@ -488,5 +609,29 @@ describe('the page store', () => {
         expect(globalThis.localStorage.getItem(CAPABILITY_PROBE_RUNS_KEY)).not.toBeNull();
         endCall();
         expect(globalThis.localStorage.getItem(CAPABILITY_PROBE_RUNS_KEY)).toBeNull();
+    });
+
+    it('tells the page\'s crash listeners of the crashes its default store finds', async () => {
+        vi.useFakeTimers();
+        const locks = createFakeWebLocks();
+        vi.stubGlobal('navigator', { locks: locks.forPage('the-page'), userAgent: 'Mozilla/5.0' });
+        configureCapabilityProbeStore({ buildKey: 'asset-key-webpack-hash' });
+        const stoppedPage = new CapabilityProbeStore({
+            locks: () => locks.forPage('stopped-page'),
+            pageId: 'stopped-page',
+            readFingerprint: () => readCapabilityProbeFingerprint('asset-key-webpack-hash'),
+            storage: () => globalThis.localStorage
+        });
+        await stoppedPage.readCrashedProbes();
+        await stoppedPage.markRunning('native-audio', 'decode aac');
+        locks.stopPage('stopped-page');
+        const listener = vi.fn();
+        const removeListener = onCapabilityProbeCrash(listener);
+
+        expect(await getDefaultCapabilityProbeStore().readCrashedProbes()).toEqual(new Set([ 'native-audio' ]));
+        removeListener();
+
+        expect(listener).toHaveBeenCalledExactlyOnceWith([ { probe: 'native-audio', steps: [ 'decode aac' ] } ]);
+        expect(readStoredCapabilityProbeVerdictState()?.crashedProbes).toEqual([ { probe: 'native-audio', steps: [ 'decode aac' ] } ]);
     });
 });

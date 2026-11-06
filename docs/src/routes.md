@@ -78,7 +78,8 @@ Without a container mask, the host's `audioMetadataLayout` (Jellyfin's count and
 
 ### Background probes
 
-A host may start the probes before its first negotiation with `warmCustomDecodeCapabilities()`, and tells the engine when media plays with `configureCustomDecodeCapabilityBackground({ isPlaybackActive })`.
+A host may start the probes before its first negotiation with `warmCustomDecodeCapabilities()`, and tells the engine when media plays with `configureCustomDecodeCapabilityBackground({ isPlaybackActive, refreshAfterUse })`.
+Each call replaces the previous configuration; `refreshAfterUse`, which defaults to `true`, decides whether a stored verdict a negotiation used reruns in the background (see [Stored verdicts](#stored-verdicts)).
 
 - The warm-up runs every probe without a page result or stored verdict, one probe after another, in the order a full run starts them.
   A client whose `navigator.connection.saveData` is set, or whose `navigator.hardwareConcurrency` is below 4, gets no warm-up.
@@ -105,9 +106,14 @@ A host may start the probes before its first negotiation with `warmCustomDecodeC
   Writes merge, so the video probes of each item a page negotiates join the entry.
 - `CustomDecodeCapabilityProbe` reads a probe's stored verdict before running it.
   A hit answers at once and schedules the probe to run again in the background, which overwrites the stored verdict and the page's result when it reaches a verdict; a rerun that reaches none leaves both.
+  With refresh after use off (`refreshAfterUse: false`, or the probe's `refreshAfterUse` option and `setRefreshAfterUse`), a hit schedules no rerun, so a negotiation it serves makes no browser call and no write.
+  Turning it off schedules no further rerun, but a rerun already queued still runs; turning it back on reruns the hits from then on.
 - A start that falls back with `decode-failed` or `startup-timeout` before its first frame clears the entry and the stored verdicts the page holds, when the page used any (`clearAfterStartFailure`, from `CustomPlaybackController`), so the renegotiation probes again.
   Driver updates, OS codec packs, the hardware acceleration setting, and Chrome's software fallback after a GPU process crash change no fingerprint.
-- `clearStoredCapabilityProbeVerdicts()` clears it, crashed probes included, and `readStoredCapabilityProbeVerdictState()` returns the stored fingerprint, write time, age, probe names, and crashed probe names.
+- `clearStoredCapabilityProbeVerdicts()` clears it, crashed probes included, and `readStoredCapabilityProbeVerdictState()` returns the stored fingerprint, write time, age, probe names, and crashed probes, each a `CrashedCapabilityProbe` with its probe name and the steps it had in flight, sorted by probe.
+- `onCapabilityProbeCrash(listener)` calls the listener on the page that finds crashed probes, once per finding, after the entry records them, with only the crashes of the current fingerprint that finding recorded; it returns the function that removes the listener.
+  A listener that throws stops neither the recording nor the other listeners.
+  A store of its own takes listeners with `onCrash`.
 - The MSE AC-3/E-AC-3 probe and the GPU presentation authorizations are not stored: the first is not a `CustomDecodeProbe`, and the second are measured on the presenter's device, which keeps them for that device.
 
 ### Probes that stop the page
@@ -115,15 +121,19 @@ A host may start the probes before its first negotiation with `warmCustomDecodeC
 A probe whose browser call stops the page, as a WebContent crash on WebKit does, never returns, so it reaches no verdict and the next page would run it again.
 The store therefore keeps a run journal beside the verdicts, and a probe that was in a browser call when a page stopped never runs again for that fingerprint.
 
-- `CustomDecodeCapabilityProbe` records a probe on the store (`markRunning`) before each of its browser calls: each `isConfigSupported` check, and each heavy step until the step's own work settles, even past its timeout.
+- `CustomDecodeCapabilityProbe` records a probe on the store (`markRunning(probe, step)`) before each of its browser calls, with a label that names the call: each `isConfigSupported` check, labelled `check` and the configuration's codec string, such as `check mp4a.40.2`, and each heavy step until the step's own work settles, even past its timeout.
+  A heavy step's call site gives its label to the heavy queue's `run` or `runTimed`, which require one: `decode` and the codec, such as `decode aac`; the codec and raw format for a raw HDR or raw format probe, such as `decode hevc I420P10`; the codec string for a native HDR or Dolby Vision frame probe, such as `decode hvc1.2.4.L153.B0`; and `decode h264 profiles` for the H.264 profile probe, which runs as one step.
+  Labels are short ASCII, at most 64 characters.
   Downloads, idle waits, and steps waiting in the queue are not recorded, so a background run's record covers only the moments the browser works on it.
-- Each page keeps its record, the probes it has in a call and its fingerprint, under its own random id in the localStorage entry `webgpu-player-capability-probe-runs`, and drops it once its last call ends.
+- Each page keeps its record, the probes it has in a call, each with the labels of the steps it has in flight, and its fingerprint, under its own random id in the localStorage entry `webgpu-player-capability-probe-runs`, and drops it once its last call ends.
+  The page counts its open calls by probe and step, so concurrent configuration checks of one probe each appear once, and a step leaves the record once its last call ends.
 - A hidden page records nothing, since a browser may end a hidden page without a crash: the page drops its record as it hides, and as it unloads or enters the back-forward cache (`pagehide`), whatever a later visibility change reads, and writes it again as it shows.
 - A page holds a Web Lock of its own id while it has a record: it takes the lock before it writes the record and lets go of it after it drops the record, so an idle page holds none.
   The browser frees a page's locks when the page ends, however it ends, so a record whose lock is free is a stopped page's.
 - A page's first probe run (`readCrashedProbes`) takes the record of every other page whose lock is free, holding that lock while it does, so no page of that id writes one meanwhile.
-  It records the probes of such a record of the verdicts' fingerprint as crashed and drops their verdicts; a record of another fingerprint goes with no crash, and a page whose lock is held still runs, so its record stays.
+  It records the probes of such a record of the verdicts' fingerprint as crashed, each with the steps the record names, joined with the steps already stored for that probe, drops their verdicts, and then calls the crash listeners; a record of another fingerprint goes with no crash, and a page whose lock is held still runs, so its record stays.
   Without Web Locks, or when the lock manager takes more than 2 s, the page records nothing and reads no crash.
+- The entry and the records of the 11-05 release named probes alone; such a crash or record reads as a crash with no steps, and the schema version stays 1.
 - A negotiation leaves the crashed probes out of its selection: they read `not-probed`, which no route takes as support, and `probeStates` names them `not-probed`, including the audio probes, which every item otherwise runs.
 
 ## Route catalog

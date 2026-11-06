@@ -123,7 +123,7 @@ It is in `sandbox/src/session/RouteOverride.ts`.
 
 The capability probe panel shows what the engine's probe store holds, in `sandbox/src/ui/panels/ProbeCachePanel.ts`; see [Probes and caching](routes.md#probes-and-caching).
 
-- It names the stored verdicts' count, the age of their last write, and their fingerprint's build key, adapter, and browser version, any probe that stopped a page, and how long the latest start waited for its probes.
+- It names the stored verdicts' count, the age of their last write, and their fingerprint's build key, adapter, and browser version, each probe that stopped a page, on a line of its own with the steps it had in flight, and how long the latest start waited for its probes.
 - Clear probe cache empties the store, crashed probes included, so the next start, or the next page load, probes again.
 - Warm up probes starts the engine's background warm-up, which a host starts at load; the sandbox does not, so a start right after a load measures the cold or stored path.
 - The build key is the asset key joined with a value the dev server sets at each start, since the server serves changed engine sources without a new asset build.

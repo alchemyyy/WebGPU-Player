@@ -56,6 +56,12 @@ Commit hashes refer to the Jellyfin Web fork's `webgpu-player` branch, where the
   A page holds its lock only while it has a record, though Chrome keeps no page that ever used a Web Lock in its back-forward cache, released or not (Chromium issue 421746650).
   Only the browser calls are recorded, the configuration checks and each heavy step until its own work settles, so a page closed while it downloads or waits for a turn records nothing; nor does a hidden page, which a browser may end without a crash.
   A crash is kept per fingerprint like a verdict, so a new build or browser version probes again, and the store names the probe that stopped the page in `readStoredCapabilityProbeVerdictState()`.
+  Each recorded call also carries a short label of the step, such as `check mp4a.40.2` or `decode aac`, which the record keeps and the crash inherits, and the page that finds a crash tells the host through `onCapabilityProbeCrash`, because a probe name alone did not say which call ended the WebContent process, and an affected user can report the crash without Web Inspector.
+  Crashes and records stored before the labels read as crashes without steps, so the schema version stayed 1.
+- A host may turn off the refresh of stored verdicts after use (11-05).
+  A host that runs probes only at playback, such as on a phone used as a remote control or on iOS WebKit, which a probe can end, wants no probe outside a negotiation, and a refresh is one.
+  `configureCustomDecodeCapabilityBackground({ refreshAfterUse: false })` keeps a used stored verdict as the page's result without a rerun, so what no fingerprint shows is then caught only by clearing the store when a start it may have admitted fails before its first frame.
+  A refresh queued before the switch still runs, since dropping it would need a cancel path for one page's queue and the host decides at page load, before any negotiation.
 - AVI carries only what the fork's AVI demuxer and the engine's routes play (10-15).
   The rule takes H.264, HEVC, VP8, VP9, and AV1 with AAC, MP3, AC-3, FLAC, Vorbis, and the PCM formats WAVEFORMATEX maps, all checked against FFmpeg-made AVI vectors.
   AVI times its chunks in decode order and keeps no presentation times, so HEVC stayed out at first, since the owned HEVC path presents packets as stamped, and on WebKit, whose sample sink orders decoded frames by their packets' timestamps, eligibility refused H.264 that could code B-frames (10-16).

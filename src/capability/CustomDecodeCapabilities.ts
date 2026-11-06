@@ -530,8 +530,15 @@ function waitForCapabilityProbe<Value>(promise: Promise<Value>): Promise<Value |
     });
 }
 
-// A view of the page's heavy probe scheduler; the video probes' view waits for the audio probes
-type HeavyCapabilityProbeQueue = Pick<SerializedHeavyCapabilityProbeScheduler, 'assetPriority' | 'run' | 'runTimed'>;
+/**
+ * A view of the page's heavy probe scheduler; the video probes' view waits for the audio probes.
+ * Each heavy step names the browser work it does in a short ASCII label, such as `decode aac`, which a recorded run keeps with its probe while the step is in flight.
+ */
+type HeavyCapabilityProbeQueue = Readonly<{
+    assetPriority: RequestPriority
+    run: <Value>(probe: () => Promise<Value>, label: string) => Promise<Value | typeof CAPABILITY_PROBE_TIMEOUT>
+    runTimed: <Value>(probe: () => Promise<Value>, label: string) => Promise<Value | typeof CAPABILITY_PROBE_TIMEOUT>
+}>;
 
 /**
  * One background run of a probe, which a negotiation promotes when it needs the same probe.
@@ -1778,7 +1785,7 @@ async function probeH264Profiles(
 ): Promise<H264ProfileCapabilities> {
     if (profileProbe) {
         try {
-            const capabilities = await heavyProbeScheduler.run(() => profileProbe.probe());
+            const capabilities = await heavyProbeScheduler.run(() => profileProbe.probe(), 'decode h264 profiles');
             if (capabilities !== CAPABILITY_PROBE_TIMEOUT) {
                 return capabilities;
             }
@@ -1843,7 +1850,7 @@ async function probeRawHDRVideoConfig(
                 timestamp: 0
             } ],
             expectedFormat: 'I420P10'
-        }));
+        }), `decode ${definition.codec} I420P10`);
         if (outputProbeResult === CAPABILITY_PROBE_TIMEOUT) {
             return Object.freeze({
                 ...baseCapability,
@@ -2013,7 +2020,7 @@ async function probeExactRawFormatConfig<BaseCapability extends object>(
                 expectedDecodedFrames,
                 expectedFormat: definition.format
             });
-        });
+        }, `decode ${codec} ${definition.format}`);
         if (outputProbeResult === CAPABILITY_PROBE_TIMEOUT) {
             return Object.freeze({
                 ...baseCapability,
@@ -2135,7 +2142,7 @@ async function probeNativeAudioConfig(
                 expectedNumberOfFrames: vector.expectedNumberOfFrames,
                 expectedTimestamp: vector.expectedTimestamp
             };
-        const outputSupported = await heavyProbeScheduler.runTimed(() => outputProbe(probeRequest));
+        const outputSupported = await heavyProbeScheduler.runTimed(() => outputProbe(probeRequest), `decode ${definition.codec}`);
         if (outputSupported === CAPABILITY_PROBE_TIMEOUT) {
             return Object.freeze({
                 codec: definition.codec,
@@ -2265,7 +2272,7 @@ async function probeNativeVideoConfig(
             expectedDisplayHeight: vector.expectedDisplayHeight,
             expectedDisplayWidth: vector.expectedDisplayWidth,
             expectedTimestamp: 0
-        }));
+        }), `decode ${definition.codec}`);
         if (outputSupported === CAPABILITY_PROBE_TIMEOUT) {
             return Object.freeze({
                 codec: definition.codec,
@@ -2391,7 +2398,7 @@ async function probeNativeHEVCFrameRoute(
             encodedKeyFrame: new Uint8Array(encodedKeyFrame),
             expectedCodedHeight,
             expectedCodedWidth
-        }));
+        }), `decode ${configuration.codec}`);
         if (outputProbeResult === CAPABILITY_PROBE_TIMEOUT) {
             return {
                 ...unavailableCapability,
@@ -3116,6 +3123,8 @@ export type CustomDecodeCapabilityProbeOptions = Readonly<{
     /** Returns whether media plays; background probes wait while it does */
     isPlaybackActive?: () => boolean
     now?: () => number
+    /** Whether a negotiation a stored verdict served reruns its probe in the background; defaults to true */
+    refreshAfterUse?: boolean
     /** The verdicts kept across page loads; without one, every page probes again */
     store?: CapabilityProbeStore | null
     /** Resolves at the next idle period, or as soon as `cancel` settles */
@@ -3169,7 +3178,7 @@ function waitForIdlePeriod(cancel: Promise<void>): Promise<void> {
 
 /**
  * Probes decode capabilities per item; each probe runs once per page, and a later item reuses its result.
- * A probe with a stored verdict for this fingerprint takes it at once and reruns in the background, and each verdict a run reaches is stored.
+ * A probe with a stored verdict for this fingerprint takes it at once and, unless refresh after use is off, reruns in the background, and each verdict a run reaches is stored.
  */
 export default class CustomDecodeCapabilityProbe {
     private backgroundDriverActive = false;
@@ -3182,6 +3191,7 @@ export default class CustomDecodeCapabilityProbe {
     private negotiationCount = 0;
     private negotiationHoldEnd = Number.NEGATIVE_INFINITY;
     private readonly now: () => number;
+    private refreshAfterUse: boolean;
     private readonly probeResults = new Map<CustomDecodeProbe, Promise<unknown>>();
     private probeStarters: ReadonlyMap<CustomDecodeProbe, ProbeStarter> | null = null;
     private readonly selectionResults = new Map<string, Promise<CustomDecodeCapabilities>>();
@@ -3198,6 +3208,7 @@ export default class CustomDecodeCapabilityProbe {
         this.environment = environment;
         this.isPlaybackActive = options.isPlaybackActive ?? ((): boolean => false);
         this.now = options.now ?? ((): number => globalThis.performance.now());
+        this.refreshAfterUse = options.refreshAfterUse ?? true;
         this.store = options.store ?? null;
         this.waitForIdle = options.waitForIdle ?? waitForIdlePeriod;
         this.store?.onClear((): void => this.forgetStoredVerdicts());
@@ -3223,6 +3234,14 @@ export default class CustomDecodeCapabilityProbe {
     /** Sets what background probes ask before each step, so none runs while media plays. */
     public setPlaybackActivity(isPlaybackActive: () => boolean): void {
         this.isPlaybackActive = isPlaybackActive;
+    }
+
+    /**
+     * Sets whether a negotiation a stored verdict served reruns its probe in the background.
+     * Turning it off schedules no further refresh; a refresh already queued still runs.
+     */
+    public setRefreshAfterUse(refreshAfterUse: boolean): void {
+        this.refreshAfterUse = refreshAfterUse;
     }
 
     /**
@@ -3373,8 +3392,9 @@ export default class CustomDecodeCapabilityProbe {
     }
 
     /**
-     * Runs a probe while the store records each of its browser calls: a configuration check, or a heavy step until that step's own work settles, even past its timeout.
-     * A page that stops in such a call leaves the probe recorded, so no later page of this fingerprint runs it again.
+     * Runs a probe while the store records each of its browser calls with its label: a configuration check, `check` and the configuration's codec string,
+     * or a heavy step, by the label its call site gives, until that step's own work settles, even past its timeout.
+     * A page that stops in such a call leaves the probe and the steps it had in flight recorded, so no later page of this fingerprint runs it again.
      */
     private runRecorded(probe: CustomDecodeProbe, queue: HeavyCapabilityProbeQueue): Promise<unknown> {
         const environment = this.getEnvironment();
@@ -3382,8 +3402,8 @@ export default class CustomDecodeCapabilityProbe {
         if (!store) {
             return this.getProbeStarter(probe)(queue, environment);
         }
-        const record = async <Value>(call: () => Promise<Value>): Promise<Value> => {
-            const end = await store.markRunning(probe);
+        const record = async <Value>(label: string, call: () => Promise<Value>): Promise<Value> => {
+            const end = await store.markRunning(probe, label);
             try {
                 return await call();
             } finally {
@@ -3395,16 +3415,20 @@ export default class CustomDecodeCapabilityProbe {
             get assetPriority(): RequestPriority {
                 return queue.assetPriority;
             },
-            run: <Value>(step: () => Promise<Value>) => queue.run(() => record(step)),
-            runTimed: <Value>(step: () => Promise<Value>) => queue.runTimed(() => record(step))
+            run: <Value>(step: () => Promise<Value>, label: string) => queue.run(() => record(label, step), label),
+            runTimed: <Value>(step: () => Promise<Value>, label: string) => queue.runTimed(() => record(label, step), label)
         };
         return this.getProbeStarter(probe)(recordedQueue, {
             ...environment,
             audioDecoder: audioDecoder && {
-                isConfigSupported: (config: AudioDecoderConfig): Promise<AudioDecoderSupport> => record(() => audioDecoder.isConfigSupported(config))
+                isConfigSupported: (config: AudioDecoderConfig): Promise<AudioDecoderSupport> => (
+                    record(`check ${config.codec}`, () => audioDecoder.isConfigSupported(config))
+                )
             },
             videoDecoder: videoDecoder && {
-                isConfigSupported: (config: VideoDecoderConfig): Promise<VideoDecoderSupport> => record(() => videoDecoder.isConfigSupported(config))
+                isConfigSupported: (config: VideoDecoderConfig): Promise<VideoDecoderSupport> => (
+                    record(`check ${config.codec}`, () => videoDecoder.isConfigSupported(config))
+                )
             }
         });
     }
@@ -3441,7 +3465,7 @@ export default class CustomDecodeCapabilityProbe {
         return selection.has(probe) ? this.startProbe(probe, queue) : Promise.resolve(notProbedResult);
     }
 
-    /** Takes a stored verdict at once and reruns its probe in the background, else runs the probe now. */
+    /** Takes a stored verdict at once and, unless refresh after use is off, reruns its probe in the background; else runs the probe now. */
     private async readStoredVerdictOrRunProbe(probe: CustomDecodeProbe, queue: HeavyCapabilityProbeQueue): Promise<unknown> {
         const storedVerdict = await this.store?.read(probe) ?? null;
         if (storedVerdict === null) {
@@ -3449,7 +3473,9 @@ export default class CustomDecodeCapabilityProbe {
         }
         this.storedProbes.add(probe);
         this.store?.recordServedVerdict();
-        this.scheduleBackgroundProbes([ probe ], 'refresh');
+        if (this.refreshAfterUse) {
+            this.scheduleBackgroundProbes([ probe ], 'refresh');
+        }
         return storedVerdict;
     }
 
@@ -3673,11 +3699,17 @@ export function probeCustomDecodeCapabilities(item?: unknown): Promise<CustomDec
 export type CustomDecodeCapabilityBackgroundConfiguration = Readonly<{
     /** Returns whether the host plays media; background probes wait while it does */
     isPlaybackActive: () => boolean
+    /** Whether a negotiation a stored verdict served reruns its probe in the background; defaults to true */
+    refreshAfterUse?: boolean
 }>;
 
-/** Tells the page's background probes when media plays, so they never compete with a playback. */
+/**
+ * Tells the page's background probes when media plays, so they never compete with a playback, and whether a used stored verdict is refreshed.
+ * Each call replaces the previous configuration; a refresh queued before refresh after use was turned off still runs.
+ */
 export function configureCustomDecodeCapabilityBackground(configuration: CustomDecodeCapabilityBackgroundConfiguration): void {
     defaultCapabilityProbe.setPlaybackActivity(configuration.isPlaybackActive);
+    defaultCapabilityProbe.setRefreshAfterUse(configuration.refreshAfterUse ?? true);
 }
 
 /**

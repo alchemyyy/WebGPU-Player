@@ -2,7 +2,8 @@
 import {
     clearStoredCapabilityProbeVerdicts,
     readStoredCapabilityProbeVerdictState,
-    type CapabilityProbeStoreState
+    type CapabilityProbeStoreState,
+    type CrashedCapabilityProbe
 } from 'webgpu-player/capability/CapabilityProbeStore';
 import { warmCustomDecodeCapabilities } from 'webgpu-player/capability/CustomDecodeCapabilities';
 
@@ -38,7 +39,7 @@ function describeBrowser(state: CapabilityProbeStoreState): string {
     return state.fingerprint.userAgent;
 }
 
-/** Describes the stored verdicts in terse lines: their count and age, the build key, the adapter, the browser, and any probe that stopped a page. */
+/** Describes the stored verdicts in terse lines: their count and age, the build key, the adapter, the browser, and each probe that stopped a page, with its steps. */
 export function describeStoredProbeVerdicts(state: CapabilityProbeStoreState | null): string {
     if (state === null) {
         return NOTHING_STORED_TEXT;
@@ -52,7 +53,11 @@ export function describeStoredProbeVerdicts(state: CapabilityProbeStoreState | n
             adapterInfo ? joinTextParts([ String(adapterInfo.vendor ?? ''), String(adapterInfo.architecture ?? '') ]) : NO_ADAPTER_TEXT
         ]),
         describeBrowser(state),
-        ...(state.crashedProbes.length > 0 ? [ joinTextParts([ 'crashed', state.crashedProbes.join(', ') ]) ] : [])
+        ...state.crashedProbes.map(({ probe, steps }: CrashedCapabilityProbe): string => joinTextParts([
+            'crashed',
+            probe,
+            steps.length > 0 ? `(${steps.join(', ')})` : null
+        ]))
     ].join(LINE_SEPARATOR);
 }
 

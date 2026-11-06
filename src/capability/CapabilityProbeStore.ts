@@ -1,10 +1,11 @@
 // The capability probe verdicts a page keeps across page loads and browser restarts, in one localStorage entry,
-// and the probes each page has in a browser call, in another, so a page that stops in one, as a crash stops it, tells the next page which probe that was.
+// and the probes each page has in a browser call, with the steps each has in flight, in another,
+// so a page that stops in one, as a crash stops it, tells the next page which probe and which step that was.
 // A verdict counts only for the host build, adapter, and browser that measured it, which the entry's fingerprint names.
 
 /** The storage key of the single entry, which a schema or fingerprint change overwrites rather than adds beside. */
 export const CAPABILITY_PROBE_STORE_KEY = 'webgpu-player-capability-probe-verdicts';
-/** The storage key of the probes each page has in a browser call, by page; a page that stops in one leaves its record behind. */
+/** The storage key of the probes each page has in a browser call, with their steps, by page; a page that stops in one leaves its record behind. */
 export const CAPABILITY_PROBE_RUNS_KEY = 'webgpu-player-capability-probe-runs';
 /** The entries' layout version; an entry of another version is a miss. */
 export const CAPABILITY_PROBE_STORE_SCHEMA_VERSION = 1;
@@ -32,11 +33,18 @@ export type CapabilityProbeFingerprint = Readonly<{
     userAgentData: Readonly<Record<string, FingerprintValue>> | null
 }>;
 
+/** A probe that was in a browser call when a page of the fingerprint stopped, with the calls it had in flight. */
+export type CrashedCapabilityProbe = Readonly<{
+    probe: string
+    /** Labels of the browser calls the probe had in flight, sorted and unique, such as `check mp4a.40.2` or `decode aac`; empty when the record named none */
+    steps: readonly string[]
+}>;
+
 /** The stored entry as a host shows it: its fingerprint, when it was last written, which probes it holds, and which probes stopped a page. */
 export type CapabilityProbeStoreState = Readonly<{
     ageMilliseconds: number
-    /** The probes that were in a browser call when a page of the fingerprint stopped, which no page of it runs again */
-    crashedProbes: readonly string[]
+    /** The probes that were in a browser call when a page of the fingerprint stopped, sorted by probe, which no page of it runs again */
+    crashedProbes: readonly CrashedCapabilityProbe[]
     fingerprint: CapabilityProbeFingerprint
     probes: readonly string[]
     writtenAtMilliseconds: number
@@ -65,18 +73,18 @@ export type CapabilityProbeStoreOptions = Readonly<{
 }>;
 
 type StoredEntry = Readonly<{
-    // The probes that were in a browser call when a page of this fingerprint stopped
-    crashed?: readonly string[]
+    // The probes that were in a browser call when a page of this fingerprint stopped, with the steps they had in flight
+    crashed?: readonly CrashedCapabilityProbe[]
     fingerprint: string
     schema: number
     verdicts: Readonly<Record<string, unknown>>
     writtenAt: number
 }>;
 
-// The probes one page has in a browser call, under the fingerprint it runs them for
+// The probes one page has in a browser call, each with the steps it has in flight, under the fingerprint it runs them for
 type StoredPageRuns = Readonly<{
     fingerprint: string
-    probes: readonly string[]
+    probes: readonly CrashedCapabilityProbe[]
 }>;
 
 type NavigatorUAData = Readonly<{
@@ -246,6 +254,42 @@ function isStringArray(value: unknown): value is readonly string[] {
     return Array.isArray(value) && value.every((element: unknown): boolean => typeof element === 'string');
 }
 
+/** Joins the entries of each probe, with its steps sorted and unique, and sorts them by probe. */
+function joinProbeSteps(entries: Iterable<CrashedCapabilityProbe>): CrashedCapabilityProbe[] {
+    const stepsByProbe = new Map<string, Set<string>>();
+    for (const { probe, steps } of entries) {
+        const probeSteps = stepsByProbe.get(probe) ?? new Set<string>();
+        for (const step of steps) {
+            probeSteps.add(step);
+        }
+        stepsByProbe.set(probe, probeSteps);
+    }
+    return [ ...stepsByProbe ]
+        .sort(([ left ]: [ string, Set<string> ], [ right ]: [ string, Set<string> ]): number => compareCodeUnits(left, right))
+        .map(([ probe, steps ]: [ string, Set<string> ]): CrashedCapabilityProbe => ({ probe, steps: [ ...steps ].sort(compareCodeUnits) }));
+}
+
+/**
+ * Reads a stored list of probes with their steps, joined by probe; null when any element is unreadable.
+ * A probe name alone, as the previous release stored a crash or a page record, reads as a probe with no steps.
+ */
+function parseProbeSteps(value: unknown): CrashedCapabilityProbe[] | null {
+    if (!Array.isArray(value)) {
+        return null;
+    }
+    const entries: CrashedCapabilityProbe[] = [];
+    for (const element of value as readonly unknown[]) {
+        if (typeof element === 'string') {
+            entries.push({ probe: element, steps: [] });
+        } else if (isRecord(element) && typeof element.probe === 'string' && isStringArray(element.steps)) {
+            entries.push({ probe: element.probe, steps: element.steps });
+        } else {
+            return null;
+        }
+    }
+    return joinProbeSteps(entries);
+}
+
 function parseEntry(text: string | null): StoredEntry | null {
     if (text === null) {
         return null;
@@ -256,11 +300,20 @@ function parseEntry(text: string | null): StoredEntry | null {
             || entry.schema !== CAPABILITY_PROBE_STORE_SCHEMA_VERSION
             || typeof entry.fingerprint !== 'string'
             || typeof entry.writtenAt !== 'number'
-            || !isRecord(entry.verdicts)
-            || (entry.crashed !== undefined && !isStringArray(entry.crashed))) {
+            || !isRecord(entry.verdicts)) {
             return null;
         }
-        return entry as StoredEntry;
+        const crashed = entry.crashed === undefined ? undefined : parseProbeSteps(entry.crashed);
+        if (crashed === null) {
+            return null;
+        }
+        return {
+            ...(crashed ? { crashed } : {}),
+            fingerprint: entry.fingerprint,
+            schema: CAPABILITY_PROBE_STORE_SCHEMA_VERSION,
+            verdicts: entry.verdicts,
+            writtenAt: entry.writtenAt
+        };
     } catch {
         return null;
     }
@@ -278,8 +331,9 @@ function parseRuns(text: string | null): Record<string, StoredPageRuns> {
             return pages;
         }
         for (const [ pageId, runs ] of Object.entries(entry.pages)) {
-            if (isRecord(runs) && typeof runs.fingerprint === 'string' && isStringArray(runs.probes)) {
-                pages[pageId] = { fingerprint: runs.fingerprint, probes: runs.probes };
+            const probes = isRecord(runs) ? parseProbeSteps(runs.probes) : null;
+            if (isRecord(runs) && typeof runs.fingerprint === 'string' && probes !== null) {
+                pages[pageId] = { fingerprint: runs.fingerprint, probes };
             }
         }
     } catch {
@@ -346,13 +400,14 @@ function watchPageVisibility(listener: (visible: boolean) => void): boolean {
 /**
  * Keeps each capability probe's verdict by its probe name for one fingerprint.
  * Only verdicts are kept: a result with any unknown or not-probed status is never written.
- * It also keeps the probes each page has in a browser call: a page that stops in one leaves its record, and the next page of the fingerprint
- * reads those probes as crashed, so no page runs a probe again that stopped one.
+ * It also keeps the probes each page has in a browser call, with the steps each has in flight: a page that stops in one leaves its record,
+ * and the next page of the fingerprint reads those probes as crashed, with those steps, so no page runs a probe again that stopped one.
  * A page holds a lock of its own only while it has a record, which tells a page that still runs from one that stopped, and keeps no lock while idle.
  */
 export default class CapabilityProbeStore {
     private fingerprint: Promise<string | null> | null = null;
     private readonly clearListeners = new Set<() => void>();
+    private readonly crashListeners = new Set<(crashes: readonly CrashedCapabilityProbe[]) => void>();
     // The fingerprint the page's run journal opened under, which its records name; null until it opens, or while it cannot
     private journalFingerprint: string | null = null;
     private readonly locks: () => CapabilityProbeLocks | null;
@@ -364,8 +419,8 @@ export default class CapabilityProbeStore {
     private pageVisible = true;
     private pageWatched = false;
     private readonly readFingerprint: CapabilityProbeStoreOptions['readFingerprint'];
-    // How many of the page's browser calls each probe has open
-    private readonly runCounts = new Map<string, number>();
+    // How many of the page's browser calls each probe has open, by the step each call is
+    private readonly runCounts = new Map<string, Map<string, number>>();
     private runJournal: Promise<string | null> | null = null;
     private servedVerdict = false;
     private readonly storage: CapabilityProbeStoreOptions['storage'];
@@ -428,16 +483,19 @@ export default class CapabilityProbeStore {
             return new Set();
         }
         const entry = this.readEntry();
-        return new Set(entry?.fingerprint === fingerprint ? entry.crashed : []);
+        return new Set(entry?.fingerprint === fingerprint ? entry.crashed?.map(({ probe }: CrashedCapabilityProbe): string => probe) : []);
     }
 
     /**
-     * Records that the page has a browser call of a probe open, so a page that stops before the call ends leaves the probe for the next page to read.
+     * Records that the page has a browser call of a probe open, the step the label names, so a page that stops before the call ends
+     * leaves the probe and its open steps for the next page to read. A probe may have several calls open, of one step or of several.
      * Resolves once the record is written, under the page's lock, with the function that ends the call, which counts only once.
      * Records nothing before readCrashedProbes has resolved on the page, nor while the page hides.
      */
-    public async markRunning(probe: string): Promise<() => void> {
-        this.runCounts.set(probe, (this.runCounts.get(probe) ?? 0) + 1);
+    public async markRunning(probe: string, step: string): Promise<() => void> {
+        const stepCounts = this.runCounts.get(probe) ?? new Map<string, number>();
+        stepCounts.set(step, (stepCounts.get(step) ?? 0) + 1);
+        this.runCounts.set(probe, stepCounts);
         await this.updatePageRecord();
         let ended = false;
         return (): void => {
@@ -445,12 +503,15 @@ export default class CapabilityProbeStore {
                 return;
             }
             ended = true;
-            const remaining = (this.runCounts.get(probe) ?? 1) - 1;
+            const remaining = (stepCounts.get(step) ?? 1) - 1;
             if (remaining > 0) {
-                this.runCounts.set(probe, remaining);
+                stepCounts.set(step, remaining);
                 return;
             }
-            this.runCounts.delete(probe);
+            stepCounts.delete(step);
+            if (stepCounts.size === 0) {
+                this.runCounts.delete(probe);
+            }
             void this.updatePageRecord();
         };
     }
@@ -493,6 +554,17 @@ export default class CapabilityProbeStore {
         };
     }
 
+    /**
+     * Calls the listener on the page that finds crashed probes, once per finding, after the entry records them,
+     * with only the crashes of the current fingerprint it just recorded; returns the function that removes the listener.
+     */
+    public onCrash(listener: (crashes: readonly CrashedCapabilityProbe[]) => void): () => void {
+        this.crashListeners.add(listener);
+        return (): void => {
+            this.crashListeners.delete(listener);
+        };
+    }
+
     /** Returns the stored entry's fingerprint, write time, age, probes, and crashed probes, whatever fingerprint is current, or null without an entry. */
     public readState(): CapabilityProbeStoreState | null {
         const entry = this.readEntry();
@@ -502,7 +574,7 @@ export default class CapabilityProbeStore {
         try {
             return {
                 ageMilliseconds: Math.max(0, this.now() - entry.writtenAt),
-                crashedProbes: [ ...(entry.crashed ?? []) ].sort(compareCodeUnits),
+                crashedProbes: joinProbeSteps(entry.crashed ?? []),
                 fingerprint: JSON.parse(entry.fingerprint) as CapabilityProbeFingerprint,
                 probes: Object.keys(entry.verdicts).sort(compareCodeUnits),
                 writtenAtMilliseconds: entry.writtenAt
@@ -578,12 +650,13 @@ export default class CapabilityProbeStore {
     }
 
     /**
-     * Takes the record of every other page whose lock is free, and records as crashed the probes such a page had in a browser call for this fingerprint;
-     * resolves true once done. A running page holds its lock while it has a record, so a record whose lock is free is a stopped page's,
+     * Takes the record of every other page whose lock is free, and records as crashed the probes such a page had in a browser call for this fingerprint,
+     * with the steps it had in flight, then tells the crash listeners; resolves true once done.
+     * A running page holds its lock while it has a record, so a record whose lock is free is a stopped page's,
      * and the record is taken while this page holds that lock, when no page of that id can write one.
      */
     private async recordStoppedPages(locks: CapabilityProbeLocks, fingerprint: string): Promise<boolean> {
-        const crashedProbes = new Set<string>();
+        const stoppedRuns: CrashedCapabilityProbe[] = [];
         const otherPageIds = Object.keys(this.readRuns()).filter((pageId: string): boolean => pageId !== this.pageIdValue);
         await Promise.all(otherPageIds.map((pageId: string): Promise<void> => (
             locks.request(`${PAGE_LOCK_NAME_PREFIX}${pageId}`, { ifAvailable: true }, (lock: Lock | null): void => {
@@ -598,29 +671,41 @@ export default class CapabilityProbeStore {
                 delete pages[pageId];
                 this.writeRuns(pages);
                 if (runs.fingerprint === fingerprint) {
-                    for (const probe of runs.probes) {
-                        crashedProbes.add(probe);
-                    }
+                    stoppedRuns.push(...runs.probes);
                 }
             })
         )));
-        if (crashedProbes.size > 0) {
-            this.recordCrashedProbes(fingerprint, crashedProbes);
+        if (stoppedRuns.length > 0) {
+            const crashes = joinProbeSteps(stoppedRuns);
+            this.recordCrashedProbes(fingerprint, crashes);
+            this.notifyCrash(crashes);
         }
         return true;
     }
 
-    /** Records probes as crashed for a fingerprint, and drops their verdicts, which no longer count. */
-    private recordCrashedProbes(fingerprint: string, probes: ReadonlySet<string>): void {
+    /** Records probes as crashed for a fingerprint, joining their steps with those already stored, and drops their verdicts, which no longer count. */
+    private recordCrashedProbes(fingerprint: string, crashes: readonly CrashedCapabilityProbe[]): void {
         const entry = this.readEntry();
         const current = entry?.fingerprint === fingerprint ? entry : null;
+        const crashedProbes = new Set(crashes.map(({ probe }: CrashedCapabilityProbe): string => probe));
         this.writeEntry({
-            crashed: [ ...new Set([ ...(current?.crashed ?? []), ...probes ]) ].sort(compareCodeUnits),
+            crashed: joinProbeSteps([ ...(current?.crashed ?? []), ...crashes ]),
             fingerprint,
             schema: CAPABILITY_PROBE_STORE_SCHEMA_VERSION,
-            verdicts: Object.fromEntries(Object.entries(current?.verdicts ?? {}).filter(([ probe ]: [ string, unknown ]): boolean => !probes.has(probe))),
+            verdicts: Object.fromEntries(Object.entries(current?.verdicts ?? {}).filter(([ probe ]: [ string, unknown ]): boolean => !crashedProbes.has(probe))),
             writtenAt: this.now()
         });
+    }
+
+    /** Calls every crash listener with the crashes the page just recorded; a listener that throws stops neither the others nor the recording. */
+    private notifyCrash(crashes: readonly CrashedCapabilityProbe[]): void {
+        for (const listener of this.crashListeners) {
+            try {
+                listener(crashes);
+            } catch {
+                // The crashes stay recorded, and the other listeners still hear of them
+            }
+        }
     }
 
     /**
@@ -646,7 +731,13 @@ export default class CapabilityProbeStore {
             return;
         }
         const pages = this.readRuns();
-        pages[this.pageId] = { fingerprint, probes: [ ...this.runCounts.keys() ].sort(compareCodeUnits) };
+        pages[this.pageId] = {
+            fingerprint,
+            probes: joinProbeSteps(Array.from(this.runCounts, ([ probe, stepCounts ]: [ string, ReadonlyMap<string, number> ]): CrashedCapabilityProbe => ({
+                probe,
+                steps: [ ...stepCounts.keys() ]
+            })))
+        };
         this.writeRuns(pages);
     }
 
@@ -751,7 +842,12 @@ export function clearStoredCapabilityProbeVerdicts(): void {
     defaultStore.clear();
 }
 
-/** Returns the stored verdicts' fingerprint and age, with the probes that stopped a page, or null when none are stored. */
+/** Returns the stored verdicts' fingerprint and age, with the probes that stopped a page and their steps, or null when none are stored. */
 export function readStoredCapabilityProbeVerdictState(): CapabilityProbeStoreState | null {
     return defaultStore.readState();
+}
+
+/** Calls the listener on the page that finds crashed probes, once per finding, with only the crashes it just recorded; returns the function that removes the listener. */
+export function onCapabilityProbeCrash(listener: (crashes: readonly CrashedCapabilityProbe[]) => void): () => void {
+    return defaultStore.onCrash(listener);
 }

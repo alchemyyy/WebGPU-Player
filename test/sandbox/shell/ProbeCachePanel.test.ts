@@ -7,7 +7,7 @@ import {
     getDefaultCapabilityProbeStore
 } from 'webgpu-player/capability/CapabilityProbeStore';
 
-import { createProbeCachePanel } from '../../../sandbox/src/ui/panels/ProbeCachePanel';
+import { createProbeCachePanel, describeStoredProbeVerdicts } from '../../../sandbox/src/ui/panels/ProbeCachePanel';
 import { createFakePanelContext } from './sandboxFakes';
 
 const BUILD_KEY = 'asset-key-server-start';
@@ -37,5 +37,23 @@ describe('ProbeCachePanel', () => {
         expect(globalThis.localStorage.getItem(CAPABILITY_PROBE_STORE_KEY)).toBeNull();
         expect(panel.element.textContent).toContain('Nothing stored');
         panel.destroy();
+    });
+
+    it('shows each probe that stopped a page with the steps it had in flight', () => {
+        const text = describeStoredProbeVerdicts({
+            ageMilliseconds: 0,
+            crashedProbes: [
+                { probe: 'h264-profiles', steps: [] },
+                { probe: 'native-audio', steps: [ 'check mp4a.40.2', 'decode aac' ] }
+            ],
+            fingerprint: { adapter: null, buildKey: BUILD_KEY, userAgent: 'Mozilla/5.0', userAgentData: null },
+            probes: [],
+            writtenAtMilliseconds: 0
+        });
+
+        expect(text.split('\n')).toEqual(expect.arrayContaining([
+            'crashed h264-profiles',
+            'crashed native-audio (check mp4a.40.2, decode aac)'
+        ]));
     });
 });

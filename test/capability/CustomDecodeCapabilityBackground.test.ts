@@ -359,6 +359,48 @@ describe('stored capability probe verdicts', () => {
         expect((await probe.probe(HEVC_ITEM)).video.hevc).toMatchObject({ status: 'unsupported' });
     });
 
+    it('serve a negotiation without a background rerun when refresh after use is off', async () => {
+        const storage = createMemoryStorage();
+        await createProbe(createHarness(), { store: createStore(storage) }).probe(HEVC_ITEM);
+        const storedEntries = new Map(storage.entries);
+        const laterHarness = createHarness(false);
+        const store = createStore(storage);
+        const write = vi.spyOn(store, 'write');
+        const probe = createProbe(laterHarness, { refreshAfterUse: false, store });
+
+        expect((await probe.probe(HEVC_ITEM)).video.hevc).toMatchObject({ status: 'supported' });
+        await vi.runAllTimersAsync();
+
+        expect(laterHarness.audioProbe).not.toHaveBeenCalled();
+        expect(laterHarness.videoProbe).not.toHaveBeenCalled();
+        expect(laterHarness.nativeAudioOutputProbe).not.toHaveBeenCalled();
+        expect(laterHarness.nativeVideoOutputProbe).not.toHaveBeenCalled();
+        expect(laterHarness.vectorLoader).not.toHaveBeenCalled();
+        expect(write).not.toHaveBeenCalled();
+        expect(storage.entries).toEqual(storedEntries);
+    });
+
+    it('rerun in the background again once refresh after use is turned back on', async () => {
+        const storage = createMemoryStorage();
+        await createProbe(createHarness(), { store: createStore(storage) }).probe(HEVC_ITEM);
+        const laterHarness = createHarness(false);
+        const store = createStore(storage);
+        const probe = createProbe(laterHarness, { refreshAfterUse: false, store });
+        // An MPEG-2 item takes only the stored audio verdicts
+        await probe.probe(MPEG2_ITEM);
+        await vi.runAllTimersAsync();
+        expect(laterHarness.audioProbe).not.toHaveBeenCalled();
+
+        probe.setRefreshAfterUse(true);
+        // The HEVC item reuses the page's audio results and takes the stored HEVC verdicts, which now rerun
+        expect((await probe.probe(HEVC_ITEM)).video.hevc).toMatchObject({ status: 'supported' });
+        await vi.runAllTimersAsync();
+
+        expect(laterHarness.audioProbe).not.toHaveBeenCalled();
+        expect(laterHarness.videoProbe).toHaveBeenCalled();
+        expect(await store.read('native-sdr:hevc')).toMatchObject({ status: 'unsupported' });
+    });
+
     it('are dropped after a start they admitted fails, so the next negotiation probes again', async () => {
         const storage = createMemoryStorage();
         await createProbe(createHarness(), { store: createStore(storage) }).probe(HEVC_ITEM);
@@ -411,7 +453,8 @@ describe('a probe that stops the page', () => {
 
         const capabilities = await probe.probe(MPEG2_ITEM);
 
-        expect(store.readState()?.crashedProbes).toEqual([ 'native-audio' ]);
+        // The page stopped in the AAC decode, the one heavy step its probe had in flight
+        expect(store.readState()?.crashedProbes).toEqual([ { probe: 'native-audio', steps: [ 'decode aac' ] } ]);
         expect(capabilities.audio.aac).toMatchObject({ reason: 'not-probed', status: 'not-probed' });
         expect(capabilities.probeStates?.['native-audio']).toBe('not-probed');
         expect(countOutputProbes(harness, AAC_CODEC_STRING)).toBe(0);
@@ -433,9 +476,12 @@ describe('a probe that stops the page', () => {
 
         const harness = createHarness();
         const store = createPageStore(storage, locks, 'page-2');
+        const crashListener = vi.fn();
+        store.onCrash(crashListener);
         const capabilities = await createProbe(harness, { store, waitForIdle: createIdleGate().waitForIdle }).probe(HEVC_ITEM);
 
-        expect(store.readState()?.crashedProbes).toEqual([ 'native-sdr:hevc' ]);
+        expect(crashListener).toHaveBeenCalledExactlyOnceWith([ { probe: 'native-sdr:hevc', steps: [ 'decode hevc' ] } ]);
+        expect(store.readState()?.crashedProbes).toEqual([ { probe: 'native-sdr:hevc', steps: [ 'decode hevc' ] } ]);
         expect(capabilities.video.hevc).toMatchObject({ status: 'not-probed' });
         expect(capabilities.probeStates?.['native-sdr:hevc']).toBe('not-probed');
         expect(harness.nativeVideoOutputProbe.mock.calls.map(([ probeRequest ]) => probeRequest.expectedCodedWidth)).not.toContain(1_920);
