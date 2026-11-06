@@ -375,6 +375,7 @@ Every stale callback is dropped by a generation or revision check:
 - Every seek, audio switch, and paused repaint starts a new run in the session's worker, and each run opens its input again, over the last run's URL source when it reads the same URL (`demux/URLSourceRetention.ts`).
   The source keeps its cache, with the container's header pinned in it and its index once read, and its open responses, so a seek reads the header and index from memory and reads on near where the last run stopped.
   Matroska Cues are read at the first lookup past the start, so a run that starts at 0 never reads the end of the file.
+  An MP4 or MOV movie box is read without the sample tables of a large track other than the first video and audio track, which that track reads at its first lookup and pins like the Cues, unless the source only reads forward.
   A run's stop cancels the reads its input still waits for; a failed run's source, or one no run takes within 5 s, is released, and only by the run, or the prefetch, that took it last.
   After the first preparation over a source, its read-ahead holds 5 s of media and its cache 15 s, at the media's size over its duration, within 8 to 64 MiB and 32 to 192 MiB; a file's cache stays 32 MiB.
 - Decoded PCM gain (volume cubed times normalization) is applied after the limiter and is not capped, so a boost can clip; clipping is counted.

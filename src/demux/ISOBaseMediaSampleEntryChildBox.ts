@@ -1,7 +1,6 @@
 import type { InputVideoTrack } from 'mediabunny';
 
-// The boxes from a track's sample table to its first sample entry
-const SAMPLE_TABLE_BOX = 'stbl';
+// The box whose entries describe a track's samples
 const SAMPLE_DESCRIPTION_BOX = 'stsd';
 const BOX_HEADER_BYTE_LENGTH = 8;
 const LARGE_BOX_HEADER_BYTE_LENGTH = 16;
@@ -34,8 +33,8 @@ type BoxResult =
     | Readonly<{ box: ISOBaseMediaBox, status: 'read' }>
     | Readonly<{ failure: string, status: 'failed' }>;
 
-type RetainedSampleTable =
-    | Readonly<{ bytes: Uint8Array, sampleTableStart: number, status: 'read' }>
+type SampleDescriptionBytes =
+    | Readonly<{ bytes: Uint8Array, status: 'read' }>
     | Readonly<{ failure: string, status: 'failed' }>;
 
 function fail(failure: string): Readonly<{ failure: string, status: 'failed' }> {
@@ -93,64 +92,43 @@ function findChildBox(bytes: Uint8Array, start: number, end: number, type: strin
 }
 
 /**
- * Returns the moov bytes Mediabunny 1.52.2 keeps after reading a file's metadata, and where the track's stbl box starts in them.
- * Mediabunny reads a track's samples but skips the configuration boxes of codecs it does not decode, and the boxes it does not use, so contain the internal access here:
- * the demuxer's moovSlice keeps the moov bytes, and the track records its stbl box's file position.
+ * Returns the copy of the track's stsd box, header included, that Mediabunny's ISO base media demuxer keeps on each track.
+ * Mediabunny reads a track's samples but skips the configuration boxes of codecs it does not decode, and the boxes it does not use, so contain the internal access here.
  */
-function readRetainedSampleTable(track: InputVideoTrack): RetainedSampleTable {
+function readSampleDescriptionBytes(track: InputVideoTrack): SampleDescriptionBytes {
     const backing = (track as unknown as { _backing?: unknown })._backing;
     const internalTrack = isRecord(backing) ? backing.internalTrack : null;
-    if (!isRecord(internalTrack) || !isRecord(internalTrack.demuxer)) {
-        return fail('sample-table-unavailable: no ISO base media track');
+    if (!isRecord(internalTrack)) {
+        return fail('sample-description-unavailable: no ISO base media track');
     }
-    const moovSlice = internalTrack.demuxer.moovSlice;
-    const sampleTableFilePosition = internalTrack.sampleTableByteOffset;
-    if (
-        !isRecord(moovSlice)
-        || !(moovSlice.bytes instanceof Uint8Array)
-        || typeof moovSlice.filePos !== 'number'
-        || typeof moovSlice.bufferPos !== 'number'
-        || typeof sampleTableFilePosition !== 'number'
-    ) {
-        return fail('sample-table-unavailable: no retained moov');
+    const bytes = internalTrack.sampleDescriptionBytes;
+    if (!(bytes instanceof Uint8Array)) {
+        return fail('sample-description-unavailable: no retained stsd');
     }
-    // A slice's bytes start at the file position its read position runs ahead of
-    const bytesFilePosition = moovSlice.filePos - moovSlice.bufferPos;
-    const sampleTableStart = sampleTableFilePosition - bytesFilePosition;
-    if (!Number.isSafeInteger(sampleTableStart) || sampleTableStart < 0 || sampleTableStart >= moovSlice.bytes.byteLength) {
-        return fail(`sample-table-unavailable: stbl at ${sampleTableFilePosition}`);
-    }
-    return { bytes: moovSlice.bytes, sampleTableStart, status: 'read' };
+    return { bytes, status: 'read' };
 }
 
 /**
- * Reads a child box of an ISO base media track's first sample entry, a visual sample entry of one of the given types, from the moov bytes Mediabunny keeps.
+ * Reads a child box of an ISO base media track's first sample entry, a visual sample entry of one of the given types, from the stsd box Mediabunny keeps.
  * The payload is a view of those bytes, so a caller copies what it keeps.
- * Fails when the track's sample table is unavailable or malformed, or its first entry is of another type; a missing child box is no failure here.
+ * Fails when the track's sample description is unavailable or malformed, or its first entry is of another type; a missing child box is no failure here.
  */
 export function readISOBaseMediaSampleEntryChildBox(
     track: InputVideoTrack,
     sampleEntryTypes: readonly string[],
     childBoxType: string
 ): ISOBaseMediaSampleEntryChildBox {
-    const sampleTable = readRetainedSampleTable(track);
-    if (sampleTable.status === 'failed') {
-        return sampleTable;
+    const sampleDescriptionBytes = readSampleDescriptionBytes(track);
+    if (sampleDescriptionBytes.status === 'failed') {
+        return sampleDescriptionBytes;
     }
-    const bytes = sampleTable.bytes;
-    const sampleTableBox = readBox(bytes, sampleTable.sampleTableStart, bytes.byteLength);
-    if (sampleTableBox.status === 'failed') {
-        return sampleTableBox;
-    }
-    if (sampleTableBox.box.type !== SAMPLE_TABLE_BOX) {
-        return fail(`sample-table-box: ${sampleTableBox.box.type}`);
-    }
-    const sampleDescription = findChildBox(bytes, sampleTableBox.box.dataStart, sampleTableBox.box.dataEnd, SAMPLE_DESCRIPTION_BOX);
-    if (sampleDescription === null) {
-        return fail(`${SAMPLE_DESCRIPTION_BOX}-missing`);
-    }
+    const bytes = sampleDescriptionBytes.bytes;
+    const sampleDescription = readBox(bytes, 0, bytes.byteLength);
     if (sampleDescription.status === 'failed') {
         return sampleDescription;
+    }
+    if (sampleDescription.box.type !== SAMPLE_DESCRIPTION_BOX) {
+        return fail(`sample-description-box: ${sampleDescription.box.type}`);
     }
     const firstEntryStart = sampleDescription.box.dataStart + FULL_BOX_HEADER_BYTE_LENGTH + SAMPLE_DESCRIPTION_ENTRY_COUNT_BYTE_LENGTH;
     const sampleEntry = readBox(bytes, firstEntryStart, sampleDescription.box.dataEnd);
