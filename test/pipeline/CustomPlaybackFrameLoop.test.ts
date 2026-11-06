@@ -23,6 +23,9 @@ const FIRST_ANIMATION_FRAME_MILLISECONDS = 1_000;
 const SECOND_ANIMATION_FRAME_MILLISECONDS = 1_016.7;
 const PAUSED_ANIMATION_FRAME_MILLISECONDS = 1_033.3;
 const DOUBLE_RATE = 2;
+// The display refresh the presenter measures: 60 Hz, then 120 Hz once the page moved to another display
+const MEASURED_60_HZ_REFRESH_MICROSECONDS = 16_667;
+const MEASURED_120_HZ_REFRESH_MICROSECONDS = 8_333;
 
 type FakeController = {
     drainBackgroundVideo: Mock
@@ -32,6 +35,7 @@ type FakeController = {
     notifyFramePresented: Mock
     playbackRate: number
     playbackState: string
+    setDisplayRefreshInterval: Mock
     setPageVisibility: Mock
     setVideoPresentationPreparer: Mock
     takeFrame: Mock
@@ -41,6 +45,7 @@ type FakeController = {
 
 type FakePresenter = {
     awaitsLookaheadFrame: Mock
+    getDisplayRefreshIntervalMicroseconds: Mock
     getFrameLookaheadMicroseconds: Mock
     getTelemetry: Mock
     presentDecodedFrame: Mock
@@ -78,6 +83,7 @@ function createHarness(): LoopHarness {
         notifyFramePresented: vi.fn(() => true),
         playbackRate: 1,
         playbackState: 'playing',
+        setDisplayRefreshInterval: vi.fn(),
         setPageVisibility: vi.fn(() => false),
         setVideoPresentationPreparer: vi.fn((preparer: (facts: DecodedVideoStreamFacts) => Promise<void>): () => void => {
             controller.videoPresentationPreparer = preparer;
@@ -90,6 +96,7 @@ function createHarness(): LoopHarness {
     };
     const presenter: FakePresenter = {
         awaitsLookaheadFrame: vi.fn(() => false),
+        getDisplayRefreshIntervalMicroseconds: vi.fn((): number | null => null),
         getFrameLookaheadMicroseconds: vi.fn(() => NO_LOOKAHEAD_MICROSECONDS),
         getTelemetry: vi.fn(() => ({ state: 'presenting' })),
         presentDecodedFrame: vi.fn(() => true),
@@ -294,6 +301,30 @@ describe('CustomPlaybackFrameLoop', () => {
         // The lookahead a display-rate plan takes follows the refresh the presenter just measured
         expect(presenter.recordAnimationFrame.mock.invocationCallOrder[0]).toBeLessThan(presenter.getFrameLookaheadMicroseconds.mock.invocationCallOrder[0]);
         expect(presenter.recordAnimationFrame.mock.invocationCallOrder[0]).toBeLessThan(controller.takeFrame.mock.invocationCallOrder[0]);
+    });
+
+    it('hands the controller the presenter\'s measured display refresh after recording each animation frame, only when it changed', () => {
+        const { controller, loop, presenter } = createHarness();
+        presenter.getDisplayRefreshIntervalMicroseconds
+            .mockReturnValueOnce(null)
+            .mockReturnValueOnce(MEASURED_60_HZ_REFRESH_MICROSECONDS)
+            .mockReturnValueOnce(MEASURED_60_HZ_REFRESH_MICROSECONDS)
+            .mockReturnValue(MEASURED_120_HZ_REFRESH_MICROSECONDS);
+
+        loop.schedule(true);
+        for (let frameIndex = 0; frameIndex < 4; frameIndex += 1) {
+            runAnimationFrames(FIRST_ANIMATION_FRAME_MILLISECONDS + frameIndex * 16.7);
+        }
+
+        // Before a measurement the controller keeps the refresh it assumes
+        expect(controller.setDisplayRefreshInterval.mock.calls).toEqual([
+            [ MEASURED_60_HZ_REFRESH_MICROSECONDS ],
+            [ MEASURED_120_HZ_REFRESH_MICROSECONDS ]
+        ]);
+        expect(presenter.recordAnimationFrame.mock.invocationCallOrder[1])
+            .toBeLessThan(controller.setDisplayRefreshInterval.mock.invocationCallOrder[0]);
+        expect(controller.setDisplayRefreshInterval.mock.invocationCallOrder[0])
+            .toBeLessThan(controller.takeFrame.mock.invocationCallOrder[1]);
     });
 
     it('polls while paused until a deinterlacing presenter holds the frame after the one it shows, or video decoding ended', () => {

@@ -93,6 +93,8 @@ About ffmpeg.wasm:
 - The timeline seeks on click.
   While it is dragged, it seeks at most once per `SCRUB_SEEK_INTERVAL_MILLISECONDS`, in `sandbox/src/ui/panels/TransportBarPanel.ts`, and once more where the drag ends.
 - The playhead and the time follow the session clock every animation frame, while the rest of the state refreshes a few times a second.
+- The transport bar's playback rate select offers the add-on's rates, 0.1x to 16x, through `SandboxSessionCommands.setPlaybackRate`, and every later start, such as a new route's, keeps the rate.
+  A change that restarts the generation, across the audible range's boundary (see [Clock](architecture.md#clock)), is handled as a seek's result is.
 - The audio selector lists the media's audio tracks.
   The subtitle selector lists its text-based subtitle tracks and the subtitle files beside it, and leaves out image-based tracks such as PGS and DVD subtitles.
   Both have an Off choice.
@@ -157,6 +159,7 @@ It is in `sandbox/src/ui/panels/DecoderPackagePanel.ts`, over `sandbox/src/sessi
   While it is on, the plan ends with `Presentation black bars`, a compute pass `per source line` that reads the source and writes each row's and column's statistics to a storage buffer (see [Black bars](architecture.md#black-bars)); the picture the bars leave then fits the canvas, so the crop shows on a canvas of another shape than the frame's.
 - Playback info groups the media and its tracks, the route and the override, the clock, video decode, audio, presentation, authorization, and the failure log, newest first.
   Its sections collapse, and stay collapsed across refreshes.
+  The clock section's source row names `media clock, without audio at this playback rate` while a rate outside the audible range sets the audio track aside.
   The presentation section's Black bars row shows the bars the presenter crops, in the frame's samples: `off` while the crop is off, `none` until bars are found, else `top`, `bottom`, `left`, and `right`, and the standard aspect ratio the picture presents at, such as `2.39:1 Modern Anamorphic Scope`, when it rounds to one.
   On the frame-pool route, video decode adds a GPU decoder row: its name, state, and failure, its pool's free slots, and its decoded, held-back, reused, and stream change counts.
 - The shader panel adds the [bundled passes](bundled-passes.md), passes from files, or files dropped on it.

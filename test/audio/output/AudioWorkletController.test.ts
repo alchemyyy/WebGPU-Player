@@ -72,6 +72,7 @@ function createTelemetry(overrides: Partial<AudioWorkletTelemetry> = {}): AudioW
         outputFrames: 4,
         overflowEvents: 0,
         overflowFrames: 0,
+        playbackRate: 1,
         playing: true,
         queuedFrames: 2,
         reason: 'periodic',
@@ -236,6 +237,34 @@ describe('AudioWorkletController', () => {
         expect(() => controller.setVolume(Number.NaN)).toThrow(RangeError);
     });
 
+    it('posts a time-stretch rate, which holds until the lease deactivates', async () => {
+        const harness = createAudioNodeHarness();
+        const controller = new AudioWorkletController(harness.node, configuration);
+        expect(controller.playbackRate).toBe(1);
+
+        controller.setPlaybackRate(2);
+        controller.setPlaybackRate(0.25);
+
+        expect(harness.port.messages.map(entry => entry.message)).toEqual([
+            { playbackRate: 2, type: 'rate' },
+            { playbackRate: 0.25, type: 'rate' }
+        ]);
+        expect(controller.playbackRate).toBe(0.25);
+        // A flush starts a generation at the same rate
+        controller.flush(secondsToMicroseconds(1));
+        expect(controller.playbackRate).toBe(0.25);
+        for (const invalidPlaybackRate of [ 0, -1, Number.NaN, Number.POSITIVE_INFINITY ]) {
+            expect(() => controller.setPlaybackRate(invalidPlaybackRate)).toThrow(RangeError);
+        }
+        expect(harness.port.messages).toHaveLength(3);
+
+        const deactivation = controller.deactivate(81);
+        expect(() => controller.setPlaybackRate(2)).toThrow('deactivating');
+        harness.port.dispatchDeactivated(81);
+        await deactivation;
+        expect(controller.playbackRate).toBe(1);
+    });
+
     it('forwards trusted telemetry and supports deterministic unsubscribe', () => {
         const harness = createAudioNodeHarness();
         const controller = new AudioWorkletController(harness.node, configuration);
@@ -260,6 +289,11 @@ describe('AudioWorkletController', () => {
                 signal: { ...createTelemetry().signal, sampleSquareSum: Number.NaN }
             }
         }));
+        for (const playbackRate of [ undefined, 0, Number.NaN ]) {
+            harness.port.dispatchEvent(new MessageEvent('message', {
+                data: { ...createTelemetry(), playbackRate }
+            }));
+        }
         expect(listener).toHaveBeenCalledOnce();
         expect(listener).toHaveBeenCalledWith(telemetry);
         expect(controller.getTelemetry()).toEqual(telemetry);

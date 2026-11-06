@@ -54,7 +54,6 @@ export type CustomPlaybackFallbackReason =
     | 'ended-before-ready'
     | 'lifecycle-failed'
     | 'playback-stalled'
-    | 'playback-rate-unsupported'
     | 'startup-timeout';
 
 export type CustomPlaybackFallbackDisposition =
@@ -144,6 +143,8 @@ export type CustomAudioOutput = {
     /** Rebuilds the output stage for a new layout on the same device and returns its bridge */
     reconfigure?: (configuration: DecodeWorkerAudioConfiguration) => Promise<CustomDecodeAudioBridge>
     setMuted: (muted: boolean) => void
+    /** Time-stretches the output's audio to a rate within the audible custom playback range, keeping its pitch */
+    setPlaybackRate?: (playbackRate: number) => void
     setPlaying: (playing: boolean) => Promise<void> | void
     setVolume: (volume: number) => void
 };
@@ -178,7 +179,15 @@ export type CustomVideoDecodeSession = {
     setNativeAudioPlaying?: (playing: boolean) => Promise<void>
     setNativeAudioVolume?: (volume: number) => void
     resyncAudio?: (options: CustomDecodeAudioResyncOptions) => Promise<number | null>
-    resyncVideo?: (targetTimeMicroseconds: Microseconds) => boolean
+    /**
+     * Restarts video alone at the target: from the keyframe preceding it, or with 'next' from the first key packet at or after it,
+     * whose key frame presents first. Returns whether a resync was requested.
+     */
+    resyncVideo?: (targetTimeMicroseconds: Microseconds, keyframe?: 'next') => boolean
+    /** Plays native media audio at the rate and scales the decoded audio fill thresholds to it, for this and every later generation */
+    setPlaybackRate?: (playbackRate: number) => void
+    /** Decimates decoded video to one frame per interval of media time, for this and every later generation; null presents every frame */
+    setVideoPresentationInterval?: (intervalMicroseconds: Microseconds | null) => void
     start: (options: CustomDecodeSessionStartOptions) => void
     stop: () => Promise<void>
     suspendVideo?: () => boolean
@@ -242,6 +251,8 @@ export type CustomPlaybackTelemetry = {
     /** A live output layout switch is waiting for its new audio */
     audioOutputSwitchPending: boolean
     audioPath: 'disabled' | 'pending' | 'ready' | 'unavailable'
+    /** The requested audio track is set aside because the playback rate is outside the audible range */
+    audioSuspendedForPlaybackRate: boolean
     clock: MediaClockSnapshot
     currentTimeMicroseconds: Microseconds
     discardedStaleVideoFrameCount: number

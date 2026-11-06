@@ -34,6 +34,8 @@ export default class CustomPlaybackFrameLoop {
     private presentationGeneration: number;
     private frameCallback: number | null = null;
     private backgroundDrainTimer: ReturnType<typeof globalThis.setInterval> | null = null;
+    // The display refresh interval the controller last received, which the presenter measures
+    private displayRefreshIntervalMicroseconds: Microseconds | null = null;
     private readonly unregisterPresentationPreparer: () => void;
 
     constructor(options: CustomPlaybackFrameLoopOptions) {
@@ -122,7 +124,8 @@ export default class CustomPlaybackFrameLoop {
      * Takes the frame due at the clock, a lookahead ahead of it while the presenter deinterlaces or draws at the display's rate, and presents it;
      * a tick without a frame lets the presenter redraw the field, frame, or refresh the clock reached from its history.
      * Every tick first hands the presenter its animation frame's time, which measures the display's refresh, and the rate the clock advances at:
-     * its playback rate while playing, and 0 otherwise, so the tick after a pause redraws the frame the clock stopped in.
+     * its playback rate while playing, and 0 otherwise, so the tick after a pause redraws the frame the clock stopped in; a change of the measured
+     * refresh then reaches the controller, which counts its video presentation interval in it.
      */
     private handleAnimationFrame(generation: number, continueWhilePlaying: boolean, timeMilliseconds: DOMHighResTimeStamp): void {
         this.frameCallback = null;
@@ -131,6 +134,11 @@ export default class CustomPlaybackFrameLoop {
         }
 
         this.presenter.recordAnimationFrame(timeMilliseconds, this.controller.playbackState === 'playing' ? this.controller.playbackRate : 0);
+        const displayRefreshIntervalMicroseconds = this.presenter.getDisplayRefreshIntervalMicroseconds();
+        if (displayRefreshIntervalMicroseconds !== this.displayRefreshIntervalMicroseconds) {
+            this.displayRefreshIntervalMicroseconds = displayRefreshIntervalMicroseconds;
+            this.controller.setDisplayRefreshInterval(displayRefreshIntervalMicroseconds);
+        }
         const targetTimeMicroseconds = this.controller.getPresentationTargetTime();
         const lookaheadMicroseconds = requireMicroseconds(this.presenter.getFrameLookaheadMicroseconds(), 'Presentation lookahead');
         const decodedFrame = this.controller.takeFrame(targetTimeMicroseconds, lookaheadMicroseconds);

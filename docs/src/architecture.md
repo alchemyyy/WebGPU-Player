@@ -40,6 +40,14 @@ The engine's sources follow the stages a custom session runs: `src/demux/` reads
 - No audio: `MediaClock` alone, held while video starves.
   An audio track that ends before the video hands the clock to the `MediaClock` once its tail has played out.
 
+The clock runs at the requested playback rate, from 1/16x to 16x (`pipeline/CustomPlaybackRate.ts`), 1 by default.
+From 0.25x to 4x audio plays at that rate and stays the master: the worklet time-stretches the decoded PCM with its pitch kept (`AudioWorkletTimeStretchSource.ts`), and native-media audio plays at the rate on its `<audio>` element.
+Outside that range a generation plays without audio, and the `MediaClock` alone runs it, as for a source without audio.
+The worklet's ring holds media-rate PCM, and the stretcher reads it at the rate, so its telemetry advances media time by the rate per output frame and reports the rate each frame rendered at; `BrowserCustomAudioOutput` scales the physical output correction, which is context time, by that rate into media time.
+At 1x with nothing left in the stretcher the worklet copies the ring sample for sample.
+A change to or from 1x continues the input, or crossfades one hop into it, so media time moves at most the 15 ms search half-width.
+When the ring cannot feed the stretcher, the frames it holds play out, the rest of its input at 1x, before the quantum counts as an underflow, so a track's tail is never held back.
+
 Video is pulled: each rAF draws the newest frame at or before the clock, and hands the presenter its timestamp and the clock's rate, from which it measures the display's refresh rate.
 Queued frames hold off video starvation, except before a generation or a resync takes its first frame: then frames whose earliest is more than the 2 s decode lag bound past the clock, while they hold every video credit of the route, count as starvation, so the stall bound falls back instead of waiting for the clock to reach them.
 After the first frame, frames that far ahead are a real gap in the video, such as a still or a slideshow, which the last frame holds as before.
@@ -116,6 +124,18 @@ Video credits:
   The frame that ends the preroll posts once its own fence completes, so its presentation never waits behind the preroll's decode work, and each wait ends after 250 ms at most.
   The trace records each wait as `video-decode-fence`.
 
+Video presentation interval, above 1x:
+
+- The display shows at most one frame per refresh, so above 1x the controller hands the session a presentation interval: the rate times the measured refresh interval (`WebGPUPresenter.getDisplayRefreshIntervalMicroseconds`, which the frame loop passes on when it changes), 60 Hz until measured, rounded to a whole microsecond.
+  At or below 1x there is none; the session keeps the interval for later generations and sends `set-video-presentation-interval` to the running one.
+- After an attempt's first presented frame, a frame within which no multiple of the interval falls (`VideoPresentationInterval.ts`, in container time) is never posted.
+  The owned paths close it unposted without spending a credit and record `video-frame-decimated`; decimated frames count toward the preroll's fenced batches of 4, so the decoder stays at most two batches ahead of the GPU.
+  The sample cursor route (H.264, VP8) closes it and keeps the credit it took, and raw planes never copy it.
+  Nothing is decimated while a Dolby Vision enhancement layer decodes, and the frame-pool route never decimates in the worker, because a package's parser must see every packet; there the page's `takeFrame` drops the frames it never presents.
+- The owned HEVC path does not decode a picture no later picture references (`HEVCTemporalSubLayers.ts`: every base-layer VCL NAL unit a sub-layer non-reference type at the highest temporal sub-layer every SPS declares) when it can never present: it ends at or before the attempt's start, or it follows the first presented frame off the interval's grid.
+  Its HDR10+ and RPU metadata is still read in decode order, the trace records `video-packet-skipped`, and a seek's preroll skips such pictures too.
+  An SPS that does not parse leaves the highest sub-layer unknown for the attempt, and nothing is skipped; nothing is skipped while an enhancement layer decodes either.
+
 Raw planes:
 
 - A decoded `VideoFrame` is copied once, into a buffer of 256-byte-aligned rows, which the `frame` message transfers to the page.
@@ -138,6 +158,12 @@ Lag guard, in `CustomPlaybackController`:
 - A frame more than 2 s behind the clock is discarded and re-credited, and a video wait starts.
 - An empty queue for at least 100 ms while playing also starts a wait.
 - A wait of 10 s or more fails with `playback-stalled`.
+- Above 1x the decoder may never catch up with the clock, so video jumps ahead instead: a taken frame more than 500 ms of wall time behind, times the rate in media time and at most the 2 s bound, is discarded (`decode-lag`), and video restarts at the next keyframe at or after 250 ms of wall time ahead of the clock (`session.resyncVideo(target, 'next')`), recorded as `video-resync`.
+  A missing frame jumps the same way when the decoder is that far behind and no jump is pending.
+  The keyframe becomes the attempt's start and presents first, even when it arrives later than the lag allows, so every jump shows a picture and ends the wait; a frame after it that still lags jumps again.
+  A stream without a keyframe there ends its video.
+  While a jump is pending the stranded-queue check and the catch-up discard are off, since its queue starts ahead of the clock by design.
+  At or below 1x, and when the session declines the jump, the waits above apply.
 
 Hidden page, through `setPageVisibility` and `drainBackgroundVideo`:
 
@@ -294,7 +320,10 @@ The backing size is the CSS size times the device pixel ratio, capped by `maxTex
   The host triggers the switch, for example when the output reports `sinkchange` with a different channel count.
 - Pause: the clock pauses and the worklet is gated to silence.
   The AudioContext keeps running; the pool suspends it only when idle.
-  A playback rate other than 1 with audio falls back to the HTML player in the same session.
+- Playback rate (`controller.setPlaybackRate`): every generation of the controller keeps the requested rate, across seeks, track switches, `play`, and stop.
+  A change applies live to the clock, the worklet's stretcher or the `<audio>` element, and the presentation interval, unless it crosses the audible range's boundary while the source has an audio track: then the generation restarts as a seek at the current time, with or without audio.
+  A generation without audio keeps the requested audio selection aside, and seeks, track switches, and the restart back into the audible range take it up again; a downmix or layout change meanwhile only records itself in that selection.
+  The decoded PCM startup and resync fill scales to 100 ms times the rate, at most 200 ms, the live layout switch's lead to 250 ms times the rate in media time, and its start waits for the target at the rate.
 - GPU device loss: one recovery per session.
   The presenter first tells its host's device loss handler, its third constructor argument, the browser's reason and message; a device it destroys itself is never reported.
   The new device must re-authorize the active HDR, Dolby Vision, or raw route before it draws.
@@ -346,7 +375,7 @@ The backing size is the CSS size times the device pixel ratio, capped by `maxTex
 
 | Disposition | Reasons |
 | --- | --- |
-| HTML player, same session | audio-output-failed, audio-output-unavailable, lifecycle-failed, playback-rate-unsupported |
+| HTML player, same session | audio-output-failed, audio-output-unavailable, lifecycle-failed |
 | Renegotiate the source | decode-failed, ended-before-ready, network-failed, playback-stalled, range-unsupported, source-unsupported, startup-timeout |
 
 - The host carries out each disposition, and may renegotiate on every reason when its HTML player cannot play the source.

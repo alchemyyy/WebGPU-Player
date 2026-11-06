@@ -54,6 +54,8 @@ const HEVC_PRESENTATION_FRAMES = [ 2, 5, 4, 3, 8, 7, 6, 11, 10, 9, 13, 12 ];
 const REORDER_DEPTH = 2;
 // Between the HEVC vector's leading pictures at 6 and 7 and their CRA picture at 8, whose group starts at packet 4
 const HEVC_LEADING_PICTURE_FRAME = 7.5;
+// The vector's pictures no later picture references, in its highest temporal sub-layer, that end before that start, which are never decoded
+const HEVC_UNREFERENCED_PRE_START_FRAMES = [ 3, 6 ];
 const SAFARI_USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15';
 
 /**
@@ -229,7 +231,9 @@ describe('the playback worker on AVI', () => {
             startTimeMicroseconds: toFrameMicroseconds(HEVC_LEADING_PICTURE_FRAME)
         }));
 
-        expect(getDecodedChunkFrames()).toEqual(HEVC_PRESENTATION_FRAMES);
+        expect(getDecodedChunkFrames()).toEqual(HEVC_PRESENTATION_FRAMES.filter(
+            (frame: number): boolean => !HEVC_UNREFERENCED_PRE_START_FRAMES.includes(frame)
+        ));
         const frameTimes = getFrameResponses(responses).map(response => response.mediaTimeMicroseconds);
         expectFrameTimes(frameTimes, [ 7, 8, 9, 10, 11, 12, 13 ].slice(-frameTimes.length));
         expect(frameTimes[0]).toBeLessThanOrEqual(toFrameMicroseconds(HEVC_LEADING_PICTURE_FRAME));

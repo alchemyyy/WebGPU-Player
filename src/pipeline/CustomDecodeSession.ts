@@ -105,6 +105,8 @@ const IDLE_DECODE_WORKER_RELEASE_DELAY_MILLISECONDS = 30_000;
 // How long a source prefetch waits for a session's worker to park, as long as a worker keeps a prefetched source no run takes
 const SOURCE_PREFETCH_WAIT_MILLISECONDS = URL_SOURCE_RELEASE_DELAY_MILLISECONDS;
 const MINIMUM_DECODED_AUDIO_STARTUP_BUFFER_MICROSECONDS = 100_000;
+// Above rate 1 the startup buffer scales with the rate, so it lasts as long, up to this much media
+const MAXIMUM_DECODED_AUDIO_STARTUP_BUFFER_MICROSECONDS = 200_000;
 const FRAME_QUEUE_BOUND_FAILURE = 'The custom decode frame queue exceeded its bound';
 const UNEXPECTED_FRAME_OUTPUT_MODE_FAILURE = 'The custom decode worker returned an unexpected video output mode';
 
@@ -709,6 +711,13 @@ function getAudioMetadataLayoutStartField(
         {};
 }
 
+/** Returns the start request's video presentation interval field, which a start carries only while frames are decimated. */
+function getVideoPresentationIntervalStartField(
+    intervalMicroseconds: Microseconds | null
+): { videoPresentationIntervalMicroseconds?: Microseconds } {
+    return intervalMicroseconds === null ? {} : { videoPresentationIntervalMicroseconds: intervalMicroseconds };
+}
+
 /** Returns the start request's parser field for a decoder package with a parser, which the decode worker runs on its parser coordinator worker. */
 function getGPUVideoParserStartField(decoder: GPUVideoDecoderSelection): { gpuVideoParser?: DecodeWorkerGPUVideoParser } {
     const decoderPackage = decoder.package;
@@ -940,6 +949,10 @@ export default class CustomDecodeSession {
      * for another backend, or with too many runs unwinding
      */
     private workerRecord: WorkerRecord | null = null;
+    /** The rate the page plays at, which native audio plays at and the decoded audio fill thresholds scale by */
+    private playbackRate = 1;
+    /** The interval every start carries and the running generation decimates by; null posts every frame */
+    private videoPresentationIntervalMicroseconds: Microseconds | null = null;
 
     /** Creates an idle session; its first start creates the decode worker. */
     public constructor(
@@ -1140,6 +1153,51 @@ export default class CustomDecodeSession {
         this.activeNativeAudioBridge?.setMuted(muted);
     }
 
+    /**
+     * Plays native media audio at the rate, and scales the decoded audio a start or an audio resync buffers before it reports to it,
+     * for the running generation and every later one.
+     */
+    public setPlaybackRate(playbackRate: number): void {
+        if (!Number.isFinite(playbackRate) || playbackRate <= 0) {
+            throw new RangeError('Custom decode playback rate must be finite and positive');
+        }
+        this.playbackRate = playbackRate;
+        this.activeNativeAudioBridge?.setPlaybackRate(playbackRate);
+    }
+
+    /**
+     * Has the decoding routes post only the frames some multiple of the interval of media time falls within, after each video attempt's first,
+     * for the running generation and every later one; null posts every frame.
+     */
+    public setVideoPresentationInterval(intervalMicroseconds: Microseconds | null): void {
+        if (intervalMicroseconds !== null && (!Number.isSafeInteger(intervalMicroseconds) || intervalMicroseconds <= 0)) {
+            throw new RangeError('Video presentation interval must be positive integer microseconds or null');
+        }
+        this.videoPresentationIntervalMicroseconds = intervalMicroseconds;
+        const generationRecord = this.activeGeneration;
+        if (!generationRecord || !this.isGenerationCurrent(generationRecord)) {
+            return;
+        }
+        if (!generationRecord.workerRecord) {
+            // A start still waiting for its worker takes the newest interval
+            if (intervalMicroseconds === null) {
+                delete generationRecord.startRequest.videoPresentationIntervalMicroseconds;
+            } else {
+                generationRecord.startRequest.videoPresentationIntervalMicroseconds = intervalMicroseconds;
+            }
+            return;
+        }
+        try {
+            this.postRequest(generationRecord, {
+                generation: generationRecord.generation,
+                type: 'set-video-presentation-interval',
+                videoPresentationIntervalMicroseconds: intervalMicroseconds
+            });
+        } catch {
+            this.handleDecodeProtocolFailure(generationRecord, 'Unable to update the custom video presentation interval');
+        }
+    }
+
     /** Transfers the newest decoded frame at or before the HTML clock time. */
     public takeFrame(targetTimeMicroseconds: Microseconds): DecodedPresentationFrame | null {
         requireMicroseconds(targetTimeMicroseconds, 'Presentation target time');
@@ -1200,10 +1258,10 @@ export default class CustomDecodeSession {
     }
 
     /**
-     * Restarts only video decode from the keyframe preceding the target.
+     * Restarts only video decode from the keyframe preceding the target, or with 'next' from the first key packet at or after it, which presents first.
      * Audio is untouched; queued frames from earlier video epochs are discarded.
      */
-    public resyncVideo(targetTimeMicroseconds: Microseconds): boolean {
+    public resyncVideo(targetTimeMicroseconds: Microseconds, keyframe?: 'next'): boolean {
         requireMicroseconds(targetTimeMicroseconds, 'Video resync target time');
         const generationRecord = this.beginVideoEpoch();
         if (!generationRecord) {
@@ -1213,6 +1271,7 @@ export default class CustomDecodeSession {
         try {
             this.postRequest(generationRecord, {
                 generation: generationRecord.generation,
+                ...(keyframe ? { keyframe } : {}),
                 targetTimeMicroseconds,
                 type: 'resync-video',
                 videoEpoch: generationRecord.videoEpoch
@@ -1458,6 +1517,7 @@ export default class CustomDecodeSession {
             type: 'start',
             videoDecoderBackend: options.videoDecoderBackend,
             videoOutputMode: options.videoOutputMode,
+            ...getVideoPresentationIntervalStartField(this.videoPresentationIntervalMicroseconds),
             videoTrackIndex: options.videoTrackIndex
         };
         if (options.audioDownmixSettings !== undefined) {
@@ -2175,6 +2235,10 @@ export default class CustomDecodeSession {
                 return;
             }
             generationRecord.nativeAudioBridgeStarted = true;
+            // A bridge starts at rate 1
+            if (this.playbackRate !== 1) {
+                nativeAudioBridge.setPlaybackRate(this.playbackRate);
+            }
             this.requestReplacementAudioSamples(generationRecord, nativeAudioBridge.initialAudioSegmentCredits);
             // An audio track that ended while the output was opening completes now
             this.completeEndedAudioTrack(generationRecord);
@@ -2642,11 +2706,11 @@ export default class CustomDecodeSession {
         generationRecord.audioMediaReady = audioFramesToMicroseconds(
             this.telemetry.submittedAudioFrameCount,
             message.sampleRate
-        ) >= MINIMUM_DECODED_AUDIO_STARTUP_BUFFER_MICROSECONDS;
+        ) >= this.getDecodedAudioStartupBufferMicroseconds();
         this.emitReadyEventIfMediaReady(generationRecord);
     }
 
-    /** Reports a resynced epoch once it has buffered the same minimum as startup */
+    /** Reports a resynced epoch once it has buffered the same amount as startup */
     private recordResyncedAudioSubmission(
         generationRecord: GenerationRecord,
         frameCount: number,
@@ -2656,7 +2720,7 @@ export default class CustomDecodeSession {
         if (audioFramesToMicroseconds(
             generationRecord.audioEpochSubmittedFrameCount,
             sampleRate
-        ) < MINIMUM_DECODED_AUDIO_STARTUP_BUFFER_MICROSECONDS) {
+        ) < this.getDecodedAudioStartupBufferMicroseconds()) {
             return;
         }
         generationRecord.audioResyncPending = false;
@@ -2666,6 +2730,14 @@ export default class CustomDecodeSession {
             generation: generationRecord.generation,
             type: 'audio-resynced'
         });
+    }
+
+    /** Returns the decoded audio a start or an audio resync buffers before it reports: 100 ms of media, times rates above 1, up to 200 ms. */
+    private getDecodedAudioStartupBufferMicroseconds(): number {
+        return Math.min(
+            MINIMUM_DECODED_AUDIO_STARTUP_BUFFER_MICROSECONDS * Math.max(1, this.playbackRate),
+            MAXIMUM_DECODED_AUDIO_STARTUP_BUFFER_MICROSECONDS
+        );
     }
 
     private enqueueNativeAudioInitialization(

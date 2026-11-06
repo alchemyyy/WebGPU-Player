@@ -55,6 +55,8 @@ export interface AudioWorkletOutputController {
     onTelemetry: (listener: AudioTelemetryListener) => () => void
     seek: (mediaTimeMicroseconds: Microseconds) => number
     setMuted: (muted: boolean) => void
+    /** Time-stretches the output to a rate, keeping its pitch; it holds across flushes */
+    setPlaybackRate: (playbackRate: number) => void
     setPlaying: (playing: boolean) => void
     /** Turns the per-sample signal statistics in telemetry on or off; they are off on a new output */
     setSignalAnalysis: (enabled: boolean) => void
@@ -130,6 +132,7 @@ export default class AudioWorkletController implements AudioWorkletOutputControl
     public readonly configuration: AudioWorkletControllerConfiguration;
 
     private currentGeneration = INITIAL_GENERATION;
+    private currentPlaybackRate = 1;
     private deactivationFailed = false;
     private deactivationLeaseId: number | null = null;
     private deactivationPromise: Promise<void> | null = null;
@@ -193,6 +196,11 @@ export default class AudioWorkletController implements AudioWorkletOutputControl
 
     public get isPlaying(): boolean {
         return this.playing;
+    }
+
+    /** The rate the processor time-stretches its output to; a lease deactivation resets it to 1 */
+    public get playbackRate(): number {
+        return this.currentPlaybackRate;
     }
 
     /** Returns the most recent processor telemetry without waiting for an event. */
@@ -293,6 +301,16 @@ export default class AudioWorkletController implements AudioWorkletOutputControl
         this.postGain();
     }
 
+    public setPlaybackRate(playbackRate: number): void {
+        this.requireActive();
+        if (!Number.isFinite(playbackRate) || playbackRate <= 0) {
+            throw new RangeError('Audio output playback rate must be finite and greater than zero');
+        }
+        this.currentPlaybackRate = playbackRate;
+        const message: CustomAudioWorkletMessage = { playbackRate, type: 'rate' };
+        this.node.port.postMessage(message);
+    }
+
     public setSignalAnalysis(enabled: boolean): void {
         this.requireActive();
         const message: CustomAudioWorkletMessage = { enabled, type: 'signal-analysis' };
@@ -348,6 +366,7 @@ export default class AudioWorkletController implements AudioWorkletOutputControl
                 this.lastTelemetry = null;
                 this.muted = false;
                 this.nextSequence = 1;
+                this.currentPlaybackRate = 1;
                 this.volume = 1;
             },
             (error: unknown): never => {
@@ -506,6 +525,9 @@ export default class AudioWorkletController implements AudioWorkletOutputControl
             && isNonNegativeSafeInteger(candidate.overflowEvents)
             && isNonNegativeSafeInteger(candidate.overflowFrames)
             && typeof candidate.muted === 'boolean'
+            && typeof candidate.playbackRate === 'number'
+            && Number.isFinite(candidate.playbackRate)
+            && candidate.playbackRate > 0
             && typeof candidate.playing === 'boolean'
             && isNonNegativeSafeInteger(candidate.queuedFrames)
             && isTelemetryReason(candidate.reason)

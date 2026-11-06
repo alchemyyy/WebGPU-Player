@@ -38,6 +38,8 @@ export type DolbyVisionHEVCSplitResult = {
 export type HEVCNALUnit = {
     data: Uint8Array
     layerID: number
+    /** TemporalId, nuh_temporal_id_plus1 minus one; -1 for the forbidden zero nuh_temporal_id_plus1 */
+    temporalID: number
     type: number
 };
 
@@ -73,10 +75,19 @@ export function getHEVCNALUnitLayerID(data: Uint8Array): number {
     return ((data[0] & 0x01) << 5) | (data[1] >> 3);
 }
 
+/** Reads TemporalId, nuh_temporal_id_plus1 minus one, from the low three bits of an HEVC NAL unit header's second byte; -1 for the forbidden zero. */
+export function getHEVCNALUnitTemporalID(data: Uint8Array): number {
+    if (data.byteLength < MINIMUM_NAL_UNIT_BYTE_LENGTH) {
+        throw new TypeError('An HEVC NAL unit is missing its two-byte header');
+    }
+    return (data[1] & 0x07) - 1;
+}
+
 function parseNALUnit(data: Uint8Array): HEVCNALUnit {
     return {
         data,
         layerID: getHEVCNALUnitLayerID(data),
+        temporalID: getHEVCNALUnitTemporalID(data),
         type: getNALUnitType(data)
     };
 }

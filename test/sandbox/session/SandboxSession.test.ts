@@ -84,6 +84,7 @@ vi.mock('webgpu-player/pipeline/CustomPlaybackController', () => ({
         resume = vi.fn();
         seek = vi.fn(() => Promise.resolve({ fallbackReason: null, generation: 1, status: 'started' }));
         setMuted = vi.fn();
+        setPlaybackRate = vi.fn(() => null);
         setVolume = vi.fn();
     }
 }));

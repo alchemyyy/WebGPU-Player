@@ -242,6 +242,11 @@ class GuardedAudioWorkletOutput implements AudioWorkletOutputController {
         this.controller.setMuted(muted);
     }
 
+    public setPlaybackRate(playbackRate: number): void {
+        this.requireActive();
+        this.controller.setPlaybackRate(playbackRate);
+    }
+
     public setPlaying(playing: boolean): void {
         this.requireActive();
         this.controller.setPlaying(playing);

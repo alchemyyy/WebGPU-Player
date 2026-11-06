@@ -1,4 +1,4 @@
-// The transport bar: play and pause, a timeline that seeks on click and drag, the current and total time, and volume.
+// The transport bar: play and pause, a timeline that seeks on click and drag, the current and total time, the playback rate, and volume.
 import type { Microseconds } from 'webgpu-player/MediaTime';
 
 import {
@@ -15,6 +15,7 @@ import { OVERLAY_TOGGLE_KEY } from '../OverlayToggle';
 import type { Panel, PanelContext } from '../Panel';
 import { subscribeSelection } from '../Store';
 import { formatMediaTime } from '../TimeFormat';
+import { createChoiceSelect, type Choice } from './ChoiceSelect';
 import { createDefaultButton } from './DefaultButton';
 import { getPointerFraction, getTimeAtFraction, getTimeFraction } from './TimelinePosition';
 
@@ -31,6 +32,9 @@ const VOLUME_STEP = 0.01;
 const TIMELINE_FRACTION_PROPERTY = '--timeline-fraction';
 const SEEKABLE_CLASS = 'is-seekable';
 const START_TIME = 0 as Microseconds;
+// The rates the Jellyfin add-on offers, within the engine's 0.0625x to 16x
+const PLAYBACK_RATES: readonly number[] = [ 0.1, 0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2, 2.5, 3, 4, 6, 8, 10, 16 ];
+const PLAYBACK_RATE_CHOICES: readonly Choice<number>[] = PLAYBACK_RATES.map((rate: number): Choice<number> => ({ label: `${rate}x`, value: rate }));
 
 /** Returns the status worth showing beside the time; idle, paused, and playing speak for themselves. */
 function describePlaybackStatus(status: PlaybackStatus): string {
@@ -66,6 +70,12 @@ export function createTransportBarPanel(context: PanelContext): Panel {
     const timeElement = createElement('span', { className: 'transport-time' });
     const statusElement = createElement('span', { className: 'transport-status' });
     const muteButton = createElement('button', { className: 'transport-mute' });
+    const rateSelect = createChoiceSelect<number>((rate: number): void => {
+        session.setPlaybackRate(rate);
+    });
+    rateSelect.element.className = 'transport-rate';
+    rateSelect.element.title = 'Playback rate';
+    rateSelect.setChoices(PLAYBACK_RATE_CHOICES);
     const volumeInput = createElement('input', {
         attributes: { max: String(MAXIMUM_VOLUME), min: String(MINIMUM_VOLUME), step: String(VOLUME_STEP), title: 'Volume', type: 'range' },
         className: 'transport-volume'
@@ -77,6 +87,7 @@ export function createTransportBarPanel(context: PanelContext): Panel {
             timeElement,
             statusElement,
             createElement('span', { className: 'transport-spacer' }),
+            rateSelect.element,
             muteButton,
             volumeInput,
             createDefaultButton(String(DEFAULT_VOLUME), (): void => {
@@ -179,6 +190,7 @@ export function createTransportBarPanel(context: PanelContext): Panel {
         muteButton.textContent = playback.muted ? 'Unmute' : 'Mute';
         muteButton.setAttribute('aria-pressed', String(playback.muted));
         volumeInput.value = String(playback.volume);
+        rateSelect.setValue(playback.rate);
         timelineElement.classList.toggle(SEEKABLE_CLASS, durationMicroseconds !== null);
     };
 

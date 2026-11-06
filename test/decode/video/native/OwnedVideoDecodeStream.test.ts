@@ -4,7 +4,9 @@ import { describe, expect, it, vi, type Mock } from 'vitest';
 import type { Microseconds } from 'webgpu-player/MediaTime';
 import { clearTimingTrace, exportTimingTrace, startTimingTrace } from 'webgpu-player/TimingTrace';
 import type { RawVideoFrameGeometry } from 'webgpu-player/decode/video/RawVideoFrameCopy';
+import HDR10PlusFrameMetadataQueue from 'webgpu-player/decode/video/HDR10PlusFrameMetadataQueue';
 import {
+    createOwnedVideoFrameMetadataSource,
     OWNED_VIDEO_DECODE_FENCE_TIMEOUT_MILLISECONDS,
     OWNED_VIDEO_PACKET_PACING_MILLISECONDS,
     OWNED_VIDEO_PREROLL_BATCH_FRAME_COUNT,
@@ -24,6 +26,7 @@ import {
     AMPLE_FRAME_CREDITS,
     createFramePacket,
     createOwnedVideoStreamFakes,
+    FakeStreamRun,
     FRAME_DURATION_MICROSECONDS as FAKE_FRAME_DURATION_MICROSECONDS,
     KEY_PACKET_MEDIA_TIME_MICROSECONDS,
     settle,
@@ -65,10 +68,12 @@ type StateHarness = {
 function createHarness(
     hasEnhancementLayer: boolean,
     enhancementGeometry: RawVideoFrameGeometry = FRAME_GEOMETRY,
-    startTimeMicroseconds = 0
+    startTimeMicroseconds = 0,
+    presentationIntervalMicroseconds: Microseconds | null = null
 ): StateHarness {
     const postedPairs: Array<[OwnedDecodedVideoOutput, OwnedDecodedVideoOutput | null]> = [];
     const stream: OwnedVideoStreamRun = {
+        getPresentationIntervalMicroseconds: (): Microseconds | null => presentationIntervalMicroseconds,
         isStopped: (): boolean => false,
         notifyDecoderProgress: vi.fn(),
         postFrame: async (
@@ -132,6 +137,13 @@ function createPacket(timestampMicroseconds: number): EncodedPacket {
     return new EncodedPacket(new Uint8Array([ 1 ]), 'key', timestampMicroseconds / 1_000_000, 0);
 }
 
+function createTimedPacket(timestampMicroseconds: number, durationMicroseconds: number): EncodedPacket {
+    return new EncodedPacket(new Uint8Array([ 1 ]), 'delta', timestampMicroseconds / 1_000_000, durationMicroseconds / 1_000_000);
+}
+
+// Two and a half frame durations, as at 2.5x on a display that refreshes once a frame duration
+const DECIMATION_INTERVAL_MICROSECONDS = ((5 * FRAME_DURATION_MICROSECONDS) / 2) as Microseconds;
+
 // A demuxed packet's bytes, of which a processed packet may keep the leading one
 const SOURCE_PACKET_BYTES = [ 1, 2 ];
 const LEADING_BYTE_LENGTH = 1;
@@ -174,6 +186,73 @@ describe('OwnedVideoStreamState', () => {
         );
 
         expect(decoder.decode.mock.calls.map((call: unknown[]): unknown => call[1])).toEqual([ false, false, true ]);
+    });
+
+    it('skips an unreferenced picture that ends by the start time and gives back its metadata', () => {
+        const harness = createHarness(false, FRAME_GEOMETRY, 2 * FRAME_DURATION_MICROSECONDS);
+        const decoder = createDecoder(true);
+        const decodeFrame = (frameIndex: number, unreferencedPicture: boolean, durationMicroseconds = FRAME_DURATION_MICROSECONDS): string => {
+            const packet = createTimedPacket(frameIndex * FRAME_DURATION_MICROSECONDS, durationMicroseconds);
+            return harness.state.decodeBasePacket(packet, packet, true, decoder, unreferencedPicture);
+        };
+
+        // The second frame ends at the start time itself
+        expect([ decodeFrame(0, true), decodeFrame(1, true) ]).toEqual([ 'skipped', 'skipped' ]);
+        expect(harness.frameMetadata.takeFrameMetadata.mock.calls).toEqual([ [ 0 ], [ FRAME_DURATION_MICROSECONDS ] ]);
+        expect(decoder.decode).not.toHaveBeenCalled();
+
+        // A referenced picture, one that covers the start, and one without a duration, which never provably ends before it, all decode
+        expect([ decodeFrame(1, false), decodeFrame(2, true), decodeFrame(0, true, 0) ]).toEqual([ 'decoded', 'decoded', 'decoded' ]);
+        expect(decoder.decode).toHaveBeenCalledTimes(3);
+        expect(harness.frameMetadata.takeFrameMetadata).toHaveBeenCalledTimes(2);
+    });
+
+    it('skips an unreferenced picture after the first presented frame that no multiple of the presentation interval falls within', () => {
+        const harness = createHarness(false, FRAME_GEOMETRY, 0, DECIMATION_INTERVAL_MICROSECONDS);
+        const decoder = createDecoder(true);
+        const decodeFrame = (frameIndex: number, unreferencedPicture = true): string => {
+            const packet = createTimedPacket(frameIndex * FRAME_DURATION_MICROSECONDS, FRAME_DURATION_MICROSECONDS);
+            return harness.state.decodeBasePacket(packet, packet, true, decoder, unreferencedPicture);
+        };
+
+        // Before the first presented frame is known, any picture may present first
+        expect(decodeFrame(1)).toBe('decoded');
+        harness.state.enqueueDecodedOutput(createFrameSource(0));
+        expect([ decodeFrame(1), decodeFrame(2), decodeFrame(3), decodeFrame(4, false) ]).toEqual([ 'skipped', 'decoded', 'skipped', 'decoded' ]);
+        expect(harness.frameMetadata.takeFrameMetadata.mock.calls.slice(1)).toEqual([
+            [ FRAME_DURATION_MICROSECONDS ],
+            [ 3 * FRAME_DURATION_MICROSECONDS ]
+        ]);
+    });
+
+    it('skips nothing while it decodes an EL, whose frames pair with every BL frame', () => {
+        const harness = createHarness(true, FRAME_GEOMETRY, 2 * FRAME_DURATION_MICROSECONDS, DECIMATION_INTERVAL_MICROSECONDS);
+        const packet = createTimedPacket(0, FRAME_DURATION_MICROSECONDS);
+
+        expect(harness.state.decodeBasePacket(packet, packet, true, createDecoder(true), true)).toBe('decoded');
+        harness.state.recordEnhancementDecoderFailure();
+        expect(harness.state.decodeBasePacket(packet, packet, true, createDecoder(true), true)).toBe('skipped');
+    });
+
+    it('drains its packets\' metadata when the track ends after a skipped picture', async () => {
+        const dynamicHDRMetadataQueue = new HDR10PlusFrameMetadataQueue('HEVC');
+        const state = new OwnedVideoStreamState(
+            new FakeStreamRun(AMPLE_FRAME_CREDITS),
+            createOwnedVideoFrameMetadataSource(null, dynamicHDRMetadataQueue),
+            (2 * FRAME_DURATION_MICROSECONDS) as Microseconds,
+            null
+        );
+        const decoder = createDecoder(true);
+        const decodeResults = [ 0, 1, 2 ].map((frameIndex: number): string => {
+            const packet = createTimedPacket(frameIndex * FRAME_DURATION_MICROSECONDS, FRAME_DURATION_MICROSECONDS);
+            dynamicHDRMetadataQueue.enqueue(packet.microsecondTimestamp, { metadata: null, status: 'absent' });
+            return state.decodeBasePacket(packet, packet, true, decoder, true);
+        });
+        state.enqueueDecodedOutput(createFrameSource(2 * FRAME_DURATION_MICROSECONDS));
+
+        expect(decodeResults).toEqual([ 'skipped', 'skipped', 'decoded' ]);
+        await expect(state.finishPackets(decoder, null)).resolves.toBeUndefined();
+        state.close();
     });
 
     it('posts each BL frame with the EL frame of its timestamp', async () => {
@@ -506,6 +585,110 @@ describe('pumpOwnedVideoFrames preroll batches', () => {
                 .map(event => event.fields.fenceCount);
             // The batch wait takes the oldest fence; the first post takes the remaining one with the leading frame's
             expect(fenceCounts).toEqual([ 1, 2 ]);
+        } finally {
+            clearTimingTrace();
+        }
+    });
+});
+
+// Sixteen frames whose presentation samples the media every two and a half frame durations, as at 2.5x on a display that refreshes once a frame duration
+const DECIMATION_PACKET_COUNT = 16;
+const DECIMATION_GRID_FRAME_INDICES = [ 0, 2, 5, 7, 10, 12, 15 ];
+const DECIMATED_FRAME_INDICES = [ 1, 3, 4, 6, 8, 9, 11, 13, 14 ];
+
+function createDecimatedStream(
+    presentationIntervalMicroseconds: Microseconds | null,
+    startTimeMicroseconds: Microseconds = KEY_PACKET_MEDIA_TIME_MICROSECONDS
+): { fakes: OwnedVideoStreamFakes, streamPromise: Promise<void> } {
+    const packets = Array.from(
+        { length: DECIMATION_PACKET_COUNT },
+        (_value: unknown, frameIndex: number): EncodedPacket => createFramePacket(frameIndex, [ frameIndex ])
+    );
+    const fakes = createOwnedVideoStreamFakes(packets, AMPLE_FRAME_CREDITS);
+    fakes.run.presentationIntervalMicroseconds = presentationIntervalMicroseconds;
+    const streamPromise = runOwnedSingleLayerVideoStream(
+        fakes.run,
+        fakes.packetIterator,
+        pacedFrameMetadata,
+        processPacketWithoutMetadata,
+        fakes.createDecoder,
+        startTimeMicroseconds,
+        KEY_PACKET_MEDIA_TIME_MICROSECONDS
+    );
+    return { fakes, streamPromise };
+}
+
+function getPostedFrameIndices(fakes: OwnedVideoStreamFakes): number[] {
+    return getFrameIndices(fakes.run.postedFrames.map(postedFrame => ({ timestamp: postedFrame.mediaTimeMicroseconds })));
+}
+
+describe('pumpOwnedVideoFrames decimation', () => {
+    it('posts only the frames a multiple of the presentation interval falls within, and closes the others without spending a credit', async () => {
+        const { fakes, streamPromise } = createDecimatedStream(DECIMATION_INTERVAL_MICROSECONDS);
+
+        await streamPromise;
+
+        expect(getPostedFrameIndices(fakes)).toEqual(DECIMATION_GRID_FRAME_INDICES);
+        for (const frame of fakes.requireDecoder().frames) {
+            expect(frame.close).toHaveBeenCalledOnce();
+        }
+        // Besides each posted frame's credit, the attempt takes one to read the end of the track
+        expect(AMPLE_FRAME_CREDITS - fakes.run.getRemainingCredits()).toBe(DECIMATION_GRID_FRAME_INDICES.length + 1);
+    });
+
+    it('keeps the attempt\'s first presented frame though no multiple of the interval falls within it', async () => {
+        const { fakes, streamPromise } = createDecimatedStream(DECIMATION_INTERVAL_MICROSECONDS, FAKE_FRAME_DURATION_MICROSECONDS);
+
+        await streamPromise;
+
+        expect(getPostedFrameIndices(fakes)).toEqual([ 1, ...DECIMATION_GRID_FRAME_INDICES.slice(1) ]);
+    });
+
+    it('posts every frame without an interval', async () => {
+        const { fakes, streamPromise } = createDecimatedStream(null);
+
+        await streamPromise;
+
+        expect(fakes.run.postedFrames).toHaveLength(DECIMATION_PACKET_COUNT);
+        expect(AMPLE_FRAME_CREDITS - fakes.run.getRemainingCredits()).toBe(DECIMATION_PACKET_COUNT + 1);
+    });
+
+    it('fences every fourth decimated frame and keeps the decoder at most two such batches ahead of the GPU', async () => {
+        const heldFence = createHeldDecodeFence();
+        const { fakes, streamPromise } = createDecimatedStream(DECIMATION_INTERVAL_MICROSECONDS);
+        fakes.run.decodeFence = heldFence.fence;
+        // Held sleeps keep each fence's bound from passing
+        fakes.run.holdSleeps = true;
+
+        await settle();
+        // The fourth and eighth decimated frames started fences, so the packet after the eighth waits for the first fence
+        expect(getFrameIndices(heldFence.frames)).toEqual([ DECIMATED_FRAME_INDICES[3], DECIMATED_FRAME_INDICES[7] ]);
+        expect(fakes.packetIterator.nextCallCount).toBe(DECIMATED_FRAME_INDICES[7] + 1);
+        expect(heldFence.prewarm).not.toHaveBeenCalled();
+
+        heldFence.complete();
+        fakes.run.holdSleeps = false;
+        fakes.run.releaseSleeps();
+        await streamPromise;
+
+        expect(fakes.packetIterator.nextCallCount).toBe(DECIMATION_PACKET_COUNT + 1);
+        expect(getPostedFrameIndices(fakes)).toEqual(DECIMATION_GRID_FRAME_INDICES);
+        heldFence.complete();
+        for (const frame of [ ...heldFence.frames, ...fakes.requireDecoder().frames ]) {
+            expect(frame.close).toHaveBeenCalledOnce();
+        }
+    });
+
+    it('records each decimated frame while a timing trace runs', async () => {
+        startTimingTrace();
+        try {
+            const { streamPromise } = createDecimatedStream(DECIMATION_INTERVAL_MICROSECONDS);
+            await streamPromise;
+
+            const decimatedTimes = exportTimingTrace()?.events
+                .filter(event => event.kind === 'video-frame-decimated')
+                .map(event => event.fields.mediaTimeMicroseconds);
+            expect(decimatedTimes).toEqual(DECIMATED_FRAME_INDICES.map((frameIndex: number): number => frameIndex * FAKE_FRAME_DURATION_MICROSECONDS));
         } finally {
             clearTimingTrace();
         }

@@ -1630,6 +1630,61 @@ describe('DecodeWorkerProtocol', () => {
         }
     });
 
+    it('accepts a forward video resync only as keyframe next', () => {
+        const resyncRequest = {
+            generation: 3,
+            targetTimeMicroseconds: 2_500_000,
+            type: 'resync-video',
+            videoEpoch: 1
+        } as const;
+
+        expect(isDecodeWorkerRequest({ ...resyncRequest, keyframe: 'next' })).toBe(true);
+        for (const invalidKeyframe of [ 'preceding', 'previous', true, null, 1 ]) {
+            expect(isDecodeWorkerRequest({ ...resyncRequest, keyframe: invalidKeyframe })).toBe(false);
+        }
+    });
+
+    it('accepts a video presentation interval of positive integer microseconds on the start and live, where null ends it', () => {
+        const startRequest = {
+            audioSampleCredits: 0,
+            audioTrackIndex: null,
+            dolbyVisionProfile: null,
+            dolbyVisionRPUParserWASMURL: DOLBY_VISION_RPU_PARSER_WASM_URL,
+            frameCredits: MAX_DECODED_FRAME_CREDITS,
+            generation: 1,
+            maximumCodedHeight: 1_080,
+            maximumCodedWidth: 1_920,
+            nativeHDRTransfer: null,
+            neutralizeHDRColorMetadata: false,
+            rawVideoFrameFormat: null,
+            startTimeMicroseconds: 0,
+            type: 'start',
+            source: { kind: 'url', url: 'http://localhost/video.mkv' },
+            videoDecoderBackend: 'native',
+            videoOutputMode: 'video-frame',
+            videoTrackIndex: 0
+        } as const;
+        const setRequest = {
+            generation: 1,
+            type: 'set-video-presentation-interval',
+            videoPresentationIntervalMicroseconds: 33_333
+        } as const;
+        const invalidIntervals: readonly unknown[] = [ 0, -16_667, 16_666.5, Number.NaN, Number.POSITIVE_INFINITY, '33333', Number.MAX_SAFE_INTEGER + 1 ];
+
+        expect(isDecodeWorkerRequest(startRequest)).toBe(true);
+        expect(isDecodeWorkerRequest({ ...startRequest, videoPresentationIntervalMicroseconds: 33_333 })).toBe(true);
+        // A start without decimation omits the interval
+        expect(isDecodeWorkerRequest({ ...startRequest, videoPresentationIntervalMicroseconds: null })).toBe(false);
+        expect(isDecodeWorkerRequest(setRequest)).toBe(true);
+        expect(isDecodeWorkerRequest({ ...setRequest, videoPresentationIntervalMicroseconds: null })).toBe(true);
+        expect(isDecodeWorkerRequest({ generation: 1, type: 'set-video-presentation-interval' })).toBe(false);
+        expect(isDecodeWorkerRequest({ ...setRequest, generation: 0 })).toBe(false);
+        for (const invalidInterval of invalidIntervals) {
+            expect(isDecodeWorkerRequest({ ...startRequest, videoPresentationIntervalMicroseconds: invalidInterval })).toBe(false);
+            expect(isDecodeWorkerRequest({ ...setRequest, videoPresentationIntervalMicroseconds: invalidInterval })).toBe(false);
+        }
+    });
+
     it('requires a live generation and an advanced epoch for video control requests', () => {
         const controlRequests = [
             {

@@ -138,6 +138,7 @@ import {
 import { DolbyVisionRPUParseError } from '../demux/dolby-vision/DolbyVisionRPUParser';
 import DolbyVisionRPUParserSession from '../demux/dolby-vision/DolbyVisionRPUParserSession';
 import { parseHEVCDecoderConfiguration } from '../demux/hevc/HEVCDecoderConfiguration';
+import { HEVCTemporalSubLayers } from '../demux/hevc/HEVCTemporalSubLayers';
 import { scanHEVCStaticHDRMetadata } from '../demux/hdr/HEVCStaticHDRMetadata';
 import {
     hasAV1PQSequenceHeader,
@@ -199,10 +200,12 @@ import {
     type OwnedDecodedVideoSource,
     type OwnedVideoDecoderCallbacks,
     type OwnedVideoDecoderPort,
+    type OwnedVideoPacketDecodeResult,
     type OwnedVideoPacketIterator,
     type OwnedVideoStreamRun
 } from '../decode/video/native/OwnedVideoDecodeStream';
 import { createVideoDecodeFence, type VideoDecodeFence } from '../decode/video/native/VideoDecodeFence';
+import { isVideoFramePresentable } from '../decode/video/VideoPresentationInterval';
 import { readISOBaseMediaDolbyVisionTrackConfiguration } from '../demux/dolby-vision/ISOBaseMediaDolbyVisionConfiguration';
 import {
     readMatroskaDolbyVisionTrackConfiguration
@@ -249,6 +252,11 @@ const GPU_DECODE_PACKET_OPTIONS = {
 } as const;
 // The packets a parser's restart holds, whose timing alone reaches the page
 const GPU_DECODE_HOLD_PACKET_OPTIONS = { metadataOnly: true } as const;
+// The sample cursor verifies the key packets it starts at, so a forward resync finds its key packet as the cursor reads it
+const SAMPLE_CURSOR_KEY_PACKET_OPTIONS = {
+    metadataOnly: false,
+    verifyKeyPackets: true
+} as const;
 // Pictures a GPU decoder's CPU parser makes ahead of the credits, so its parse workers keep working while the page decodes; a packet still parsing counts as one
 const GPU_DECODE_PARSER_READ_AHEAD = 8;
 const STATIC_HDR_METADATA_SCAN_MAXIMUM_BYTE_LENGTH = 8 * 1024 * 1024;
@@ -262,8 +270,15 @@ type MediaSampleIterator<Sample> = {
     return?: () => Promise<IteratorResult<Sample>>
 };
 
+// Mediabunny takes these options in its public methods without exporting their type
+type PacketRetrievalOptions = NonNullable<Parameters<PacketReader['getKeyAt']>[1]>;
+
+/** Where a video attempt starts: at the key packet preceding its start time, or at the first key packet at or after it, which presents first. */
+type VideoAttemptKeyframe = 'next' | 'preceding';
+
 type VideoAttemptControl =
     | {
+        keyframe: VideoAttemptKeyframe
         kind: 'resync'
         targetTimeMicroseconds: Microseconds
         videoEpoch: number
@@ -346,6 +361,8 @@ type DecodeRun = {
     videoFrameFields: VideoFrameFields | null
     videoOutputMode: CustomDecodeVideoOutputMode
     videoIterator: MediaSampleIterator<EncodedPacket> | MediaSampleIterator<VideoSample> | null
+    /** The decoding routes post only frames some multiple of this interval of media time falls within; null posts every frame */
+    videoPresentationIntervalMicroseconds: Microseconds | null
     /** Set once the video stream unwinds so finished audio stops waiting for a resync */
     videoStreamFinished: boolean
     /** The latest video attempt reached the end of its track; a suspended or interrupted one did not */
@@ -2459,6 +2476,7 @@ function createOwnedVideoStreamRun(
     const decodeFence = run.videoOutputMode === 'video-frame' ? videoDecodeFence : null;
     return {
         ...(decodeFence ? { decodeFence } : {}),
+        getPresentationIntervalMicroseconds: (): Microseconds | null => run.videoPresentationIntervalMicroseconds,
         isStopped: (): boolean => isVideoAttemptStopped(run),
         notifyDecoderProgress: (): void => {
             wakeWaiters(run.wakeVideoDecodeWaiters);
@@ -2499,6 +2517,8 @@ type OwnedHEVCStream = {
     metadataQueue: DolbyVisionEncodedMetadataQueue
     separateEnhancementStream: SeparateDolbyVisionEnhancementPacketStream | null
     state: OwnedVideoStreamState
+    /** The highest temporal sub-layer of the stream's SPSs, which tells the pictures no later picture references */
+    temporalSubLayers: HEVCTemporalSubLayers
 };
 
 async function createSeparateDolbyVisionEnhancementPacketStream(
@@ -2579,32 +2599,37 @@ async function takeSeparateEnhancementPacket(
     }
 }
 
-/** Decodes one BL packet; no decoder decodes a Dolby Vision EL, so its pictures are dropped and only its RPUs are kept. */
+/**
+ * Decodes one BL packet; no decoder decodes a Dolby Vision EL, so its pictures are dropped and only its RPUs are kept.
+ * A picture no later picture references is skipped when it can never present; its metadata is still read, in decode order, and given back.
+ */
 async function decodeOwnedHEVCPacket(
     run: DecodeRun,
     hevcStream: OwnedHEVCStream,
     packet: EncodedPacket,
     packetMediaTimeMicroseconds: Microseconds
-): Promise<boolean> {
+): Promise<OwnedVideoPacketDecodeResult> {
     const separateEnhancementPacket = await takeSeparateEnhancementPacket(
         hevcStream.separateEnhancementStream,
         packetMediaTimeMicroseconds
     );
     if (isVideoAttemptStopped(run)) {
-        return false;
+        return 'stopped';
     }
-    // One walk of the packet's NAL units serves its HDR10+ parse and its Dolby Vision split
+    // One walk of the packet's NAL units serves its sub-layer check, its HDR10+ parse, and its Dolby Vision split
     const nalUnits = parseHEVCNALUnits(packet.data, hevcStream.inputFormat);
+    hevcStream.temporalSubLayers.readAccessUnit(nalUnits);
     hevcStream.dynamicHDRMetadataQueue.processPacket(packet, nalUnits);
     const processedPacket = await processOwnedHEVCPacket(hevcStream, packet, nalUnits, separateEnhancementPacket);
-    hevcStream.state.decodeBasePacket(
+    const decodeResult = hevcStream.state.decodeBasePacket(
         packet,
         processedPacket.baseLayerPacket,
         processedPacket.hasBaseLayerVCL,
-        hevcStream.decoder
+        hevcStream.decoder,
+        hevcStream.temporalSubLayers.isUnreferencedPicture(nalUnits)
     );
     hevcStream.state.throwDecoderFailure();
-    return true;
+    return decodeResult;
 }
 
 /** Reads the inclusive byte range of a run's media: a ranged request for a URL, a slice for a file. */
@@ -2743,24 +2768,56 @@ async function resolveSeparateDolbyVisionEnhancementTrack(
     return findSeparateDolbyVisionEnhancementTrack(preparedVideoTrack, reference);
 }
 
+/** The key packet a video attempt starts at, and the attempt's start time: the requested one, or the key packet's own on a forward resync. */
+type VideoAttemptKeyPacket = Readonly<{
+    keyPacket: EncodedPacket
+    startTimeMicroseconds: Microseconds
+}>;
+
+/**
+ * Finds the key packet a video attempt starts at: the one preceding its start time, else the track's first; or on a forward resync the first one at
+ * or after the start time, whose timestamp becomes the attempt's start, so it presents first and nothing before it decodes.
+ * Returns null when the track has no such key packet.
+ */
+async function findVideoAttemptKeyPacket(
+    packetReader: PacketReader,
+    startTimeMicroseconds: Microseconds,
+    keyframe: VideoAttemptKeyframe,
+    options: PacketRetrievalOptions
+): Promise<VideoAttemptKeyPacket | null> {
+    const precedingKeyPacket = await packetReader.getKeyAt(microsecondsToSeconds(startTimeMicroseconds), options);
+    if (keyframe === 'preceding') {
+        const keyPacket = precedingKeyPacket ?? await packetReader.getFirstKey(options);
+        return keyPacket ? { keyPacket, startTimeMicroseconds } : null;
+    }
+    let keyPacket = precedingKeyPacket;
+    if (keyPacket === null) {
+        // The track's first key packet follows the start time
+        keyPacket = await packetReader.getFirstKey(options);
+    } else if (keyPacket.microsecondTimestamp < startTimeMicroseconds) {
+        keyPacket = await packetReader.getNextKey(keyPacket, options);
+    }
+    return keyPacket ?
+        { keyPacket, startTimeMicroseconds: requireMicroseconds(keyPacket.microsecondTimestamp, 'Video attempt key packet timestamp') } :
+        null;
+}
+
 async function streamOwnedHEVCFrames(
     run: DecodeRun,
     request: Extract<DecodeWorkerRequest, { type: 'start' }>,
-    preparedVideoTrack: PreparedVideoTrack
+    preparedVideoTrack: PreparedVideoTrack,
+    keyframe: VideoAttemptKeyframe
 ): Promise<void> {
     if (preparedVideoTrack.codec !== 'hevc') {
         throw new UnsupportedCustomDecodeSourceError('The owned HEVC decoder requires an HEVC track');
     }
 
     const packetReader = new PacketReader(preparedVideoTrack.videoTrack);
-    const startTimeSeconds = microsecondsToSeconds(request.startTimeMicroseconds);
-    const keyPacket = await packetReader.getKeyAt(
-        startTimeSeconds,
-        OWNED_HEVC_PACKET_OPTIONS
-    ) ?? await packetReader.getFirstKey(OWNED_HEVC_PACKET_OPTIONS);
-    if (!keyPacket || isVideoAttemptStopped(run)) {
+    const attemptKeyPacket = await findVideoAttemptKeyPacket(packetReader, request.startTimeMicroseconds, keyframe, OWNED_HEVC_PACKET_OPTIONS);
+    if (!attemptKeyPacket || isVideoAttemptStopped(run)) {
         return;
     }
+    const { keyPacket, startTimeMicroseconds } = attemptKeyPacket;
     const keyPacketMediaTimeMicroseconds = requireMicroseconds(
         keyPacket.microsecondTimestamp,
         'Owned HEVC key packet timestamp'
@@ -2800,7 +2857,7 @@ async function streamOwnedHEVCFrames(
     const state = new OwnedVideoStreamState(
         streamRun,
         createOwnedVideoFrameMetadataSource(metadataQueue, dynamicHDRMetadataQueue),
-        request.startTimeMicroseconds,
+        startTimeMicroseconds,
         null
     );
     const notifyDecoderProgress = streamRun.notifyDecoderProgress;
@@ -2828,7 +2885,8 @@ async function streamOwnedHEVCFrames(
             inputFormat,
             metadataQueue,
             separateEnhancementStream,
-            state
+            state,
+            temporalSubLayers: new HEVCTemporalSubLayers(preparedVideoTrack.decoderConfig.description)
         };
         await pumpOwnedVideoFrames(
             streamRun,
@@ -2836,7 +2894,7 @@ async function streamOwnedHEVCFrames(
             decoder,
             null,
             state,
-            (packet: EncodedPacket, packetMediaTimeMicroseconds: Microseconds): Promise<boolean> => (
+            (packet: EncodedPacket, packetMediaTimeMicroseconds: Microseconds): Promise<OwnedVideoPacketDecodeResult> => (
                 decodeOwnedHEVCPacket(run, hevcStream, packet, packetMediaTimeMicroseconds)
             )
         );
@@ -2859,29 +2917,28 @@ type OwnedNativeVideoAttempt = (
     stream: OwnedVideoStreamRun,
     packetIterator: OwnedVideoPacketIterator,
     createDecoder: (callbacks: OwnedVideoDecoderCallbacks) => OwnedVideoDecoderPort,
+    startTimeMicroseconds: Microseconds,
     keyPacketMediaTimeMicroseconds: Microseconds
 ) => Promise<void>;
 
 /**
  * Streams one attempt of an owned path whose packets decode unchanged in a native WebCodecs decoder.
- * Each attempt starts at the key packet preceding its start time.
+ * Each attempt starts at the key packet preceding its start time, or on a forward resync at the first one at or after it.
  */
 async function streamOwnedNativeFrames(
     run: DecodeRun,
     request: Extract<DecodeWorkerRequest, { type: 'start' }>,
     preparedVideoTrack: PreparedVideoTrack,
+    keyframe: VideoAttemptKeyframe,
     codecName: 'AV1' | 'VP9',
     runAttempt: OwnedNativeVideoAttempt
 ): Promise<void> {
     const packetReader = new PacketReader(preparedVideoTrack.videoTrack);
-    const startTimeSeconds = microsecondsToSeconds(request.startTimeMicroseconds);
-    const keyPacket = await packetReader.getKeyAt(
-        startTimeSeconds,
-        OWNED_NATIVE_PACKET_OPTIONS
-    ) ?? await packetReader.getFirstKey(OWNED_NATIVE_PACKET_OPTIONS);
-    if (!keyPacket || isVideoAttemptStopped(run)) {
+    const attemptKeyPacket = await findVideoAttemptKeyPacket(packetReader, request.startTimeMicroseconds, keyframe, OWNED_NATIVE_PACKET_OPTIONS);
+    if (!attemptKeyPacket || isVideoAttemptStopped(run)) {
         return;
     }
+    const { keyPacket, startTimeMicroseconds } = attemptKeyPacket;
     const keyPacketMediaTimeMicroseconds = requireMicroseconds(
         keyPacket.microsecondTimestamp,
         `Owned ${codecName} key packet timestamp`
@@ -2902,6 +2959,7 @@ async function streamOwnedNativeFrames(
             (callbacks: OwnedVideoDecoderCallbacks): OwnedVideoDecoderPort => (
                 new OwnedNativeVideoDecoder(decoderConfig, callbacks)
             ),
+            startTimeMicroseconds,
             keyPacketMediaTimeMicroseconds
         );
     } finally {
@@ -2948,7 +3006,8 @@ function neutralizeOwnedAV1DecoderConfig(
 async function streamOwnedAV1Frames(
     run: DecodeRun,
     request: Extract<DecodeWorkerRequest, { type: 'start' }>,
-    preparedVideoTrack: PreparedVideoTrack
+    preparedVideoTrack: PreparedVideoTrack,
+    keyframe: VideoAttemptKeyframe
 ): Promise<void> {
     if (preparedVideoTrack.codec !== 'av1' || run.videoDecoderBackend !== 'native') {
         throw new UnsupportedCustomDecodeSourceError(
@@ -2958,10 +3017,11 @@ async function streamOwnedAV1Frames(
 
     const neutralization = neutralizeOwnedAV1DecoderConfig(run, request, preparedVideoTrack.decoderConfig);
     const decodedVideoTrack = neutralization ? { ...preparedVideoTrack, decoderConfig: neutralization.configuration } : preparedVideoTrack;
-    await streamOwnedNativeFrames(run, request, decodedVideoTrack, 'AV1', async (
+    await streamOwnedNativeFrames(run, request, decodedVideoTrack, keyframe, 'AV1', async (
         stream: OwnedVideoStreamRun,
         packetIterator: OwnedVideoPacketIterator,
         createDecoder: (callbacks: OwnedVideoDecoderCallbacks) => OwnedVideoDecoderPort,
+        startTimeMicroseconds: Microseconds,
         keyPacketMediaTimeMicroseconds: Microseconds
     ): Promise<void> => {
         const rpuParser = request.dolbyVisionProfile === null ?
@@ -2973,7 +3033,7 @@ async function streamOwnedAV1Frames(
                 packetIterator,
                 rpuParser,
                 createDecoder,
-                request.startTimeMicroseconds,
+                startTimeMicroseconds,
                 keyPacketMediaTimeMicroseconds,
                 // Each attempt starts at a key packet, whose sequence header proves the route again
                 neutralization ?
@@ -2992,7 +3052,8 @@ async function streamOwnedAV1Frames(
 async function streamOwnedVP9Frames(
     run: DecodeRun,
     request: Extract<DecodeWorkerRequest, { type: 'start' }>,
-    preparedVideoTrack: PreparedVideoTrack
+    preparedVideoTrack: PreparedVideoTrack,
+    keyframe: VideoAttemptKeyframe
 ): Promise<void> {
     if (preparedVideoTrack.codec !== 'vp9' || run.videoDecoderBackend !== 'native') {
         throw new UnsupportedCustomDecodeSourceError(
@@ -3000,10 +3061,11 @@ async function streamOwnedVP9Frames(
         );
     }
 
-    await streamOwnedNativeFrames(run, request, preparedVideoTrack, 'VP9', (
+    await streamOwnedNativeFrames(run, request, preparedVideoTrack, keyframe, 'VP9', (
         stream: OwnedVideoStreamRun,
         packetIterator: OwnedVideoPacketIterator,
         createDecoder: (callbacks: OwnedVideoDecoderCallbacks) => OwnedVideoDecoderPort,
+        startTimeMicroseconds: Microseconds,
         keyPacketMediaTimeMicroseconds: Microseconds
     ): Promise<void> => {
         return runOwnedVP9VideoStream(
@@ -3013,7 +3075,7 @@ async function streamOwnedVP9Frames(
                 (addition: MatroskaBlockAddition): Uint8Array => addition.data
             ),
             createDecoder,
-            request.startTimeMicroseconds,
+            startTimeMicroseconds,
             keyPacketMediaTimeMicroseconds
         );
     });
@@ -3236,19 +3298,22 @@ async function readGPUDecodePacketMetadata(
     };
 }
 
-/** Opens the attempt's packets at the key packet preceding the start time; returns null when the track has none or the attempt stopped. */
+/**
+ * Opens the attempt's packets at the key packet preceding the start time, or on a forward resync at the first one at or after it;
+ * returns null when the track has none or the attempt stopped.
+ */
 async function openGPUDecodePacketQueue(
     run: DecodeRun,
     request: Extract<DecodeWorkerRequest, { type: 'start' }>,
-    preparedVideoTrack: PreparedVideoTrack
+    preparedVideoTrack: PreparedVideoTrack,
+    keyframe: VideoAttemptKeyframe
 ): Promise<GPUDecodePacketQueue | null> {
     const packetReader = new PacketReader(preparedVideoTrack.videoTrack);
-    const startTimeSeconds = microsecondsToSeconds(request.startTimeMicroseconds);
-    const keyPacket = await packetReader.getKeyAt(startTimeSeconds, GPU_DECODE_PACKET_OPTIONS)
-        ?? await packetReader.getFirstKey(GPU_DECODE_PACKET_OPTIONS);
-    if (!keyPacket || isVideoAttemptStopped(run)) {
+    const attemptKeyPacket = await findVideoAttemptKeyPacket(packetReader, request.startTimeMicroseconds, keyframe, GPU_DECODE_PACKET_OPTIONS);
+    if (!attemptKeyPacket || isVideoAttemptStopped(run)) {
         return null;
     }
+    const { keyPacket } = attemptKeyPacket;
     const keyPacketMediaTimeMicroseconds = requireMicroseconds(keyPacket.microsecondTimestamp, 'GPU decode key packet timestamp');
     postVideoStartupProgress(run, 'video-key-packet-ready', 0, keyPacketMediaTimeMicroseconds);
 
@@ -3466,9 +3531,10 @@ function joinOutputEvents(carriedEvents: readonly number[], outputEvents: Uint32
 async function streamGPUDecodePackets(
     run: DecodeRun,
     request: Extract<DecodeWorkerRequest, { type: 'start' }>,
-    preparedVideoTrack: PreparedVideoTrack
+    preparedVideoTrack: PreparedVideoTrack,
+    keyframe: VideoAttemptKeyframe
 ): Promise<void> {
-    const queue = await openGPUDecodePacketQueue(run, request, preparedVideoTrack);
+    const queue = await openGPUDecodePacketQueue(run, request, preparedVideoTrack, keyframe);
     if (!queue) {
         return;
     }
@@ -3577,33 +3643,65 @@ async function readNextVideoSample(run: DecodeRun, iterator: MediaSampleIterator
     return iteratorResult;
 }
 
+/** Streams one video attempt on its route. */
 async function streamVideoFrames(
     run: DecodeRun,
     request: Extract<DecodeWorkerRequest, { type: 'start' }>,
-    preparedVideoTrack: PreparedVideoTrack
+    preparedVideoTrack: PreparedVideoTrack,
+    keyframe: VideoAttemptKeyframe
 ): Promise<void> {
     if (run.videoOutputMode === 'frame-pool') {
-        return streamGPUDecodePackets(run, request, preparedVideoTrack);
+        return streamGPUDecodePackets(run, request, preparedVideoTrack, keyframe);
     }
     if (preparedVideoTrack.codec === 'hevc') {
-        return streamOwnedHEVCFrames(run, request, preparedVideoTrack);
+        return streamOwnedHEVCFrames(run, request, preparedVideoTrack, keyframe);
     }
     // The sample sink hides the metadata OBUs, so only the owned path sees an AV1 RPU or HDR10+ metadata
     if (preparedVideoTrack.codec === 'av1') {
-        return streamOwnedAV1Frames(run, request, preparedVideoTrack);
+        return streamOwnedAV1Frames(run, request, preparedVideoTrack, keyframe);
     }
     // The sample sink never reads a packet's BlockAdditionals, so only the owned path sees VP9 HDR10+
     if (preparedVideoTrack.codec === 'vp9' && run.videoDecoderBackend === 'native') {
-        return streamOwnedVP9Frames(run, request, preparedVideoTrack);
+        return streamOwnedVP9Frames(run, request, preparedVideoTrack, keyframe);
     }
+    return streamVideoSampleFrames(run, request, preparedVideoTrack, keyframe);
+}
 
-    const iterator = iterateVideoSamples(preparedVideoTrack.videoTrack, microsecondsToSeconds(request.startTimeMicroseconds), {
+/**
+ * Streams one video attempt through Mediabunny's sample cursor, which decodes every packet.
+ * A sample after the attempt's first that no multiple of the presentation interval falls within is closed unposted:
+ * the credit taken for it stays held for the next sample.
+ */
+async function streamVideoSampleFrames(
+    run: DecodeRun,
+    request: Extract<DecodeWorkerRequest, { type: 'start' }>,
+    preparedVideoTrack: PreparedVideoTrack,
+    keyframe: VideoAttemptKeyframe
+): Promise<void> {
+    let startTimeSeconds = microsecondsToSeconds(request.startTimeMicroseconds);
+    if (keyframe === 'next') {
+        // The cursor decodes from the key packet preceding the time it seeks to, so seeking to a key packet's own time starts there
+        const attemptKeyPacket = await findVideoAttemptKeyPacket(
+            new PacketReader(preparedVideoTrack.videoTrack),
+            request.startTimeMicroseconds,
+            keyframe,
+            SAMPLE_CURSOR_KEY_PACKET_OPTIONS
+        );
+        if (!attemptKeyPacket || isVideoAttemptStopped(run)) {
+            return;
+        }
+        startTimeSeconds = attemptKeyPacket.keyPacket.timestamp;
+    }
+    const iterator = iterateVideoSamples(preparedVideoTrack.videoTrack, startTimeSeconds, {
         hardwareAcceleration: preparedVideoTrack.videoHardwareAcceleration,
         optimizeForLatency: true
     });
     run.videoIterator = iterator;
 
-    while (await waitForFrameCredit(run)) {
+    let frameCreditHeld = false;
+    let firstMediaTimeMicroseconds: Microseconds | null = null;
+    while (frameCreditHeld || await waitForFrameCredit(run)) {
+        frameCreditHeld = true;
         const iteratorResult = await readNextVideoSample(run, iterator);
         if (isVideoAttemptStopped(run)) {
             iteratorResult.value?.close();
@@ -3619,6 +3717,16 @@ async function streamVideoFrames(
                 kind: 'video-sample',
                 sample
             });
+            if (
+                firstMediaTimeMicroseconds !== null
+                && timing.mediaTimeMicroseconds > firstMediaTimeMicroseconds
+                && !isVideoFramePresentable(timing.mediaTimeMicroseconds, timing.durationMicroseconds, run.videoPresentationIntervalMicroseconds)
+            ) {
+                recordTimingEvent('video-frame-decimated', { mediaTimeMicroseconds: timing.mediaTimeMicroseconds });
+                continue;
+            }
+            firstMediaTimeMicroseconds ??= timing.mediaTimeMicroseconds;
+            frameCreditHeld = false;
             await postVideoFrame(
                 run,
                 {
@@ -3650,13 +3758,14 @@ async function runVideoAttempt(
     run: DecodeRun,
     request: Extract<DecodeWorkerRequest, { type: 'start' }>,
     preparedVideoTrack: PreparedVideoTrack,
-    startTimeMicroseconds: Microseconds
+    startTimeMicroseconds: Microseconds,
+    keyframe: VideoAttemptKeyframe
 ): Promise<void> {
     run.videoAttemptCancelled = false;
     run.videoTrackEnded = false;
     run.videoTrailingOutputEvents = null;
     try {
-        await streamVideoFrames(run, { ...request, startTimeMicroseconds }, preparedVideoTrack);
+        await streamVideoFrames(run, { ...request, startTimeMicroseconds }, preparedVideoTrack, keyframe);
         if (!isVideoAttemptStopped(run)) {
             run.videoTrackEnded = true;
             const outputEvents = takeTrailingOutputEvents(run);
@@ -3689,7 +3798,7 @@ async function runVideoAttempt(
 
 /**
  * Streams video as restartable attempts so a suspension or resync never touches audio.
- * Each later attempt starts at the keyframe preceding its resync target.
+ * Each later attempt starts at the keyframe preceding its resync target, or on a forward resync at the first one at or after it.
  */
 async function streamVideoAttempts(
     run: DecodeRun,
@@ -3697,6 +3806,7 @@ async function streamVideoAttempts(
     preparedVideoTrack: PreparedVideoTrack
 ): Promise<void> {
     let startTimeMicroseconds: Microseconds | null = request.startTimeMicroseconds;
+    let keyframe: VideoAttemptKeyframe = 'preceding';
     while (!run.cancelled) {
         if (startTimeMicroseconds === null || run.pendingVideoControl) {
             // An ended, interrupted, or replaced attempt restarts only on resync
@@ -3705,9 +3815,10 @@ async function streamVideoAttempts(
                 return;
             }
             startTimeMicroseconds = toContainerTime(run, control.targetTimeMicroseconds);
+            keyframe = control.keyframe;
         }
 
-        await runVideoAttempt(run, request, preparedVideoTrack, startTimeMicroseconds);
+        await runVideoAttempt(run, request, preparedVideoTrack, startTimeMicroseconds, keyframe);
         startTimeMicroseconds = null;
     }
 }
@@ -4317,6 +4428,7 @@ function createDecodeRun(request: Extract<DecodeWorkerRequest, { type: 'start' }
         videoFrameFields: null,
         videoOutputMode: request.videoOutputMode,
         videoIterator: null,
+        videoPresentationIntervalMicroseconds: request.videoPresentationIntervalMicroseconds ?? null,
         videoStreamFinished: false,
         videoTrackEnded: false,
         videoTrailingOutputEvents: null,
@@ -4338,6 +4450,7 @@ function handleVideoControlRequest(
 
     requestVideoAttemptControl(currentRun, request.type === 'resync-video' ?
         {
+            keyframe: request.keyframe ?? 'preceding',
             kind: 'resync',
             targetTimeMicroseconds: request.targetTimeMicroseconds,
             videoEpoch: request.videoEpoch
@@ -4346,6 +4459,13 @@ function handleVideoControlRequest(
             kind: 'suspend',
             videoEpoch: request.videoEpoch
         });
+}
+
+/** Replaces the run's presentation interval; the current attempt decimates by it from its next frame on. */
+function setVideoPresentationInterval(request: Extract<DecodeWorkerRequest, { type: 'set-video-presentation-interval' }>): void {
+    if (currentRun?.generation === request.generation) {
+        currentRun.videoPresentationIntervalMicroseconds = request.videoPresentationIntervalMicroseconds;
+    }
 }
 
 function handleAudioControlRequest(request: Extract<DecodeWorkerRequest, { type: 'resync-audio' }>): void {
@@ -4494,6 +4614,9 @@ function handleRequest(requestValue: unknown): void {
         case 'resync-video':
         case 'suspend-video':
             handleVideoControlRequest(requestValue);
+            break;
+        case 'set-video-presentation-interval':
+            setVideoPresentationInterval(requestValue);
             break;
         case 'stop':
             if (currentRun?.generation === requestValue.generation) {

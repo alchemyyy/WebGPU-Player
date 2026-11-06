@@ -1056,6 +1056,34 @@ These were settled on Firefox 157 on Windows.
   An unfinalized Matroska file, whose Segment size mkvmerge left at 0, gave Mediabunny no tracks after a read of every cluster, and the worker then reported a missing track ordinal.
   The worker now fails a container whose metadata names no video track as `source-unsupported` with its own message, so renegotiation names the cause; how long the metadata read takes is the demuxer's.
 
+## Playback rate
+
+- Custom playback takes every rate from 1/16x to 16x (11-06).
+  That is Chromium's media element range, so the HTML fallback takes every rate custom playback takes, and a host needs no second range.
+  No rate falls back to the HTML player, with audio or without.
+- Audio plays from 0.25x to 4x, time-stretched with its pitch kept, and a generation outside that range plays without audio (11-06).
+  Gecko mutes its media element outside 0.25x to 4x, as MDN's `playbackRate` page states, while Chromium time-stretches every rate it takes and mutes none; the engine plays audio only where both browsers do.
+  Outside it the controller restarts the generation without its audio track, rather than decoding muted audio, which at up to 16x would run decode, demux reads, and network at the rate for nothing.
+  The requested track is kept aside, and crossing back restarts with it; a change within either side applies live.
+- The time stretch is WSOLA in the AudioWorklet, not in the audio decode worker (11-06).
+  The ring then stays media-rate PCM, so the producer, resampler, limiter, credits, and progress keep their timing of one sample per sample period, and a rate change applies at the next render quantum with no resync and no gap.
+  It follows Chromium's `AudioRendererAlgorithm`: a 20 ms window, a half-window hop, 30 ms of candidate blocks, Hann windows, and a transition window that blends the natural continuation into the best block.
+  The search correlates the mono sum of the channels, first decimated by 4, then at full rate within 4 frames of the best coarse candidate, and the overlap-add runs on every channel.
+  Every buffer is allocated at construction, so rendering allocates nothing; in Node 24, 8 channels at 2x, an iteration with its search took a median of 0.066 ms and a p99 of 0.11 ms, against a 2.67 ms quantum and about one iteration per 3.75 quanta.
+- Above 1x the worker decimates video by a presentation interval, the rate times the display's refresh interval (11-06).
+  The display shows at most one frame per refresh, so frames between are lost anyway; dropping them only in the page's `takeFrame` still paid their decode, raw copy, and post, which at high rates outran the decoder and the page.
+  The frame-pool route is exempt, because a package's parser must see every packet; its page still drops frames it never presents.
+  In the sandbox, in Chrome 156 on an NVIDIA Blackwell GPU and a 144 Hz display, a 1080p24 H.264 file at 8x posted 144 of its 192 frames a second, of which the page presented 97, the grid's phase not being the refresh's, and a 1080p24 x265 file at 16x posted 144 of its 384, nearly all presented; both ran at the full rate, without audio.
+- Only owned HEVC skips decoding pictures that can never present (11-06).
+  An HEVC picture whose every base-layer slice is a sub-layer non-reference type at the highest temporal sub-layer is referenced by no later picture, which its NAL unit headers alone tell, so skipping it leaves every other picture intact; seeks gain from it too, since such pictures before the start are skipped as well.
+  H.264 is not skipped because it decodes inside Mediabunny's sample cursor, which decodes every packet, and AV1 and VP9 because a non-reference picture shows only in its frame header's `refresh_frame_flags`, which needs a frame header parse per packet; they decimate but decode every packet.
+  On that 1080p24 x265 file, whose b-pyramid makes about 55% of its pictures unreferenced, 16x skipped 591 of 1580 packets read without decoding them and decimated 391 decoded frames, and 8x skipped 207 of 1409 and decimated 146; a 60 Hz display, whose interval is 2.4 times as long, keeps fewer frames and skips more.
+- Above 1x video that falls behind jumps to the next keyframe instead of renegotiating on `playback-stalled` (11-06).
+  A decoder slower than the rate never catches up, so the old wait ended in a stall and a renegotiation that played no faster.
+  The jump goes 250 ms of wall time ahead of the clock, scaled to media time by the rate, once a frame is 500 ms of wall time behind, at most the 2 s lag bound; at or below 1x the old guard stays.
+  The keyframe a jump lands on presents even when it arrives late: with the page's CPU throttled 20x at 4x with audio, every keyframe first came too late, was dropped, and jumped again, so the wait never ended and stalled into `playback-stalled` near the end of the stream.
+  Presenting it, the same trial jumped six times in 12 s, showed a picture after each, played audio without an underflow, and ended the stream normally.
+
 ## Audio
 
 - Output routing (08-07, `cde9dba045`).

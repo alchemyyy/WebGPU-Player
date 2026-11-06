@@ -66,6 +66,7 @@ export class FakeStreamRun implements OwnedVideoStreamRun {
     public decodeFence?: VideoDecodeFence;
     public holdSleeps = false;
     public readonly postedFrames: PostedFrame[] = [];
+    public presentationIntervalMicroseconds: Microseconds | null = null;
     public readonly progress: Array<[OwnedVideoStreamProgressPhase, number, number]> = [];
     public readonly sleepDurations: number[] = [];
     public stopped = false;
@@ -74,6 +75,13 @@ export class FakeStreamRun implements OwnedVideoStreamRun {
     private readonly sleepWaiters: Array<() => void> = [];
 
     public constructor(private credits: number) {}
+
+    /** Returns the frame credits not yet taken. */
+    public getRemainingCredits(): number {
+        return this.credits;
+    }
+
+    public readonly getPresentationIntervalMicroseconds = (): Microseconds | null => this.presentationIntervalMicroseconds;
 
     public readonly isStopped = (): boolean => this.stopped;
 

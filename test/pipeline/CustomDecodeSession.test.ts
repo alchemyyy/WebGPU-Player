@@ -2640,6 +2640,177 @@ describe('CustomDecodeSession', () => {
         });
     });
 
+    it('asks for a forward video resync at the first key packet at or after the target', () => {
+        const worker = new MockWorker();
+        const session = new CustomDecodeSession(
+            () => undefined,
+            () => worker as unknown as Worker
+        );
+        startSession(session, 61);
+        emitRawReady(worker, 61);
+        const postedMessageCount = worker.postedMessages.length;
+
+        expect(session.resyncVideo(secondsToMicroseconds(5), 'next')).toBe(true);
+
+        const resyncRequest = worker.postedMessages[postedMessageCount];
+        expect(resyncRequest).toEqual({
+            generation: 61,
+            keyframe: 'next',
+            targetTimeMicroseconds: 5_000_000,
+            type: 'resync-video',
+            videoEpoch: 1
+        });
+        expect(isDecodeWorkerRequest(resyncRequest)).toBe(true);
+    });
+
+    it('carries the video presentation interval into every later start and posts each change to the running generation', () => {
+        const worker = new MockWorker();
+        const session = new CustomDecodeSession(
+            () => undefined,
+            () => worker as unknown as Worker
+        );
+        const getStartRequests = (): unknown[] => getPostedMessagesOfType(worker, 'start').map(({ message }) => message);
+        const getIntervalRequests = (): unknown[] => getPostedMessagesOfType(worker, 'set-video-presentation-interval').map(({ message }) => message);
+
+        session.setVideoPresentationInterval(requireMicroseconds(33_333, 'interval'));
+        startSession(session, 62);
+        expect(getStartRequests().at(-1)).toMatchObject({ generation: 62, videoPresentationIntervalMicroseconds: 33_333 });
+        expect(isDecodeWorkerRequest(getStartRequests().at(-1))).toBe(true);
+        expect(getIntervalRequests()).toHaveLength(0);
+
+        session.setVideoPresentationInterval(null);
+        expect(getIntervalRequests()).toEqual([
+            { generation: 62, type: 'set-video-presentation-interval', videoPresentationIntervalMicroseconds: null }
+        ]);
+        startSession(session, 63);
+        expect(getStartRequests().at(-1)).not.toHaveProperty('videoPresentationIntervalMicroseconds');
+
+        session.setVideoPresentationInterval(requireMicroseconds(50_000, 'interval'));
+        expect(getIntervalRequests().at(-1)).toEqual({
+            generation: 63,
+            type: 'set-video-presentation-interval',
+            videoPresentationIntervalMicroseconds: 50_000
+        });
+        expect(isDecodeWorkerRequest(getIntervalRequests().at(-1))).toBe(true);
+        startSession(session, 64);
+        expect(getStartRequests().at(-1)).toMatchObject({ generation: 64, videoPresentationIntervalMicroseconds: 50_000 });
+
+        for (const invalidInterval of [ 0, -33_333, 33_333.5, Number.NaN ]) {
+            expect(() => session.setVideoPresentationInterval(invalidInterval as Microseconds)).toThrow(RangeError);
+        }
+    });
+
+    it.each([
+        // 150 ms of media at 1.5x, 7 200 frames at 48 kHz, which the eighth 1 024-frame chunk passes
+        [ 1.5, 8 ],
+        // 400 ms of media at 4x, capped at 200 ms, 9 600 frames, which the tenth chunk passes
+        [ 4, 10 ]
+    ])('buffers decoded audio for the rate before reporting ready at %sx, up to 200 ms of media', (playbackRate: number, readyChunkCount: number) => {
+        const worker = new MockWorker();
+        const audioBridge = createSubmittingAudioBridge(3);
+        const session = new CustomDecodeSession(
+            () => undefined,
+            () => worker as unknown as Worker,
+            audioBridge
+        );
+        session.setPlaybackRate(playbackRate);
+        startSession(session, 65, 1);
+        worker.emitMessage({
+            audio: { channelCount: 2, codec: 'pcm-s24', sampleRate: DECODED_AUDIO_SAMPLE_RATE },
+            codec: 'hev1.2.4.L153.B0',
+            codedHeight: 1_080,
+            codedWidth: 1_920,
+            displayHeight: 1_080,
+            displayWidth: 1_920,
+            generation: 65,
+            type: 'ready'
+        });
+        emitFrame(worker, 65, 1_000_000);
+
+        for (let chunkIndex = 1; chunkIndex <= readyChunkCount; chunkIndex += 1) {
+            emitAudioProgress(worker, 65, 1_000_000, 0, 1_024);
+            expect(session.getTelemetry().state).toBe(chunkIndex < readyChunkCount ? 'configured' : 'ready');
+        }
+        expect(() => session.setPlaybackRate(0)).toThrow(RangeError);
+    });
+
+    it('plays the current native media audio bridge at the rate, and every later one once it starts', async () => {
+        const worker = new MockWorker();
+        type RateBridge = {
+            bridge: CustomDecodeNativeAudioBridge
+            /** Settles at the bridge's first rate */
+            rateApplied: Promise<void>
+            setPlaybackRate: Mock
+        };
+        const createBridge = (): RateBridge => {
+            const { promise: rateApplied, resolve } = createDeferred<undefined>();
+            const setPlaybackRate = vi.fn((): void => resolve(undefined));
+            const bridge = {
+                initialAudioSegmentCredits: 2,
+                setPlaybackRate,
+                start: vi.fn(async (): Promise<boolean> => true),
+                stop: vi.fn(async (): Promise<boolean> => true)
+            } as unknown as CustomDecodeNativeAudioBridge;
+            return { bridge, rateApplied, setPlaybackRate };
+        };
+        const bridges = [ createBridge(), createBridge() ];
+        let createdBridgeCount = 0;
+        const session = new CustomDecodeSession(
+            () => undefined,
+            () => worker as unknown as Worker,
+            null,
+            null,
+            () => bridges[createdBridgeCount++].bridge
+        );
+        const startNativeAudioGeneration = (generation: number): void => {
+            session.start({
+                audioOutputMode: 'native-media',
+                audioTrackIndex: 0,
+                dolbyVisionProfile: null,
+                durationMicroseconds: secondsToMicroseconds(10),
+                generation,
+                maximumCodedHeight: 1_080,
+                maximumCodedWidth: 1_920,
+                nativeHDRTransfer: null,
+                neutralizeHDRColorMetadata: false,
+                rawVideoFrameFormat: null,
+                startTimeMicroseconds: secondsToMicroseconds(1),
+                source: { kind: 'url', url: 'http://localhost/video.mp4?ApiKey=secret' },
+                videoDecoderBackend: 'native',
+                videoOutputMode: 'video-frame',
+                videoTrackIndex: 0
+            });
+            worker.emitMessage({
+                audio: {
+                    channelCount: 6,
+                    codec: 'ec-3',
+                    mimeType: 'audio/mp4; codecs="ec-3"',
+                    outputMode: 'native-media',
+                    sampleRate: 48_000
+                },
+                codec: 'hev1.2.4.L153.B0',
+                codedHeight: 1_080,
+                codedWidth: 1_920,
+                displayHeight: 1_080,
+                displayWidth: 1_920,
+                generation,
+                type: 'ready'
+            });
+        };
+
+        session.setPlaybackRate(2);
+        startNativeAudioGeneration(66);
+        await bridges[0].rateApplied;
+        expect(bridges[0].setPlaybackRate.mock.calls).toEqual([ [ 2 ] ]);
+
+        session.setPlaybackRate(1.5);
+        expect(bridges[0].setPlaybackRate.mock.calls.at(-1)).toEqual([ 1.5 ]);
+
+        startNativeAudioGeneration(67);
+        await bridges[1].rateApplied;
+        expect(bridges[1].setPlaybackRate.mock.calls).toEqual([ [ 1.5 ] ]);
+    });
+
     it('advances one epoch sequence across suspension and resync without empty pulls', () => {
         const worker = new MockWorker();
         const session = new CustomDecodeSession(

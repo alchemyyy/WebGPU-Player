@@ -15,6 +15,7 @@ import {
     RAW_VIDEO_DOLBY_VISION_ENHANCEMENT_FRAME_FORMAT,
     type RawVideoFrameGeometry
 } from '../RawVideoFrameCopy';
+import { isVideoFramePresentable } from '../VideoPresentationInterval';
 import type { VideoDecodeFence } from './VideoDecodeFence';
 
 // Every queued packet becomes a frame that may wait in the pair queue for a credit, so the decode queue plus the decodes in flight must fit under that queue's bound
@@ -22,8 +23,9 @@ const OWNED_VIDEO_DECODE_QUEUE_HIGH_WATER_MARK = MAXIMUM_DOLBY_VISION_FRAME_PAIR
 // A hardware decoder returns a picture a few milliseconds after it takes the packet.
 // Waiting up to this long for that picture before the next packet keeps decode at one packet per presented frame.
 export const OWNED_VIDEO_PACKET_PACING_MILLISECONDS = 10;
-// A preroll's frames, decoded but never shown, go to the decoder in batches of this many frames: before the packet after a batch is read,
-// the GPU must have decoded the batch before it, so the decoder never runs more than two batches ahead of the GPU, and never idles between batches.
+// Frames decoded but never shown, a preroll's and those a presentation interval decimates, count toward batches of this many frames:
+// before the packet after a batch is read, the GPU must have decoded the batch before it, so the decoder never runs more than two batches ahead of the GPU,
+// and never idles between batches.
 export const OWNED_VIDEO_PREROLL_BATCH_FRAME_COUNT = 4;
 const OWNED_VIDEO_PREROLL_BATCHES_AHEAD = 2;
 // Bounds one fence wait, so a GPU that never reports its work done only ends the batching, never the decode
@@ -92,10 +94,15 @@ export type OwnedVideoStreamProgressPhase =
     | 'video-packet-decoded'
     | 'video-packet-started';
 
-/** The decode run an owned stream belongs to: its frame credits, its stop state, and where its frames go. */
+/** The decode run an owned stream belongs to: its frame credits, its stop state, its presentation interval, and where its frames go. */
 export type OwnedVideoStreamRun = {
     /** Waits for the GPU's decode of a frame; without it, a preroll reads on at the pace the decoder returns frames. */
     decodeFence?: VideoDecodeFence
+    /**
+     * Returns the run's current video presentation interval: after an attempt's first presented frame, a frame no multiple of it falls within is
+     * closed unposted; null posts every frame.
+     */
+    getPresentationIntervalMicroseconds: () => Microseconds | null
     /** Returns whether the run or only its current video attempt must unwind. */
     isStopped: () => boolean
     notifyDecoderProgress: () => void
@@ -114,7 +121,13 @@ export type OwnedVideoStreamRun = {
     waitForFrameCredit: () => Promise<boolean>
 };
 
-export type OwnedVideoPacketDecoder = (packet: EncodedPacket, packetMediaTimeMicroseconds: Microseconds) => Promise<boolean>;
+/** What became of one packet: decoded, skipped undecoded as a picture that never presents, or left unread because the attempt stopped. */
+export type OwnedVideoPacketDecodeResult = 'decoded' | 'skipped' | 'stopped';
+
+export type OwnedVideoPacketDecoder = (
+    packet: EncodedPacket,
+    packetMediaTimeMicroseconds: Microseconds
+) => Promise<OwnedVideoPacketDecodeResult>;
 
 /** One packet after its metadata was recorded in decode order. */
 export type ProcessedOwnedVideoPacket = {
@@ -236,7 +249,8 @@ function isComposableEnhancementSource(source: OwnedDecodedVideoSource, expected
 }
 
 /**
- * The codec-neutral state of one owned decode attempt: decoded outputs matched with their packets' metadata, the pre-start rule, BL and EL pairing, the held frame credit, and decoder failures.
+ * The codec-neutral state of one owned decode attempt: decoded outputs matched with their packets' metadata, the pre-start rule, the presentation interval's
+ * decimation, BL and EL pairing, the held frame credit, and decoder failures.
  */
 export class OwnedVideoStreamState {
     private decoderFailure: unknown = null;
@@ -247,12 +261,15 @@ export class OwnedVideoStreamState {
     >(closeOwnedDecodedVideoOutput, closeOwnedDecodedVideoOutput);
     private decodedOutputCount = 0;
     private firstPresentationOutputQueued = false;
+    // The media time of the frame that presents first, once queued; outputs and pictures after it are decimated off the presentation grid
+    private firstPresentedMediaTimeMicroseconds: Microseconds | null = null;
     private frameCreditHeld = false;
     private preStartOutput: OwnedDecodedVideoOutput | null = null;
-    private preStartOutputCount = 0;
+    // Outputs decoded but never posted: the preroll's, then the decimated ones
+    private unshownOutputCount = 0;
     private decodeFencePrepared = false;
-    // The fences of the preroll's batches, oldest first, and the fence of the frame that ends the preroll
-    private readonly prerollFences: Promise<void>[] = [];
+    // The fences of the batches of unshown outputs, oldest first, and the fence of the frame that ends a preroll
+    private readonly unshownOutputFences: Promise<void>[] = [];
     private firstPresentationFence: Promise<void> | null = null;
     public packetsEnded = false;
 
@@ -288,6 +305,8 @@ export class OwnedVideoStreamState {
      * Takes one decoded BL output with its packet's metadata.
      * Outputs before the start time are dropped except the latest one, which leads the first presented frame, so presentation does not start late;
      * a frame at the start time itself presents first, and then nothing before it does.
+     * After the first presented frame, an output no multiple of the presentation interval falls within is closed unposted and spends no credit.
+     * Dropped and decimated outputs go to the GPU in batches alike.
      */
     public enqueueDecodedOutput(source: OwnedDecodedVideoSource): void {
         // Counted before any check, so an output that fails or precedes the start still ends a pacing wait
@@ -310,14 +329,17 @@ export class OwnedVideoStreamState {
                 closeOwnedDecodedVideoOutput(this.preStartOutput);
                 this.preStartOutput = decodedOutput;
                 decodedOutput = null;
-                this.preStartOutputCount += 1;
-                if (this.preStartOutputCount % OWNED_VIDEO_PREROLL_BATCH_FRAME_COUNT === 0) {
-                    this.prerollFences.push(this.startDecodeFence(source));
-                }
+                this.countUnshownOutput(source);
                 return;
             }
 
             this.queueFirstPresentationOutput(decodedOutput);
+            if (this.isDecimated(timing.mediaTimeMicroseconds, timing.durationMicroseconds)) {
+                recordTimingEvent('video-frame-decimated', { mediaTimeMicroseconds: timing.mediaTimeMicroseconds });
+                // The fence clones the frame, which the finally block closes
+                this.countUnshownOutput(source);
+                return;
+            }
             this.queueBaseOutput(decodedOutput);
             decodedOutput = null;
         } finally {
@@ -385,23 +407,37 @@ export class OwnedVideoStreamState {
     }
 
     /**
-     * Queues one cleaned BL packet.
-     * A frame the decoder drops, such as a leading RASL picture, gives back its packet's metadata.
+     * Queues one cleaned BL packet, or skips a picture no later picture references when it can never present: it ends at or before the start time,
+     * or it follows the first presented frame and no multiple of the presentation interval falls within it. Nothing is skipped while an EL decodes.
+     * A frame the decoder drops, such as a leading RASL picture, and a skipped picture give back their packet's metadata.
      */
     public decodeBasePacket(
         sourcePacket: EncodedPacket,
         decoderPacket: EncodedPacket | null,
         hasFrame: boolean,
-        decoder: OwnedVideoDecoderPort
-    ): void {
+        decoder: OwnedVideoDecoderPort,
+        unreferencedPicture = false
+    ): Exclude<OwnedVideoPacketDecodeResult, 'stopped'> {
         if (!decoderPacket) {
-            return;
+            return 'decoded';
+        }
+        if (hasFrame && unreferencedPicture && !this.canDecodeEnhancement()) {
+            const mediaTimeMicroseconds = requireMicroseconds(sourcePacket.microsecondTimestamp, 'Owned video packet timestamp');
+            const durationMicroseconds = requireMicroseconds(sourcePacket.microsecondDuration, 'Owned video packet duration');
+            // A picture without a duration never provably ends before the start
+            const endsBeforeStart = durationMicroseconds > 0 && mediaTimeMicroseconds + durationMicroseconds <= this.startTimeMicroseconds;
+            if (endsBeforeStart || this.isDecimated(mediaTimeMicroseconds, durationMicroseconds)) {
+                recordTimingEvent('video-packet-skipped', { mediaTimeMicroseconds });
+                this.frameMetadata.takeFrameMetadata(mediaTimeMicroseconds);
+                return 'skipped';
+            }
         }
         // The demuxer may keep reading its own buffer, so only a buffer the packet's processing allocated transfers
         const packetAccepted = decoder.decode(decoderPacket, decoderPacket.data.buffer !== sourcePacket.data.buffer);
         if (!packetAccepted && hasFrame) {
             this.frameMetadata.takeFrameMetadata(sourcePacket.microsecondTimestamp);
         }
+        return 'decoded';
     }
 
     public async finishPackets(decoder: OwnedVideoDecoderPort, enhancementDecoder: OwnedVideoDecoderPort | null): Promise<void> {
@@ -499,13 +535,14 @@ export class OwnedVideoStreamState {
     }
 
     /**
-     * Waits, during a preroll, until the decoder is at most two batches ahead of the GPU: the oldest batch's frames must be decoded on the GPU
+     * Waits until the decoder is at most two batches of unshown outputs ahead of the GPU: the oldest batch's frames must be decoded on the GPU
      * before the decoder takes a packet past the next batch.
-     * Reading on at the pace the decoder returns frames would queue the whole preroll's decode work on the GPU, where the first presented frame waits behind it.
+     * Reading on at the pace the decoder returns frames would queue a whole preroll's or a decimated run's decode work on the GPU, where the next
+     * presented frame waits behind it.
      */
-    public async waitForPrerollBatches(): Promise<void> {
-        while (this.prerollFences.length >= OWNED_VIDEO_PREROLL_BATCHES_AHEAD) {
-            await this.waitForDecodeFences(this.prerollFences.splice(0, 1));
+    public async waitForUnshownOutputBatches(): Promise<void> {
+        while (this.unshownOutputFences.length >= OWNED_VIDEO_PREROLL_BATCHES_AHEAD) {
+            await this.waitForDecodeFences(this.unshownOutputFences.splice(0, 1));
         }
     }
 
@@ -542,13 +579,31 @@ export class OwnedVideoStreamState {
             leadingOutput = null;
         }
         const firstPresentedOutput = leadingOutput ?? firstOutput;
-        if (this.preStartOutputCount > 0 && firstPresentedOutput) {
+        this.firstPresentedMediaTimeMicroseconds = firstPresentedOutput?.mediaTimeMicroseconds ?? null;
+        // Nothing is decimated before the first presented frame, so every unshown output so far was the preroll's
+        if (this.unshownOutputCount > 0 && firstPresentedOutput) {
             // The frame that ends a preroll posts once the GPU decoded it, so its presentation never waits behind the preroll's decode work
             this.firstPresentationFence = this.startDecodeFence(firstPresentedOutput.source);
         }
         if (leadingOutput) {
             this.queueBaseOutput(leadingOutput);
         }
+    }
+
+    /** Counts an output decoded but never posted, and starts a decode fence on the last of each batch. */
+    private countUnshownOutput(source: OwnedDecodedVideoSource): void {
+        this.unshownOutputCount += 1;
+        if (this.unshownOutputCount % OWNED_VIDEO_PREROLL_BATCH_FRAME_COUNT === 0) {
+            this.unshownOutputFences.push(this.startDecodeFence(source));
+        }
+    }
+
+    /** Returns whether a frame after the first presented one has no multiple of the presentation interval within it; never while an EL decodes. */
+    private isDecimated(mediaTimeMicroseconds: Microseconds, durationMicroseconds: Microseconds): boolean {
+        return this.firstPresentedMediaTimeMicroseconds !== null
+            && mediaTimeMicroseconds > this.firstPresentedMediaTimeMicroseconds
+            && !this.canDecodeEnhancement()
+            && !isVideoFramePresentable(mediaTimeMicroseconds, durationMicroseconds, this.stream.getPresentationIntervalMicroseconds());
     }
 
     /** Waits, before the first post, for the GPU to decode the preroll and the frame that ends it; false when the run stopped meanwhile. */
@@ -558,7 +613,7 @@ export class OwnedVideoStreamState {
             return true;
         }
         this.firstPresentationFence = null;
-        await this.waitForDecodeFences([ ...this.prerollFences.splice(0), fence ]);
+        await this.waitForDecodeFences([ ...this.unshownOutputFences.splice(0), fence ]);
         return !this.stream.isStopped();
     }
 
@@ -618,8 +673,10 @@ export async function readNextVideoPacket(packetIterator: OwnedVideoPacketIterat
  * Pumps one owned attempt until it stops or every frame is posted.
  * Ready frames are posted first.
  * A packet is read only while a frame credit is held and the decoders are under their queue bound.
- * Each packet then waits, up to the pacing bound, for the decoder to return a picture, so decode work follows presentation instead of arriving in bursts.
- * A preroll, whose frames precede the start and never present, reads at the pace the decoder returns frames, in batches the GPU must keep up with.
+ * Each decoded packet then waits, up to the pacing bound, for the decoder to return a picture, so decode work follows presentation instead of arriving in bursts;
+ * a skipped packet returns none to wait for.
+ * A preroll, whose frames precede the start and never present, and a run of decimated frames read at the pace the decoder returns frames,
+ * in batches the GPU must keep up with.
  * The end of the track flushes the decoders.
  */
 export async function pumpOwnedVideoFrames(
@@ -652,7 +709,7 @@ export async function pumpOwnedVideoFrames(
         if (!await state.acquireFrameCredit()) {
             return;
         }
-        await state.waitForPrerollBatches();
+        await state.waitForUnshownOutputBatches();
 
         const packetResult = await readNextVideoPacket(packetIterator);
         if (stream.isStopped()) {
@@ -670,8 +727,13 @@ export async function pumpOwnedVideoFrames(
         state.prepareDecodeFence(packetMediaTimeMicroseconds);
         stream.postStartupProgress('video-packet-started', packetCount, packetMediaTimeMicroseconds);
         const decodedOutputCountBeforePacket = state.getDecodedOutputCount();
-        if (!await decodePacket(packetResult.value, packetMediaTimeMicroseconds)) {
-            return;
+        switch (await decodePacket(packetResult.value, packetMediaTimeMicroseconds)) {
+            case 'decoded':
+                break;
+            case 'skipped':
+                continue;
+            case 'stopped':
+                return;
         }
         stream.postStartupProgress('video-packet-decoded', packetCount, packetMediaTimeMicroseconds);
         await state.waitForPacedOutput(decodedOutputCountBeforePacket);
@@ -705,11 +767,11 @@ export async function runOwnedSingleLayerVideoStream(
             stream.notifyDecoderProgress();
         }
     });
-    const decodePacket = async (packet: EncodedPacket): Promise<boolean> => {
+    const decodePacket = async (packet: EncodedPacket): Promise<OwnedVideoPacketDecodeResult> => {
         const processedPacket = await processPacket(packet);
-        state.decodeBasePacket(packet, processedPacket.decoderPacket, processedPacket.hasFrame, decoder);
+        const decodeResult = state.decodeBasePacket(packet, processedPacket.decoderPacket, processedPacket.hasFrame, decoder);
         state.throwDecoderFailure();
-        return true;
+        return decodeResult;
     };
     try {
         await decoder.init();

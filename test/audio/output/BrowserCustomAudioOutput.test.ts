@@ -122,6 +122,7 @@ type WorkletControllerHarness = {
     onTelemetry: Mock
     seek: Mock
     setMuted: Mock
+    setPlaybackRate: Mock
     setPlaying: Mock
     setSignalAnalysis: Mock
     setVolume: Mock
@@ -198,6 +199,7 @@ function createWorkletController(channelCount = 2): WorkletControllerHarness {
         }),
         seek: vi.fn((): number => 2),
         setMuted: vi.fn(),
+        setPlaybackRate: vi.fn(),
         setPlaying: vi.fn(),
         setSignalAnalysis: vi.fn(),
         setVolume: vi.fn()
@@ -218,6 +220,7 @@ function createTelemetry(
         outputFrames: 4_096,
         overflowEvents: 0,
         overflowFrames: 0,
+        playbackRate: 1,
         playing: true,
         queuedFrames: 2_048,
         reason: 'periodic',
@@ -291,6 +294,13 @@ function subscribeOutputDeviceChange(
         throw new Error('Browser audio output does not report device changes');
     }
     return output.onOutputDeviceChange(listener);
+}
+
+function setOutputPlaybackRate(output: CustomAudioOutput, playbackRate: number): void {
+    if (!output.setPlaybackRate) {
+        throw new Error('Browser audio output does not time-stretch');
+    }
+    output.setPlaybackRate(playbackRate);
 }
 
 describe('BrowserCustomAudioOutput', () => {
@@ -625,6 +635,23 @@ describe('BrowserCustomAudioOutput', () => {
             mediaTimeMicroseconds: secondsToMicroseconds(4.95)
         });
         expect(rawListener).toHaveBeenCalledWith(rawTelemetry);
+
+        await binding.output.destroy();
+    });
+
+    it('maps the output correction to media time at the rate the processor rendered at', async () => {
+        const workletController = createWorkletController();
+        // The processor renders twice as fast as the context, so the 50 ms between the rendered and the audible point hold 100 ms of media
+        const rawTelemetry = createTelemetry({ playbackRate: 2 });
+        workletController.getTelemetry.mockReturnValue(rawTelemetry);
+        audioWorkletMockState.create.mockResolvedValue(workletController);
+        const binding = await createBrowserCustomAudioOutputFactory()(createAudioConfiguration(2));
+
+        expect(binding.output.getTelemetry()).toEqual({
+            ...rawTelemetry,
+            hasPhysicalOutputTimeCorrelation: true,
+            mediaTimeMicroseconds: secondsToMicroseconds(4.9)
+        });
 
         await binding.output.destroy();
     });
@@ -1211,6 +1238,8 @@ describe('BrowserCustomAudioOutput', () => {
         binding.output.onTelemetry(mappedListener);
         binding.output.setVolume(0.5);
         binding.output.setMuted(true);
+        setOutputPlaybackRate(binding.output, 2);
+        expect(stereoController.setPlaybackRate).toHaveBeenCalledExactlyOnceWith(2);
         // The playback controller stops the output before it switches the layout
         await binding.output.setPlaying(false);
         expect(binding.output.generation).toBe(1);
@@ -1234,6 +1263,7 @@ describe('BrowserCustomAudioOutput', () => {
         expect(audioContext.destination.channelCount).toBe(6);
         expect(surroundController.setVolume).toHaveBeenCalledExactlyOnceWith(0.5);
         expect(surroundController.setMuted).toHaveBeenCalledExactlyOnceWith(true);
+        expect(surroundController.setPlaybackRate).toHaveBeenCalledExactlyOnceWith(2);
         // The new worklet takes the recorded stopped state
         expect(surroundController.setPlaying).toHaveBeenCalledExactlyOnceWith(false);
         expect(bridge).toBeInstanceOf(CustomDecodeAudioBridge);
@@ -1457,12 +1487,15 @@ describe('BrowserCustomAudioOutput', () => {
         expect(stereoController.destroy).toHaveBeenCalledOnce();
         binding.output.setVolume(0.4);
         binding.output.setMuted(true);
+        setOutputPlaybackRate(binding.output, 1.5);
         await binding.output.setPlaying(true);
         expect(() => binding.output.setVolume(Number.NaN)).toThrow(RangeError);
+        expect(() => setOutputPlaybackRate(binding.output, 0)).toThrow(RangeError);
         expect(binding.output.getTelemetry()).toBeNull();
         expect(binding.output.generation).toBe(1);
         expect(stereoController.setVolume).not.toHaveBeenCalled();
         expect(stereoController.setMuted).not.toHaveBeenCalled();
+        expect(stereoController.setPlaybackRate).not.toHaveBeenCalled();
         expect(stereoController.setPlaying).not.toHaveBeenCalled();
 
         const surroundBridge = await reconfigureOutput(
@@ -1478,6 +1511,7 @@ describe('BrowserCustomAudioOutput', () => {
         expect(binding.output.generation).toBe(2);
         expect(surroundController.setVolume).toHaveBeenCalledExactlyOnceWith(0.4);
         expect(surroundController.setMuted).toHaveBeenCalledExactlyOnceWith(true);
+        expect(surroundController.setPlaybackRate).toHaveBeenCalledExactlyOnceWith(1.5);
         expect(surroundController.setPlaying).toHaveBeenCalledExactlyOnceWith(true);
 
         await binding.output.destroy();

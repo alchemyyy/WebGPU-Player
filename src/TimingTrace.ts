@@ -40,10 +40,16 @@ export const TIMING_TRACE_EVENT_KINDS = Object.freeze([
     'video-decode-fence',
     // Worker: an owned decode path's decoder returned a frame
     'video-decoded',
+    // Worker: a decoded frame that can never present was closed unposted
+    'video-frame-decimated',
     // Worker: a decoded frame left the worker
     'video-frame-output',
+    // Worker: an owned HEVC path skipped the decode of a picture that is never presented and never referenced
+    'video-packet-skipped',
     // Worker: the video decode loop waited for its next packet or sample
-    'video-read'
+    'video-read',
+    // Page: the controller restarted video alone at the next keyframe ahead of a clock it lagged
+    'video-resync'
 ] as const);
 
 export type TimingTraceEventKind = typeof TIMING_TRACE_EVENT_KINDS[number];
