@@ -17,3 +17,9 @@ export function openGPUDecoderParser(
     host ??= new GPUDecoderCoordinatorHost((): Worker => createEngineWorker(COORDINATOR_WORKER_PATH));
     return host.open(parser, packageVersion, codecPrivate);
 }
+
+/** Ends the coordinator worker and its parse workers, as when the decode worker's runs move to another backend; a later open starts them again. */
+export function releaseGPUDecoderParsers(): void {
+    host?.destroy();
+    host = null;
+}

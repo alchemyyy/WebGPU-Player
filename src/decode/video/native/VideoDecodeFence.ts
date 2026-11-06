@@ -24,9 +24,11 @@ const TEXEL_BINDING = 1;
 /**
  * A fence over a native decoder's frames.
  * `wait` takes ownership of a frame, closes it, and resolves once the GPU has finished decoding it, or at once while no device serves fences:
- * before the first device is ready, and for good once the browser refuses one or loses it.
+ * before the first device is ready, and for good once the browser refuses one or loses it, or once the fence is destroyed.
  */
 export type VideoDecodeFence = {
+    /** Destroys the fence's device, or the one still being created once it is ready; later waits resolve at once */
+    destroy: () => void
     /** Starts creating the fence's device, so the fences of a preroll about to start find it ready */
     prewarm: () => void
     wait: (frame: VideoFrame) => Promise<void>
@@ -85,6 +87,7 @@ function submitFrameRead(fenceDevice: FenceDevice, frame: VideoFrame): void {
  */
 export function createVideoDecodeFence(gpu: GPU | undefined): VideoDecodeFence {
     let state: FenceState = gpu ? { kind: 'idle' } : { kind: 'unavailable' };
+    let destroyed = false;
 
     const prewarm = (): void => {
         if (state.kind !== 'idle' || !gpu) {
@@ -92,6 +95,10 @@ export function createVideoDecodeFence(gpu: GPU | undefined): VideoDecodeFence {
         }
         state = { kind: 'pending' };
         createFenceDevice(gpu).then((fenceDevice: FenceDevice): void => {
+            if (destroyed) {
+                fenceDevice.device.destroy();
+                return;
+            }
             state = { fenceDevice, kind: 'ready' };
             void fenceDevice.device.lost.then((): void => {
                 state = { kind: 'unavailable' };
@@ -119,5 +126,13 @@ export function createVideoDecodeFence(gpu: GPU | undefined): VideoDecodeFence {
         }
     };
 
-    return { prewarm, wait };
+    const destroy = (): void => {
+        destroyed = true;
+        if (state.kind === 'ready') {
+            state.fenceDevice.device.destroy();
+        }
+        state = { kind: 'unavailable' };
+    };
+
+    return { destroy, prewarm, wait };
 }

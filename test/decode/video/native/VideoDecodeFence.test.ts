@@ -145,4 +145,34 @@ describe('createVideoDecodeFence', () => {
         expect(deviceHarness.importExternalTexture).toHaveBeenCalledOnce();
         expect(deviceHarness.queueSubmit).not.toHaveBeenCalled();
     });
+
+    it('destroys its device once destroyed, and serves no fence after', async () => {
+        const { deviceHarness, gpu, requestAdapter } = createFenceGPU();
+        const fence = createVideoDecodeFence(gpu);
+        fence.prewarm();
+        await settle();
+
+        fence.destroy();
+        const frame = createFrame();
+        await fence.wait(asVideoFrame(frame));
+
+        expect(deviceHarness.destroy).toHaveBeenCalledOnce();
+        expect(deviceHarness.importExternalTexture).not.toHaveBeenCalled();
+        expect(frame.close).toHaveBeenCalledOnce();
+        // A destroyed fence creates no device again
+        expect(requestAdapter).toHaveBeenCalledOnce();
+    });
+
+    it('destroys a device that was still being created when the fence was destroyed', async () => {
+        const { deviceHarness, gpu } = createFenceGPU();
+        const fence = createVideoDecodeFence(gpu);
+        fence.prewarm();
+
+        fence.destroy();
+        await settle();
+        await fence.wait(asVideoFrame(createFrame()));
+
+        expect(deviceHarness.destroy).toHaveBeenCalledOnce();
+        expect(deviceHarness.importExternalTexture).not.toHaveBeenCalled();
+    });
 });

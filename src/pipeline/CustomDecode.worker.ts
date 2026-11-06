@@ -173,7 +173,7 @@ import {
 import type { GPUDecoderParserRemotePipeline } from '../decode/video/gpu/GPUDecoderCoordinatorHost';
 import type { GPUDecoderOutputFormat } from '../decode/video/gpu/GPUDecodeFormats';
 import type { GPUDecoderPictureSize, GPUVideoDecodeRecovery } from '../decode/video/gpu/GPUDecodeTypes';
-import { openGPUDecoderParser } from '../decode/video/gpu/GPUDecoderWorkerCoordinator';
+import { openGPUDecoderParser, releaseGPUDecoderParsers } from '../decode/video/gpu/GPUDecoderWorkerCoordinator';
 import NativeMediaAudioFMP4Remuxer, {
     type NativeMediaAudioFMP4Codec,
     type NativeMediaAudioFMP4RemuxOutput
@@ -574,13 +574,14 @@ function openMediaSource(run: DecodeRun, source: CustomDecodeMediaSource): Sourc
 
 /**
  * Starts or releases the head read of the next run's URL source.
- * Only a worker that holds no run prefetches, as the page's idle worker does, so a prefetch never takes the source of a run from it.
+ * Only a worker whose run, if any, is stopped prefetches, as the page's idle worker is and as a destroyed session's is once its run got `stop`, so a
+ * prefetch never takes the source of a live run from it; the stopped run's reads were canceled, and its later release leaves the prefetch's source.
  * A run over the same URL acquires the source and continues on the prefetch's response; a run over another URL releases it.
  */
 function handleSourcePrefetchRequest(request: DecodeWorkerSourcePrefetchRequest): void {
     switch (request.type) {
         case 'prefetch-source': {
-            if (currentRun || request.source.kind !== 'url') {
+            if ((currentRun !== null && !currentRun.cancelled) || request.source.kind !== 'url') {
                 return;
             }
             const source = request.source;
@@ -2418,8 +2419,32 @@ function createOwnedHEVCVideoDecoderPort(
     );
 }
 
-// The decode fence of every owned attempt this worker runs, whose device the first preroll creates and the worker keeps
+// The decode fence of every owned attempt this worker runs, whose device the first preroll creates and the worker keeps while its runs stay native
 let videoDecodeFence: VideoDecodeFence | null = null;
+// The video decoder backend of the worker's latest run
+let latestRunVideoDecoderBackend: CustomDecodeVideoDecoderBackend | null = null;
+
+/**
+ * Releases what the worker's runs on another video decoder backend set up before a run on this one starts, as when the page's next session, on
+ * another backend, takes the idle worker: the GPU decoder's parser coordinator and parse workers, or the native decoder's fence device.
+ * A session's own runs never switch backends in one worker, and a worker the page leaves idle holds no run, so nothing still uses what this releases.
+ */
+function switchVideoDecoderBackend(videoDecoderBackend: CustomDecodeVideoDecoderBackend): void {
+    const previousBackend = latestRunVideoDecoderBackend;
+    latestRunVideoDecoderBackend = videoDecoderBackend;
+    if (previousBackend === null || previousBackend === videoDecoderBackend) {
+        return;
+    }
+    switch (previousBackend) {
+        case 'gpu':
+            releaseGPUDecoderParsers();
+            return;
+        case 'native':
+            videoDecodeFence?.destroy();
+            videoDecodeFence = null;
+            return;
+    }
+}
 
 /** Binds an owned stream to its decode run and to the geometry its BL and EL frames must keep. */
 function createOwnedVideoStreamRun(
@@ -4409,6 +4434,7 @@ function startDecodeRun(request: Extract<DecodeWorkerRequest, { type: 'start' }>
         getAudioDecodeWorkerClient();
     }
 
+    switchVideoDecoderBackend(request.videoDecoderBackend);
     const run = createDecodeRun(request);
     currentRun = run;
     // The run begins once this request's handling returns, so a request handled in the same task, such as another start, cancels it before it opens its input

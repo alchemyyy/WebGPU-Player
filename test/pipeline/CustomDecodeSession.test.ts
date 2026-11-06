@@ -4292,7 +4292,7 @@ describe('CustomDecodeSession worker lifecycle', () => {
         nativeWorker.emitMessage({ generation: FIRST_LIFECYCLE_GENERATION, type: 'stopped' });
         await stopPromise;
 
-        // A worker serves one video decoder backend for its life
+        // The session's runs on the other backend may still unwind in its worker, so its next generation's backend takes a new one
         const decoderPackage = createVideoDecoderPackageForTest(createVideoDecoderSource({ outputFormats: [ 'I420P10' ] }));
         session.start({
             dolbyVisionProfile: null,
@@ -4463,44 +4463,28 @@ describe('CustomDecodeSession worker lifecycle', () => {
         expect(nextSession.getTelemetry().workerReused).toBe(false);
     });
 
-    it('leaves an idle worker to a session on its own video decoder backend', () => {
+    it('leaves an idle worker to a session on another video decoder backend, whose run then releases the earlier backend\'s worker state', () => {
         const pool = createWorkerPool();
         const nativeSession = new CustomDecodeSession(() => undefined, pool.createWorker);
         startSession(nativeSession, FIRST_LIFECYCLE_GENERATION);
-        const [ nativeWorker ] = pool.workers;
+        const [ worker ] = pool.workers;
         nativeSession.destroy();
-        nativeWorker.emitMessage({ generation: FIRST_LIFECYCLE_GENERATION, type: 'stopped' });
+        worker.emitMessage({ generation: FIRST_LIFECYCLE_GENERATION, type: 'stopped' });
 
-        const gpuSession = new CustomDecodeSession(
-            () => undefined,
-            pool.createWorker,
-            null,
-            null,
-            null,
-            createFakeGPUVideoDecodeSessionFactory().factory
-        );
-        const decoderPackage = createVideoDecoderPackageForTest(createVideoDecoderSource({ outputFormats: [ 'I420P10' ] }));
-        gpuSession.start({
-            dolbyVisionProfile: null,
-            generation: FIRST_LIFECYCLE_GENERATION,
-            gpuVideoDecoder: { codec: 'hevc', decoderId: decoderPackage.id, package: decoderPackage },
-            maximumCodedHeight: 1_080,
-            maximumCodedWidth: 1_920,
-            nativeHDRTransfer: null,
-            neutralizeHDRColorMetadata: false,
-            rawVideoFrameFormat: 'I420P10',
-            startTimeMicroseconds: secondsToMicroseconds(1),
-            source: { kind: 'url', url: 'http://localhost/video.mkv' },
-            videoDecoderBackend: 'gpu',
-            videoOutputMode: 'frame-pool',
-            videoTrackIndex: 0
-        });
-        expect(pool.workers).toHaveLength(2);
+        const gpuSession = startGPUSession(pool.createWorker, FIRST_LIFECYCLE_GENERATION);
+        expect(pool.workers).toHaveLength(1);
+        expect(worker.postedMessages.at(-1)).toMatchObject({ generation: FIRST_LIFECYCLE_GENERATION, type: 'start', videoDecoderBackend: 'gpu' });
+        expect(gpuSession.getTelemetry().workerReused).toBe(true);
+        gpuSession.destroy();
+        worker.emitMessage({ generation: FIRST_LIFECYCLE_GENERATION, type: 'stopped' });
 
+        // And back again
         const nextNativeSession = new CustomDecodeSession(() => undefined, pool.createWorker);
         startSession(nextNativeSession, SECOND_LIFECYCLE_GENERATION);
-        expect(pool.workers).toHaveLength(2);
-        expect(getPostedStartGenerations(nativeWorker)).toEqual([ FIRST_LIFECYCLE_GENERATION, SECOND_LIFECYCLE_GENERATION ]);
+        expect(pool.workers).toHaveLength(1);
+        expect(getPostedStartGenerations(worker)).toEqual([ FIRST_LIFECYCLE_GENERATION, FIRST_LIFECYCLE_GENERATION, SECOND_LIFECYCLE_GENERATION ]);
+        expect(worker.postedMessages.at(-1)).toMatchObject({ type: 'start', videoDecoderBackend: 'native' });
+        expect(worker.terminate).not.toHaveBeenCalled();
     });
 
     it('prefetches the next session\'s source in a new worker, which that session takes on any backend and starts behind the prefetch', () => {
@@ -4525,30 +4509,115 @@ describe('CustomDecodeSession worker lifecycle', () => {
         expect(worker.terminate).not.toHaveBeenCalled();
     });
 
-    it('prefetches in the worker a playing session leaves idle once its run stopped, which the next session takes', () => {
+    it('prefetches in a playing session\'s worker once the session is destroyed, before its run unwound, and the next session takes it on any backend', () => {
         const pool = createWorkerPool();
         const playingSession = new CustomDecodeSession(() => undefined, pool.createWorker);
         startSession(playingSession, FIRST_LIFECYCLE_GENERATION);
         const [ worker ] = pool.workers;
 
         const prefetch = prefetchCustomDecodeSource(PREFETCHED_SOURCE, pool.createWorker);
-        // The worker the next session takes is the playing session's, which the prefetch waits for
+        // The worker the next session takes is the playing session's, whose run still reads, so the prefetch waits
         expect(pool.workers).toHaveLength(1);
         expect(countPostedMessages(worker, 'prefetch-source')).toBe(0);
+        // Its run's stop canceled its reads, so the worker takes the prefetch at once, behind the stop
         playingSession.destroy();
-        expect(countPostedMessages(worker, 'prefetch-source')).toBe(0);
-        worker.emitMessage({ generation: FIRST_LIFECYCLE_GENERATION, type: 'stopped' });
+        expect(getPostedRequestTypes(worker).slice(-2)).toEqual([ 'stop', 'prefetch-source' ]);
         expect(worker.postedMessages.at(-1)).toMatchObject({ source: PREFETCHED_SOURCE, type: 'prefetch-source' });
+        // The worker parks once its run is over, and the prefetch is never posted twice
+        worker.emitMessage({ generation: FIRST_LIFECYCLE_GENERATION, type: 'stopped' });
+        expect(countPostedMessages(worker, 'prefetch-source')).toBe(1);
 
-        const nextSession = new CustomDecodeSession(() => undefined, pool.createWorker);
-        startSession(nextSession, SECOND_LIFECYCLE_GENERATION);
+        const nextSession = startGPUSession(pool.createWorker, SECOND_LIFECYCLE_GENERATION);
         expect(pool.workers).toHaveLength(1);
         expect(getPostedRequestTypes(worker).slice(-2)).toEqual([ 'prefetch-source', 'start' ]);
         expect(nextSession.getTelemetry().workerReused).toBe(true);
+        expect(countPostedMessages(worker, 'prefetch-source')).toBe(1);
+        expect(countPostedMessages(worker, 'release-prefetch')).toBe(0);
         prefetch.cancel();
     });
 
-    it('releases a prefetch that a later one replaces, and one in a worker the next session does not take', () => {
+    it('prefetches at once in a destroyed session\'s worker whose run still unwinds, not in a live session\'s', () => {
+        const pool = createWorkerPool();
+        const destroyedSession = new CustomDecodeSession(() => undefined, pool.createWorker);
+        startSession(destroyedSession, FIRST_LIFECYCLE_GENERATION);
+        const playingSession = startGPUSession(pool.createWorker, FIRST_LIFECYCLE_GENERATION);
+        const [ unwindingWorker, playingWorker ] = pool.workers;
+        destroyedSession.destroy();
+
+        const prefetch = prefetchCustomDecodeSource(PREFETCHED_SOURCE, pool.createWorker);
+        expect(pool.workers).toHaveLength(2);
+        expect(getPostedRequestTypes(unwindingWorker).slice(-2)).toEqual([ 'stop', 'prefetch-source' ]);
+        expect(unwindingWorker.postedMessages.at(-1)).toMatchObject({ source: PREFETCHED_SOURCE, type: 'prefetch-source' });
+        expect(countPostedMessages(playingWorker, 'prefetch-source')).toBe(0);
+
+        unwindingWorker.emitMessage({ generation: FIRST_LIFECYCLE_GENERATION, type: 'stopped' });
+        expect(countPostedMessages(unwindingWorker, 'prefetch-source')).toBe(1);
+        const nextSession = new CustomDecodeSession(() => undefined, pool.createWorker);
+        startSession(nextSession, SECOND_LIFECYCLE_GENERATION);
+        expect(pool.workers).toHaveLength(2);
+        expect(getPostedRequestTypes(unwindingWorker).slice(-2)).toEqual([ 'prefetch-source', 'start' ]);
+        expect(playingSession.getTelemetry().activeGeneration).toBe(FIRST_LIFECYCLE_GENERATION);
+        prefetch.cancel();
+    });
+
+    it('releases a prefetch in a destroyed session\'s worker that the next session, starting before the worker parks, does not take', () => {
+        const pool = createWorkerPool();
+        const destroyedSession = new CustomDecodeSession(() => undefined, pool.createWorker);
+        startSession(destroyedSession, FIRST_LIFECYCLE_GENERATION);
+        const [ unwindingWorker ] = pool.workers;
+        destroyedSession.destroy();
+        prefetchCustomDecodeSource(PREFETCHED_SOURCE, pool.createWorker);
+        const prefetchId = getPostedPrefetchId(unwindingWorker);
+
+        const nextSession = new CustomDecodeSession(() => undefined, pool.createWorker);
+        startSession(nextSession, SECOND_LIFECYCLE_GENERATION);
+        expect(pool.workers).toHaveLength(2);
+        expect(unwindingWorker.postedMessages.at(-1)).toEqual({ prefetchId, type: 'release-prefetch' });
+        expect(getPostedRequestTypes(pool.workers[1])).toEqual([ 'start' ]);
+
+        // Once parked, the unwound worker takes no prefetch again
+        unwindingWorker.emitMessage({ generation: FIRST_LIFECYCLE_GENERATION, type: 'stopped' });
+        expect(countPostedMessages(unwindingWorker, 'prefetch-source')).toBe(1);
+    });
+
+    it('drops a prefetch whose destroyed session\'s worker is terminated before it parks, and takes no unfit worker for one', async () => {
+        vi.useFakeTimers();
+        vi.spyOn(console, 'warn').mockImplementation((): void => undefined);
+        try {
+            const pool = createWorkerPool();
+            const destroyedSession = new CustomDecodeSession(() => undefined, pool.createWorker);
+            startSession(destroyedSession, FIRST_LIFECYCLE_GENERATION);
+            const [ worker ] = pool.workers;
+            destroyedSession.destroy();
+            const prefetch = prefetchCustomDecodeSource(PREFETCHED_SOURCE, pool.createWorker);
+            expect(countPostedMessages(worker, 'prefetch-source')).toBe(1);
+
+            // The run never acknowledges its stop, so its worker terminates, and the prefetch's reads end with it
+            await vi.advanceTimersByTimeAsync(RETIRED_RUN_STOP_TIMEOUT_MILLISECONDS);
+            expect(worker.terminate).toHaveBeenCalledOnce();
+            const nextSession = new CustomDecodeSession(() => undefined, pool.createWorker);
+            startSession(nextSession, SECOND_LIFECYCLE_GENERATION);
+            expect(pool.workers).toHaveLength(2);
+            prefetch.cancel();
+            expect(countPostedMessages(worker, 'release-prefetch')).toBe(0);
+
+            // A failed run's worker terminates once its run is over, so a prefetch waits for another worker instead
+            const [ , failedWorker ] = pool.workers;
+            failedWorker.emitMessage({
+                failureKind: 'decode-failed',
+                generation: SECOND_LIFECYCLE_GENERATION,
+                message: DECODER_FAILURE_MESSAGE,
+                type: 'error'
+            });
+            nextSession.destroy();
+            prefetchCustomDecodeSource(PREFETCHED_SOURCE, pool.createWorker).cancel();
+            expect(countPostedMessages(failedWorker, 'prefetch-source')).toBe(0);
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('releases a prefetch that a later one replaces, and hands the latest to a session on another backend', () => {
         const pool = createWorkerPool();
         const nativeSession = new CustomDecodeSession(() => undefined, pool.createWorker);
         startSession(nativeSession, FIRST_LIFECYCLE_GENERATION);
@@ -4567,11 +4636,10 @@ describe('CustomDecodeSession worker lifecycle', () => {
             { prefetchId, source: OTHER_PREFETCHED_SOURCE, type: 'prefetch-source' }
         ]);
 
-        // A session on another backend takes a worker of its own, whose first run reads the head itself
+        // A session on another backend takes the idle worker too, and its run continues on the prefetch
         startGPUSession(pool.createWorker, SECOND_LIFECYCLE_GENERATION);
-        expect(pool.workers).toHaveLength(2);
-        expect(nativeWorker.postedMessages.at(-1)).toEqual({ prefetchId, type: 'release-prefetch' });
-        expect(getPostedRequestTypes(pool.workers[1])).toEqual([ 'start' ]);
+        expect(pool.workers).toHaveLength(1);
+        expect(getPostedRequestTypes(nativeWorker).slice(-2)).toEqual([ 'prefetch-source', 'start' ]);
     });
 
     it('gives up a prefetch that no worker parks for within the release delay, and one canceled while it waits', async () => {

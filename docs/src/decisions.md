@@ -941,7 +941,7 @@ These were settled on Firefox 157 on Windows.
   A retired run has 10 s to post `stopped`; past that the session warns and replaces the worker at the next start, and a start that would leave more than 4 retired runs unwinding in one worker takes a new one.
   A worker is replaced rather than reused after a generation fails, a message fails validation, or the worker crashes; a retired run's failure leaves the running generation in place and replaces the worker at the next start.
   A lost audio decode worker no longer asks for the decode worker's replacement, since the next run may start before the lost one's `stopped`; the decode worker spawns another for that run instead, and `stopped` lost its `replaceWorker` field.
-  A start on another video decoder backend gets a new worker too, because Mediabunny kept a decoder registration, such as the bundled HEVC adapter that `canDecode()` consulted, for the worker's life; since the CPU decoders left (10-13), the new worker keeps what one backend set up, such as a package parser's workers, from outliving it.
+  A session's start on another video decoder backend gets a new worker too, since the session's earlier runs may still unwind in the old one and use what their backend set up there, such as a package parser's workers; the page's next session takes an idle worker on either backend (11-05, below).
   Each run still opens its own input, so the read cache does not outlive a seek; since 10-16 a URL source does (below).
   After a run ends on its own, its generation stays current while the worker idles, so a native-media element that plays out after decode still ends the session.
   Before, the run's `stopped` retired the worker and with it the generation, and such a session did not end.
@@ -983,8 +983,16 @@ These were settled on Firefox 157 on Windows.
   The first range read went out only once the session's first run opened its input, after everything the host does before a start, so the head and the decode worker's startup sat on the critical path.
   `prefetchCustomDecodeSource` reads the head in the worker the next session takes and leaves the source to `URLSourceRetention`, so the run continues on the same response and cache rather than the page handing bytes over through a new messaging layer.
   The run takes the source by the same key as a seek's, the URL and the pattern, so a prefetch of another URL is released by the run that does not take it and never feeds it a byte.
-  A worker a prefetch creates has run no generation and goes to a session on any backend; one that already ran keeps its backend, so a session on another backend reads the head itself and the prefetch ends at once.
+  A worker a prefetch creates has run no generation, and a worker that already ran goes to a session on either backend too (below).
   The read is the one any run starts with, at byte 0 for Mediabunny's smallest load, so it costs no more than the head read it replaces, and a source no run takes is released within the retention's 5 s.
+- An idle decode worker serves a session on either video decoder backend, and a destroyed session's worker takes the prefetch at once (11-05).
+  The idle worker went only to a session on its last run's backend, a rule left from Mediabunny's decoder registrations, which no longer exist, so a GPU decoder movie after a WebCodecs one, or the reverse, started a new worker and read the head again after the host's negotiation.
+  A session now takes the idle worker on either backend, and the worker's first run on another backend ends what the last one set up: the parser coordinator and its parse workers, or the decode fence's device.
+  The worker keeps its audio decode worker, its retained source and the prefetch, and a session's own generations still change backends in a new worker, since its earlier runs may still unwind in the old one.
+  A prefetch for the next item waited for the playing session's worker to park after its run's `stopped`, which raced the host's negotiation and often lost.
+  A destroyed session's worker whose runs all got `stop` now takes the prefetch at once, since those runs' reads were canceled and a stopped run's release leaves a source acquired after it; a prefetch that waited for the session is posted when the session is destroyed.
+  The worker parks with the prefetch, and a session that starts before it parks still reads the head itself, which a prefetch in a new worker would avoid at the cost of the warm worker.
+  Live, from one movie's end to a movie on the other backend over a redirecting front end, the second play read the head twice before, once at the click and again about 100 ms after the negotiation; after, it read the head once, at the click, and its first frame came 110 ms sooner from the GPU decoder to WebCodecs and about the same the other way, where shader work dominates.
 - MPEG-TS, M2TS, and MPEG program streams play on a timeline that starts at their first timestamp (10-29).
   A transport stream stamps its packets with a program clock that need not start at zero: a Blu-ray title starts at 600 s, and broadcast recordings a fraction of a second or more in.
   A program stream carries the clock of the source it was cut from the same way; a DVD-Video title starts a fraction of a second in, and a VOB cut from later in a title at its own time.
