@@ -4337,7 +4337,8 @@ describe('WebGPUPresenter', () => {
         installGPU(gpuHarness.gpu);
         installCanvasContext(contextHarness.context);
         const fallbackHandler = vi.fn();
-        const presenter = new WebGPUPresenter(fallbackHandler);
+        const deviceLossHandler = vi.fn();
+        const presenter = new WebGPUPresenter(fallbackHandler, undefined, deviceLossHandler);
 
         presenter.startSession(1);
         presenter.attach(surfaceHarness.surface, 1);
@@ -4354,6 +4355,7 @@ describe('WebGPUPresenter', () => {
         expect(gpuHarness.devices[1].importExternalTexture).not.toHaveBeenCalled();
         expect(presenter.getTelemetry().deviceRecoveryCount).toBe(1);
         expect(fallbackHandler).not.toHaveBeenCalled();
+        expect(deviceLossHandler).toHaveBeenCalledExactlyOnceWith('unknown', 'first simulated loss');
 
         gpuHarness.devices[1].lost.resolve({
             message: 'second simulated loss',
@@ -4361,7 +4363,34 @@ describe('WebGPUPresenter', () => {
         } as GPUDeviceLostInfo);
         await vi.waitFor(() => expect(fallbackHandler).toHaveBeenCalledOnce());
         expect(fallbackHandler).toHaveBeenCalledWith(1, 'device-recovery-failed', RECOVERY_ATTEMPTS_USED_DETAIL);
+        expect(deviceLossHandler).toHaveBeenCalledTimes(2);
+        expect(deviceLossHandler).toHaveBeenLastCalledWith('unknown', 'second simulated loss');
         expect(surfaceHarness.surface.container.querySelector('.webgpuPlayerCanvas')).toBeNull();
+    });
+
+    it('never reports the loss of a device it destroyed itself', async () => {
+        const gpuHarness = createGPUHarness();
+        const contextHarness = createCanvasContextHarness();
+        const surfaceHarness = createSurfaceHarness();
+        installGPU(gpuHarness.gpu);
+        installCanvasContext(contextHarness.context);
+        const deviceLossHandler = vi.fn();
+        const presenter = new WebGPUPresenter(vi.fn(), undefined, deviceLossHandler);
+
+        presenter.startSession(1);
+        presenter.attach(surfaceHarness.surface, 1);
+        await vi.waitFor(() => expect(surfaceHarness.requestVideoFrameCallback).toHaveBeenCalledOnce());
+        presenter.destroy();
+        expect(gpuHarness.devices[0].destroy).toHaveBeenCalledOnce();
+        // The browser resolves a destroyed device's lost promise with the reason destroyed
+        gpuHarness.devices[0].lost.resolve({
+            message: 'destroyed by the presenter',
+            reason: 'destroyed'
+        } as GPUDeviceLostInfo);
+        await gpuHarness.devices[0].lost.promise;
+        await Promise.resolve();
+
+        expect(deviceLossHandler).not.toHaveBeenCalled();
     });
 
     it('bounds a device recovery request that never settles', async () => {

@@ -296,6 +296,7 @@ The backing size is the CSS size times the device pixel ratio, capped by `maxTex
   The AudioContext keeps running; the pool suspends it only when idle.
   A playback rate other than 1 with audio falls back to the HTML player in the same session.
 - GPU device loss: one recovery per session.
+  The presenter first tells its host's device loss handler, its third constructor argument, the browser's reason and message; a device it destroys itself is never reported.
   The new device must re-authorize the active HDR, Dolby Vision, or raw route before it draws.
   If that fails, `device-recovery-failed` falls back to HTML.
   The frame-pool route never recovers, because its decoder's references lived on the lost device, so it falls back the same way.

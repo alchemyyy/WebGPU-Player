@@ -443,6 +443,9 @@ type PresentationFallbackHandler = (generation: number, reason: PresentationFall
 
 type DecodedPresentationRefreshHandler = (generation: number) => void;
 
+/** Receives the browser's reason and message for each loss of the presenter's device that it did not destroy itself, before it recovers or falls back. */
+type PresentationDeviceLossHandler = (reason: GPUDeviceLostReason, message: string) => void;
+
 type PendingFrameCallback = {
     generation: number
     id: number
@@ -1360,6 +1363,7 @@ function getDualLayerPresentation(
 export default class WebGPUPresenter {
     private readonly fallbackHandler: PresentationFallbackHandler;
     private readonly decodedPresentationRefreshHandler: DecodedPresentationRefreshHandler;
+    private readonly deviceLossHandler: PresentationDeviceLossHandler;
     private readonly externalDolbyVisionAuthorization = new ExternalDolbyVisionPresentationAuthorizationRegistry();
     // External Profile 8 reconstruction, which only AV1 Profile 10 takes, authorizes on first use
     private readonly externalDolbyVisionProfile8Authorization = new ExternalDolbyVisionPresentationAuthorizationRegistry(
@@ -1471,10 +1475,12 @@ export default class WebGPUPresenter {
 
     constructor(
         fallbackHandler: PresentationFallbackHandler,
-        decodedPresentationRefreshHandler: DecodedPresentationRefreshHandler = (): void => undefined
+        decodedPresentationRefreshHandler: DecodedPresentationRefreshHandler = (): void => undefined,
+        deviceLossHandler: PresentationDeviceLossHandler = (): void => undefined
     ) {
         this.fallbackHandler = fallbackHandler;
         this.decodedPresentationRefreshHandler = decodedPresentationRefreshHandler;
+        this.deviceLossHandler = deviceLossHandler;
         this.scheduleDevicePrewarm();
     }
 
@@ -4922,6 +4928,7 @@ export default class WebGPUPresenter {
         }
 
         console.warn(`device-lost: ${deviceLostInfo.reason}: ${deviceLostInfo.message}`);
+        this.deviceLossHandler(deviceLostInfo.reason, deviceLostInfo.message);
         this.deviceResourceEpoch += 1;
         this.cancelFrameCallback();
         this.discardPendingSubmissionValidation();
