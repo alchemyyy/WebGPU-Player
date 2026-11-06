@@ -493,8 +493,9 @@ function getHTTPURL(value: string): string | null {
 /**
  * Returns a URL source resolved against the page, with the host's path pattern for responses that hide Content-Range,
  * or null when its URL is not a credential-free http(s) URL; a file source plays as it is.
+ * A host that prefetches a source resolves it the same way, so the prefetch and the playback name the same source.
  */
-function resolvePlaybackMediaSource(source: CustomDecodeMediaSource): CustomDecodeMediaSource | null {
+export function resolvePlaybackMediaSource(source: CustomDecodeMediaSource): CustomDecodeMediaSource | null {
     switch (source.kind) {
         case 'file':
             return source;

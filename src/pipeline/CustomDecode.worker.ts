@@ -88,6 +88,7 @@ import {
     getCustomDecodeRequestHardwareAcceleration,
     getVideoCreditLimit,
     isDecodeWorkerRequest,
+    isDecodeWorkerSourcePrefetchRequest,
     MAX_DECODED_AUDIO_CHANNELS,
     MAX_DECODED_AUDIO_SAMPLE_CREDITS,
     MAX_DECODED_RAW_FRAME_CREDITS,
@@ -106,7 +107,8 @@ import {
     type DecodeWorkerNativeMediaAudioConfiguration,
     type DecodeWorkerReadyAudioConfiguration,
     type DecodeWorkerRequest,
-    type DecodeWorkerResponse
+    type DecodeWorkerResponse,
+    type DecodeWorkerSourcePrefetchRequest
 } from './DecodeWorkerProtocol';
 import { getTrackByOrdinal } from '../demux/CustomDecodeTrackSelection';
 import type { CustomDecodeMediaSource } from '../demux/CustomDecodeMediaSource';
@@ -451,6 +453,8 @@ let timingTraceRun: DecodeRun | null = null;
 let audioDecodeWorkerClient: AudioDecodeWorkerClient | null = null;
 // The last run's URL source, which the next run over the same media reads on
 const urlSourceRetention = new URLSourceRetention();
+// The holder of the source the latest prefetch retained, by which its release names it; a run that acquires the source takes it over
+let sourcePrefetchHolder: Readonly<{ prefetchId: number }> | null = null;
 
 function postResponse(response: DecodeWorkerResponse, transfer?: Transferable[]): void {
     workerScope.postMessage(response, transfer);
@@ -537,8 +541,24 @@ function createValidatedRangeFetch(hiddenContentRangePathPattern: RegExp | null)
     };
 }
 
+/** Names a URL source for its retention; the pattern is part of what the source's validated fetch reads. */
+function getURLSourceRetentionKey(source: Extract<CustomDecodeMediaSource, { kind: 'url' }>): string {
+    const hiddenContentRangePathPattern = source.hiddenContentRangePathPattern ?? null;
+    return JSON.stringify([ source.url, hiddenContentRangePathPattern?.source ?? null, hiddenContentRangePathPattern?.flags ?? null ]);
+}
+
+/** Creates a URL source that reads through ranged requests under the fetch policy. */
+function createURLSource(source: Extract<CustomDecodeMediaSource, { kind: 'url' }>): UrlSource {
+    return new UrlSource(source.url, {
+        fetchFn: createValidatedRangeFetch(source.hiddenContentRangePathPattern ?? null),
+        getRetryDelay,
+        maxCacheSize: MEDIA_SOURCE_CACHE_BYTES,
+        parallelism: URL_SOURCE_PARALLELISM
+    });
+}
+
 /**
- * Opens a run's media: a URL through ranged requests under the fetch policy, on the last run's source when it reads the same URL,
+ * Opens a run's media: a URL through ranged requests under the fetch policy, on the last run's or a prefetch's source when it reads the same URL,
  * or a file through reads of its own bytes.
  */
 function openMediaSource(run: DecodeRun, source: CustomDecodeMediaSource): Source {
@@ -546,17 +566,37 @@ function openMediaSource(run: DecodeRun, source: CustomDecodeMediaSource): Sourc
         case 'file':
             urlSourceRetention.release();
             return new BlobSource(source.file, { maxCacheSize: MEDIA_SOURCE_CACHE_BYTES });
-        case 'url': {
-            const hiddenContentRangePathPattern = source.hiddenContentRangePathPattern ?? null;
-            // The pattern is part of what the source's validated fetch reads
-            const key = JSON.stringify([ source.url, hiddenContentRangePathPattern?.source ?? null, hiddenContentRangePathPattern?.flags ?? null ]);
-            run.urlSource = urlSourceRetention.acquire(key, (): UrlSource => new UrlSource(source.url, {
-                fetchFn: createValidatedRangeFetch(hiddenContentRangePathPattern),
-                getRetryDelay,
-                maxCacheSize: MEDIA_SOURCE_CACHE_BYTES,
-                parallelism: URL_SOURCE_PARALLELISM
-            }), run);
+        case 'url':
+            run.urlSource = urlSourceRetention.acquire(getURLSourceRetentionKey(source), (): UrlSource => createURLSource(source), run);
             return run.urlSource;
+    }
+}
+
+/**
+ * Starts or releases the head read of the next run's URL source.
+ * Only a worker that holds no run prefetches, as the page's idle worker does, so a prefetch never takes the source of a run from it.
+ * A run over the same URL acquires the source and continues on the prefetch's response; a run over another URL releases it.
+ */
+function handleSourcePrefetchRequest(request: DecodeWorkerSourcePrefetchRequest): void {
+    switch (request.type) {
+        case 'prefetch-source': {
+            if (currentRun || request.source.kind !== 'url') {
+                return;
+            }
+            const source = request.source;
+            const holder = { prefetchId: request.prefetchId };
+            sourcePrefetchHolder = holder;
+            urlSourceRetention.prefetch(getURLSourceRetentionKey(source), (): UrlSource => createURLSource(source), holder);
+            return;
+        }
+        case 'release-prefetch': {
+            const holder = sourcePrefetchHolder;
+            if (holder?.prefetchId !== request.prefetchId) {
+                return;
+            }
+            sourcePrefetchHolder = null;
+            urlSourceRetention.releaseHeld(holder);
+            return;
         }
     }
 }
@@ -4376,6 +4416,10 @@ function startDecodeRun(request: Extract<DecodeWorkerRequest, { type: 'start' }>
 }
 
 function handleRequest(requestValue: unknown): void {
+    if (isDecodeWorkerSourcePrefetchRequest(requestValue)) {
+        handleSourcePrefetchRequest(requestValue);
+        return;
+    }
     if (!isDecodeWorkerRequest(requestValue)) {
         return;
     }

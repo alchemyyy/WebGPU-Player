@@ -951,6 +951,12 @@ These were settled on Firefox 157 on Windows.
   The fork's Matroska demuxer now reads Cues that sit behind a seek head at the first lookup for a time past the start, from which a lookup at the start begins at the first cluster anyway, and pins them in the source's cache when its host pinned it, so every later run's seek reads them from memory (branch `v2-matroska-deferred-cues`).
   The fork's `UrlSource` sends range requests after a redirect straight to its target, starting over at its URL when a request there fails (`v2-url-source-redirected-requests`), and a read that waits on a new request ends the responses that only prefetch, which stay idle until a read near them resumes them (`v2-url-source-waiting-reads`).
   A resume or a seek still reads the Cues before its cluster, now without a response at the start of the file competing.
+- A host may start a session's head read before it starts the session, through the retained source (11-05).
+  The first range read went out only once the session's first run opened its input, after everything the host does before a start, so the head and the decode worker's startup sat on the critical path.
+  `prefetchCustomDecodeSource` reads the head in the worker the next session takes and leaves the source to `URLSourceRetention`, so the run continues on the same response and cache rather than the page handing bytes over through a new messaging layer.
+  The run takes the source by the same key as a seek's, the URL and the pattern, so a prefetch of another URL is released by the run that does not take it and never feeds it a byte.
+  A worker a prefetch creates has run no generation and goes to a session on any backend; one that already ran keeps its backend, so a session on another backend reads the head itself and the prefetch ends at once.
+  The read is the one any run starts with, at byte 0 for Mediabunny's smallest load, so it costs no more than the head read it replaces, and a source no run takes is released within the retention's 5 s.
 - MPEG-TS, M2TS, and MPEG program streams play on a timeline that starts at their first timestamp (10-29).
   A transport stream stamps its packets with a program clock that need not start at zero: a Blu-ray title starts at 600 s, and broadcast recordings a fraction of a second or more in.
   A program stream carries the clock of the source it was cut from the same way; a DVD-Video title starts a fraction of a second in, and a VOB cut from later in a title at its own time.

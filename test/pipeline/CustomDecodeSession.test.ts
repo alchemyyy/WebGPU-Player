@@ -24,6 +24,7 @@ import CustomDecodeNativeAudioBridge, {
     type OwnedNativeMediaAudioBackendPort
 } from 'webgpu-player/audio/native/CustomDecodeNativeAudioBridge';
 import CustomDecodeSession, {
+    prefetchCustomDecodeSource,
     releaseIdleCustomDecodeWorker,
     type CustomDecodeAudioResyncOptions,
     type CustomDecodeSessionEvent
@@ -76,6 +77,11 @@ const MAXIMUM_RETIRING_RUNS = 4;
 // How long a destroyed session's worker waits for the page's next session before it terminates
 const IDLE_DECODE_WORKER_RELEASE_DELAY_MILLISECONDS = 30_000;
 const TIMER_RESOLUTION_MILLISECONDS = 1;
+// How long a source prefetch waits for a session's worker to park, the URL source release delay
+const SOURCE_PREFETCH_WAIT_MILLISECONDS = 5_000;
+// The stream heads a page reads ahead of the sessions that play them
+const PREFETCHED_SOURCE = { hiddenContentRangePathPattern: /\/stream(?:\.[^/]+)?$/i, kind: 'url', url: 'http://localhost/Videos/first/stream.mkv' } as const;
+const OTHER_PREFETCHED_SOURCE = { kind: 'url', url: 'http://localhost/Videos/second/stream.mkv' } as const;
 const FIRST_LIFECYCLE_GENERATION = 201;
 const SECOND_LIFECYCLE_GENERATION = 202;
 const CHROMA_FORMAT_GENERATION = 41;
@@ -160,6 +166,46 @@ function getPostedStartGenerations(worker: MockWorker): number[] {
         }
     }
     return generations;
+}
+
+/** Returns the types of the requests posted to a worker, in order. */
+function getPostedRequestTypes(worker: MockWorker): unknown[] {
+    return worker.postedMessages.map((message: unknown): unknown => (message as { type?: unknown }).type);
+}
+
+/** Returns the ID of the latest source prefetch posted to a worker. */
+function getPostedPrefetchId(worker: MockWorker): unknown {
+    const prefetchRequests = worker.postedMessages.filter((message: unknown): boolean => (message as { type?: unknown }).type === 'prefetch-source');
+    return (prefetchRequests.at(-1) as { prefetchId?: unknown } | undefined)?.prefetchId;
+}
+
+/** Starts a frame-pool session, which decodes on the gpu backend, in a worker of a factory. */
+function startGPUSession(createWorker: () => Worker, generation: number): CustomDecodeSession {
+    const session = new CustomDecodeSession(
+        () => undefined,
+        createWorker,
+        null,
+        null,
+        null,
+        createFakeGPUVideoDecodeSessionFactory().factory
+    );
+    const decoderPackage = createVideoDecoderPackageForTest(createVideoDecoderSource({ outputFormats: [ 'I420P10' ] }));
+    session.start({
+        dolbyVisionProfile: null,
+        generation,
+        gpuVideoDecoder: { codec: 'hevc', decoderId: decoderPackage.id, package: decoderPackage },
+        maximumCodedHeight: 1_080,
+        maximumCodedWidth: 1_920,
+        nativeHDRTransfer: null,
+        neutralizeHDRColorMetadata: false,
+        rawVideoFrameFormat: 'I420P10',
+        startTimeMicroseconds: secondsToMicroseconds(1),
+        source: { kind: 'url', url: 'http://localhost/video.mkv' },
+        videoDecoderBackend: 'gpu',
+        videoOutputMode: 'frame-pool',
+        videoTrackIndex: 0
+    });
+    return session;
 }
 
 function createFrame(): VideoFrame & { close: Mock } {
@@ -4455,6 +4501,111 @@ describe('CustomDecodeSession worker lifecycle', () => {
         startSession(nextNativeSession, SECOND_LIFECYCLE_GENERATION);
         expect(pool.workers).toHaveLength(2);
         expect(getPostedStartGenerations(nativeWorker)).toEqual([ FIRST_LIFECYCLE_GENERATION, SECOND_LIFECYCLE_GENERATION ]);
+    });
+
+    it('prefetches the next session\'s source in a new worker, which that session takes on any backend and starts behind the prefetch', () => {
+        const pool = createWorkerPool();
+        const prefetch = prefetchCustomDecodeSource(PREFETCHED_SOURCE, pool.createWorker);
+        expect(pool.workers).toHaveLength(1);
+        const [ worker ] = pool.workers;
+        const prefetchId = getPostedPrefetchId(worker);
+        expect(worker.postedMessages).toEqual([ { prefetchId, source: PREFETCHED_SOURCE, type: 'prefetch-source' } ]);
+
+        const session = startGPUSession(pool.createWorker, FIRST_LIFECYCLE_GENERATION);
+        expect(pool.workers).toHaveLength(1);
+        expect(getPostedRequestTypes(worker)).toEqual([ 'prefetch-source', 'start' ]);
+        // The worker ran no generation before
+        expect(session.getTelemetry().workerReused).toBe(false);
+
+        // The release the page posts once the start is over follows the start, so the worker ignores it once its run took the source over
+        prefetch.cancel();
+        expect(worker.postedMessages.at(-1)).toEqual({ prefetchId, type: 'release-prefetch' });
+        prefetch.cancel();
+        expect(getPostedRequestTypes(worker)).toEqual([ 'prefetch-source', 'start', 'release-prefetch' ]);
+        expect(worker.terminate).not.toHaveBeenCalled();
+    });
+
+    it('prefetches in the worker a playing session leaves idle once its run stopped, which the next session takes', () => {
+        const pool = createWorkerPool();
+        const playingSession = new CustomDecodeSession(() => undefined, pool.createWorker);
+        startSession(playingSession, FIRST_LIFECYCLE_GENERATION);
+        const [ worker ] = pool.workers;
+
+        const prefetch = prefetchCustomDecodeSource(PREFETCHED_SOURCE, pool.createWorker);
+        // The worker the next session takes is the playing session's, which the prefetch waits for
+        expect(pool.workers).toHaveLength(1);
+        expect(countPostedMessages(worker, 'prefetch-source')).toBe(0);
+        playingSession.destroy();
+        expect(countPostedMessages(worker, 'prefetch-source')).toBe(0);
+        worker.emitMessage({ generation: FIRST_LIFECYCLE_GENERATION, type: 'stopped' });
+        expect(worker.postedMessages.at(-1)).toMatchObject({ source: PREFETCHED_SOURCE, type: 'prefetch-source' });
+
+        const nextSession = new CustomDecodeSession(() => undefined, pool.createWorker);
+        startSession(nextSession, SECOND_LIFECYCLE_GENERATION);
+        expect(pool.workers).toHaveLength(1);
+        expect(getPostedRequestTypes(worker).slice(-2)).toEqual([ 'prefetch-source', 'start' ]);
+        expect(nextSession.getTelemetry().workerReused).toBe(true);
+        prefetch.cancel();
+    });
+
+    it('releases a prefetch that a later one replaces, and one in a worker the next session does not take', () => {
+        const pool = createWorkerPool();
+        const nativeSession = new CustomDecodeSession(() => undefined, pool.createWorker);
+        startSession(nativeSession, FIRST_LIFECYCLE_GENERATION);
+        const [ nativeWorker ] = pool.workers;
+        nativeSession.destroy();
+        nativeWorker.emitMessage({ generation: FIRST_LIFECYCLE_GENERATION, type: 'stopped' });
+
+        // The idle worker takes each prefetch at once
+        prefetchCustomDecodeSource(PREFETCHED_SOURCE, pool.createWorker);
+        const replacedPrefetchId = getPostedPrefetchId(nativeWorker);
+        prefetchCustomDecodeSource(OTHER_PREFETCHED_SOURCE, pool.createWorker);
+        const prefetchId = getPostedPrefetchId(nativeWorker);
+        expect(nativeWorker.postedMessages.slice(-3)).toEqual([
+            { prefetchId: replacedPrefetchId, source: PREFETCHED_SOURCE, type: 'prefetch-source' },
+            { prefetchId: replacedPrefetchId, type: 'release-prefetch' },
+            { prefetchId, source: OTHER_PREFETCHED_SOURCE, type: 'prefetch-source' }
+        ]);
+
+        // A session on another backend takes a worker of its own, whose first run reads the head itself
+        startGPUSession(pool.createWorker, SECOND_LIFECYCLE_GENERATION);
+        expect(pool.workers).toHaveLength(2);
+        expect(nativeWorker.postedMessages.at(-1)).toEqual({ prefetchId, type: 'release-prefetch' });
+        expect(getPostedRequestTypes(pool.workers[1])).toEqual([ 'start' ]);
+    });
+
+    it('gives up a prefetch that no worker parks for within the release delay, and one canceled while it waits', async () => {
+        vi.useFakeTimers();
+        try {
+            const pool = createWorkerPool();
+            const playingSession = new CustomDecodeSession(() => undefined, pool.createWorker);
+            startSession(playingSession, FIRST_LIFECYCLE_GENERATION);
+            const [ worker ] = pool.workers;
+            prefetchCustomDecodeSource(PREFETCHED_SOURCE, pool.createWorker);
+            await vi.advanceTimersByTimeAsync(SOURCE_PREFETCH_WAIT_MILLISECONDS);
+            playingSession.destroy();
+            worker.emitMessage({ generation: FIRST_LIFECYCLE_GENERATION, type: 'stopped' });
+            expect(countPostedMessages(worker, 'prefetch-source')).toBe(0);
+
+            const nextSession = new CustomDecodeSession(() => undefined, pool.createWorker);
+            startSession(nextSession, SECOND_LIFECYCLE_GENERATION);
+            prefetchCustomDecodeSource(PREFETCHED_SOURCE, pool.createWorker).cancel();
+            nextSession.destroy();
+            worker.emitMessage({ generation: SECOND_LIFECYCLE_GENERATION, type: 'stopped' });
+            expect(countPostedMessages(worker, 'prefetch-source')).toBe(0);
+            expect(countPostedMessages(worker, 'release-prefetch')).toBe(0);
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('prefetches only a URL source, and leaves a worker it cannot create to the session', () => {
+        expect(() => prefetchCustomDecodeSource({ file: new File([], 'local.mkv'), kind: 'file' })).toThrow(TypeError);
+        const failingFactory = (): Worker => {
+            throw new Error('Worker creation failed');
+        };
+
+        expect(() => prefetchCustomDecodeSource(PREFETCHED_SOURCE, failingFactory).cancel()).not.toThrow();
     });
 
     it('keeps an ended generation current after its run stops, so the native element still ends the session', async () => {

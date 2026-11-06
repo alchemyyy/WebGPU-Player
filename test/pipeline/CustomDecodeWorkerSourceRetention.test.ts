@@ -3,7 +3,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { MICROSECONDS_PER_SECOND, type Microseconds } from 'webgpu-player/MediaTime';
-import type { DecodeWorkerResponse, DecodeWorkerStartRequest } from 'webgpu-player/pipeline/DecodeWorkerProtocol';
+import type {
+    DecodeWorkerPrefetchSourceRequest,
+    DecodeWorkerResponse,
+    DecodeWorkerStartRequest
+} from 'webgpu-player/pipeline/DecodeWorkerProtocol';
 
 import {
     FakeVideoDecoder,
@@ -16,14 +20,25 @@ import {
 import type { HDR10PlusVectorFrame } from '../helpers/hdr10PlusVectors';
 import { readVP9HDR10PlusVector, VP9_HDR10_PLUS_EXPECTATIONS } from '../helpers/vp9HDR10PlusVectors';
 
+type ProbedRequest = Readonly<{
+    signal: AbortSignal | null
+    url: string
+}>;
+
 type FetchProbe = Readonly<{
     getRequestCount: () => number
     release: () => void
+    requests: readonly ProbedRequest[]
 }>;
 
 // Eight VP9 frames in two groups of four, one cluster each, in WebM
 const MEDIA_FILE_NAME = 'hdr10plus.webm';
-const MEDIA_FILES = new Map<string, Uint8Array>([ [ MEDIA_FILE_NAME, readVP9HDR10PlusVector(MEDIA_FILE_NAME) ] ]);
+// The same bytes at another URL, as another item's stream
+const OTHER_MEDIA_FILE_NAME = 'other.webm';
+const MEDIA_FILES = new Map<string, Uint8Array>([
+    [ MEDIA_FILE_NAME, readVP9HDR10PlusVector(MEDIA_FILE_NAME) ],
+    [ OTHER_MEDIA_FILE_NAME, readVP9HDR10PlusVector(MEDIA_FILE_NAME) ]
+]);
 const SECOND_KEY_FRAME_INDEX = VP9_HDR10_PLUS_EXPECTATIONS.frames.findIndex(
     (frame: HDR10PlusVectorFrame, frameIndex: number): boolean => frameIndex > 0 && frame.keyFrame
 );
@@ -32,6 +47,7 @@ const SEEK_FRAME_INDEX = SECOND_KEY_FRAME_INDEX + 1;
 // Frames back and forth across both groups, as a viewer scrubs the timeline
 const SCRUB_FRAME_INDEXES = [ 6, 1, 5, 0, 7, 3, 4, 2 ] as const;
 const FIRST_GENERATION = 1;
+const FIRST_PREFETCH_ID = 1;
 
 /** Halfway into a frame, so a seek lands inside it. */
 function getMidFrameMicroseconds(frameIndex: number): Microseconds {
@@ -42,22 +58,39 @@ function createRequest(generation: number, frameIndex: number): DecodeWorkerStar
     return createWorkerStartRequest(MEDIA_FILE_NAME, { generation, startTimeMicroseconds: getMidFrameMicroseconds(frameIndex) });
 }
 
-/** Counts the media requests the worker makes, and holds the first response back until released, so the first run's reads wait on it. */
+/** Returns the URL the worker reads a served file from. */
+function getServedURL(fileName: string): string {
+    const source = createWorkerStartRequest(fileName).source;
+    if (source.kind !== 'url') {
+        throw new Error('The harness serves its files by URL');
+    }
+    return source.url;
+}
+
+/** Starts reading a served file's head before any run over it, as the page does while its host negotiates the playback. */
+function createPrefetchRequest(prefetchId: number, fileName: string): DecodeWorkerPrefetchSourceRequest {
+    return { prefetchId, source: { kind: 'url', url: getServedURL(fileName) }, type: 'prefetch-source' };
+}
+
+/**
+ * Records the media requests the worker makes, and holds the first response back until released, so the reads of the first run, or of the
+ * prefetch, wait on it.
+ */
 function probeFetches(): FetchProbe {
     const servingFetch = globalThis.fetch;
-    let requestCount = 0;
+    const requests: ProbedRequest[] = [];
     let release = (): void => undefined;
     const released = new Promise<void>(resolve => {
         release = resolve;
     });
     vi.stubGlobal('fetch', async (input: RequestInfo | URL, requestInit?: RequestInit): Promise<Response> => {
-        requestCount += 1;
-        if (requestCount === 1) {
+        requests.push({ signal: requestInit?.signal ?? null, url: String(input) });
+        if (requests.length === 1) {
             await released;
         }
         return servingFetch(input, requestInit);
     });
-    return { getRequestCount: (): number => requestCount, release };
+    return { getRequestCount: (): number => requests.length, release, requests };
 }
 
 function getErrorResponses(workerScope: FakeWorkerScope): DecodeWorkerResponse[] {
@@ -127,6 +160,92 @@ describe('the playback worker over one URL from run to run', () => {
 
         expect(getErrorResponses(workerScope)).toEqual([]);
         requireSeekFrames(responses);
+        expect(fetchProbe.getRequestCount()).toBe(1);
+    });
+});
+
+describe('the playback worker over a prefetched source', () => {
+    it('starts the head read before any run, and the run over the same URL continues on its response', async () => {
+        const workerScope = await startDecodeWorker(MEDIA_FILES);
+        const fetchProbe = probeFetches();
+
+        workerScope.dispatchRequest(createPrefetchRequest(FIRST_PREFETCH_ID, MEDIA_FILE_NAME));
+        await vi.waitFor(() => {
+            expect(fetchProbe.getRequestCount()).toBe(1);
+        });
+        expect(fetchProbe.requests[0].url).toBe(getServedURL(MEDIA_FILE_NAME));
+        // The run's reads wait on the prefetch's response, which arrives only after the run started
+        const decoding = decodeToEnd(workerScope, createRequest(FIRST_GENERATION, 0));
+        fetchProbe.release();
+        const responses = await decoding;
+
+        expect(getErrorResponses(workerScope)).toEqual([]);
+        expect(getFrameResponses(responses)).toHaveLength(VP9_HDR10_PLUS_EXPECTATIONS.frames.length);
+        expect(fetchProbe.getRequestCount()).toBe(1);
+    });
+
+    it('aborts the head read of a prefetch that a run over another URL does not take, and reads that URL anew', async () => {
+        const workerScope = await startDecodeWorker(MEDIA_FILES);
+        const fetchProbe = probeFetches();
+
+        workerScope.dispatchRequest(createPrefetchRequest(FIRST_PREFETCH_ID, OTHER_MEDIA_FILE_NAME));
+        await vi.waitFor(() => {
+            expect(fetchProbe.getRequestCount()).toBe(1);
+        });
+        const decoding = decodeToEnd(workerScope, createRequest(FIRST_GENERATION, 0));
+        await vi.waitFor(() => {
+            expect(fetchProbe.requests[0].signal?.aborted).toBe(true);
+        });
+        fetchProbe.release();
+        const responses = await decoding;
+
+        expect(getErrorResponses(workerScope)).toEqual([]);
+        expect(getFrameResponses(responses)).toHaveLength(VP9_HDR10_PLUS_EXPECTATIONS.frames.length);
+        expect(fetchProbe.requests.map((request: ProbedRequest): string => request.url)).toEqual([
+            getServedURL(OTHER_MEDIA_FILE_NAME),
+            getServedURL(MEDIA_FILE_NAME)
+        ]);
+    });
+
+    it('aborts the head read once its own prefetch is released, and leaves it to a release of another', async () => {
+        const workerScope = await startDecodeWorker(MEDIA_FILES);
+        const fetchProbe = probeFetches();
+
+        workerScope.dispatchRequest(createPrefetchRequest(FIRST_PREFETCH_ID, MEDIA_FILE_NAME));
+        await vi.waitFor(() => {
+            expect(fetchProbe.getRequestCount()).toBe(1);
+        });
+        workerScope.dispatchRequest({ prefetchId: FIRST_PREFETCH_ID + 1, type: 'release-prefetch' });
+        expect(fetchProbe.requests[0].signal?.aborted).toBe(false);
+        workerScope.dispatchRequest({ prefetchId: FIRST_PREFETCH_ID, type: 'release-prefetch' });
+        expect(fetchProbe.requests[0].signal?.aborted).toBe(true);
+        fetchProbe.release();
+
+        // A run over the released URL reads it anew
+        await decodeToEnd(workerScope, createRequest(FIRST_GENERATION, 0));
+        expect(getErrorResponses(workerScope)).toEqual([]);
+        expect(fetchProbe.getRequestCount()).toBe(2);
+    });
+
+    it('ignores a prefetch while a run holds the worker, and a release once a run took the prefetch over', async () => {
+        const workerScope = await startDecodeWorker(MEDIA_FILES);
+        const fetchProbe = probeFetches();
+        fetchProbe.release();
+
+        workerScope.dispatchRequest(createPrefetchRequest(FIRST_PREFETCH_ID, MEDIA_FILE_NAME));
+        const request = createRequest(FIRST_GENERATION, 0);
+        workerScope.dispatchRequest(request);
+        // The run holds the worker from its start, so another prefetch takes nothing from it
+        workerScope.dispatchRequest(createPrefetchRequest(FIRST_PREFETCH_ID + 1, OTHER_MEDIA_FILE_NAME));
+        // The release the page posts once the start is over arrives in a later task, after the run took the source over
+        await new Promise<void>((resolve): void => {
+            setTimeout(resolve, 0);
+        });
+        workerScope.dispatchRequest({ prefetchId: FIRST_PREFETCH_ID, type: 'release-prefetch' });
+        await workerScope.waitForStopped(request.generation);
+        await decodeToEnd(workerScope, createRequest(FIRST_GENERATION + 1, SEEK_FRAME_INDEX));
+
+        expect(getErrorResponses(workerScope)).toEqual([]);
         expect(fetchProbe.getRequestCount()).toBe(1);
     });
 });

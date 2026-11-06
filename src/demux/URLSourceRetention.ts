@@ -50,9 +50,10 @@ export function getURLSourceBufferSizes(sizeBytes: number, durationMicroseconds:
  * Keeps the last run's URL source, with its cache, its file size, and its open responses, for the next run over the same media.
  * A seek starts a new run, which then reads the container's header and index from the cache and reads on near where the last run stopped.
  * Runs overlap, a stopped run unwinding beside the next, so the run that acquired the source last decides its release.
+ * A prefetch holds the source like a run, for a run expected to follow: that run continues on the response the prefetch opened.
  */
 export class URLSourceRetention {
-    // The run that acquired the retained source last
+    // The run or prefetch that acquired the retained source last
     private holder: object | null = null;
     private releaseTimer: ReturnType<typeof setTimeout> | null = null;
     private retained: RetainedURLSource | null = null;
@@ -66,6 +67,20 @@ export class URLSourceRetention {
         }
         this.holder = holder;
         return this.retained.reference.source;
+    }
+
+    /**
+     * Retains a source for a run expected to follow, as a holder that is no run, and starts reading the source's head: the read any run's first one
+     * is, which that run then continues on the same response.
+     * Unless a run acquires the source within the release delay, it is released, and at once when the read fails.
+     */
+    public prefetch(key: string, createSource: () => UrlSource, holder: object): void {
+        const source = this.acquire(key, createSource, holder);
+        this.releaseAfterRun(holder, false);
+        // A source retained with its size already read the head; a new one reads its first bytes, which also tell its size
+        source.getSizeOrNull().catch((): void => {
+            this.releaseHeld(holder);
+        });
     }
 
     /**
@@ -108,6 +123,13 @@ export class URLSourceRetention {
             this.releaseTimer = null;
             this.release();
         }, URL_SOURCE_RELEASE_DELAY_MILLISECONDS);
+    }
+
+    /** Releases the retained source at once while the holder still holds it, as when a prefetch is discarded; a run that acquired it since keeps it. */
+    public releaseHeld(holder: object): void {
+        if (holder === this.holder) {
+            this.release();
+        }
     }
 
     /** Releases the retained source at once; Mediabunny disposes it once no input reads it. */

@@ -362,6 +362,26 @@ export type DecodeWorkerRequest =
     | DecodeWorkerUpdateAudioBinauralRequest
     | DecodeWorkerUpdateAudioDownmixSettingsRequest;
 
+/**
+ * Starts reading a URL source's head in a worker that holds no run, for the next run over the same source, which continues on the prefetch's response.
+ * A later prefetch replaces it; the source is released unless a run acquires it within the retention's release delay.
+ */
+export type DecodeWorkerPrefetchSourceRequest = {
+    /** Names the prefetch for its release; increases with every prefetch the page starts */
+    prefetchId: number
+    source: CustomDecodeMediaSource
+    type: 'prefetch-source'
+};
+
+/** Releases a prefetched source at once, unless a run acquired it since. */
+export type DecodeWorkerReleasePrefetchRequest = {
+    prefetchId: number
+    type: 'release-prefetch'
+};
+
+/** The requests that prefetch a source for the worker's next run, which belong to no generation. */
+export type DecodeWorkerSourcePrefetchRequest = DecodeWorkerPrefetchSourceRequest | DecodeWorkerReleasePrefetchRequest;
+
 export type DecodeWorkerAudioConfiguration = {
     channelCount: number
     codec: string
@@ -1310,6 +1330,21 @@ export function isDecodeWorkerRequest(value: unknown): value is DecodeWorkerRequ
             return isAudioDownmixSettings(value.audioDownmixSettings);
         case 'update-audio-binaural':
             return typeof value.binauralHeadphones === 'boolean';
+        default:
+            return false;
+    }
+}
+
+/** Validates a source prefetch request before the decode worker acts on it: a URL source, under a positive prefetch ID. */
+export function isDecodeWorkerSourcePrefetchRequest(value: unknown): value is DecodeWorkerSourcePrefetchRequest {
+    if (!isRecord(value) || !Number.isSafeInteger(value.prefetchId) || Number(value.prefetchId) <= 0) {
+        return false;
+    }
+    switch (value.type) {
+        case 'prefetch-source':
+            return isCustomDecodeMediaSource(value.source) && value.source.kind === 'url';
+        case 'release-prefetch':
+            return true;
         default:
             return false;
     }

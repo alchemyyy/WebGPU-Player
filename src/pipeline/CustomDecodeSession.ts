@@ -73,7 +73,9 @@ import {
     type DecodeWorkerNativeAudioMediaResponse,
     type DecodeWorkerNativeMediaAudioConfiguration,
     type DecodeWorkerPacketResponse,
+    type DecodeWorkerPrefetchSourceRequest,
     type DecodeWorkerReadyAudioConfiguration,
+    type DecodeWorkerReleasePrefetchRequest,
     type DecodeWorkerRequest,
     type DecodeWorkerResponse,
     type DecodeWorkerResyncAudioRequest,
@@ -88,6 +90,7 @@ import {
     type RawVideoFrameGeometry
 } from '../decode/video/RawVideoFrameCopy';
 import { isCustomDecodeMediaSource, type CustomDecodeMediaSource } from '../demux/CustomDecodeMediaSource';
+import { URL_SOURCE_RELEASE_DELAY_MILLISECONDS } from '../demux/URLSourceRetention';
 import type {
     StaticHDRMetadata,
     StaticHDRMetadataScanStatus
@@ -99,6 +102,8 @@ const RETIRED_RUN_STOP_TIMEOUT_MILLISECONDS = 10_000;
 const MAXIMUM_RETIRING_RUNS = 4;
 // How long a destroyed session's worker waits for the page's next session, which the next item of a queue starts within seconds
 const IDLE_DECODE_WORKER_RELEASE_DELAY_MILLISECONDS = 30_000;
+// How long a source prefetch waits for a session's worker to park, as long as a worker keeps a prefetched source no run takes
+const SOURCE_PREFETCH_WAIT_MILLISECONDS = URL_SOURCE_RELEASE_DELAY_MILLISECONDS;
 const MINIMUM_DECODED_AUDIO_STARTUP_BUFFER_MICROSECONDS = 100_000;
 const FRAME_QUEUE_BOUND_FAILURE = 'The custom decode frame queue exceeded its bound';
 const UNEXPECTED_FRAME_OUTPUT_MODE_FAILURE = 'The custom decode worker returned an unexpected video output mode';
@@ -412,20 +417,88 @@ function createDefaultWorker(): Worker {
     return createEngineWorker('webgpu-player/CustomDecode.worker.js');
 }
 
-/** A decode worker that a destroyed session left with no run, for the page's next session that the same factory serves. */
+/** A decode worker that holds no run, for the page's next session that the same factory serves. */
 type IdleDecodeWorker = {
     errorHandler: (event: ErrorEvent) => void
     factory: CustomDecodeWorkerFactory
     releaseTimer: ReturnType<typeof globalThis.setTimeout>
-    videoDecoderBackend: CustomDecodeVideoDecoderBackend
+    /** The backend a destroyed session ran its generations on, or null for a worker a source prefetch created, which a session on any backend takes */
+    videoDecoderBackend: CustomDecodeVideoDecoderBackend | null
     worker: Worker
 };
 
+/** The page's source prefetch: in the worker the next session takes, or waiting for a session's worker to park. */
+type SourcePrefetchRecord = {
+    readonly factory: CustomDecodeWorkerFactory
+    readonly request: DecodeWorkerPrefetchSourceRequest
+    waitTimer: ReturnType<typeof globalThis.setTimeout> | null
+    worker: Worker | null
+};
+
+/** A head read started for the page's next session; `cancel` releases its source unless that session's first run already took the source over. */
+export type CustomDecodeSourcePrefetch = Readonly<{
+    cancel: () => void
+}>;
+
 // The page's idle decode worker, whose parser coordinator and parse workers, audio decode worker, and retained URL source a next item's session reuses
 let idleDecodeWorker: IdleDecodeWorker | null = null;
+// The page's latest source prefetch, until the session that takes its worker starts, it is canceled, or it gives up waiting for a worker
+let sourcePrefetch: SourcePrefetchRecord | null = null;
+let sourcePrefetchCount = 0;
+// The workers sessions hold, by the factory that created them; a destroyed session leaves its worker idle once its runs are over
+const sessionWorkerFactories = new Map<Worker, CustomDecodeWorkerFactory>();
 
-/** Keeps a worker that holds no run for the page's next session from the same factory, in place of any worker that waited before it. */
-function parkIdleDecodeWorker(factory: CustomDecodeWorkerFactory, videoDecoderBackend: CustomDecodeVideoDecoderBackend, worker: Worker): void {
+function hasSessionWorker(factory: CustomDecodeWorkerFactory): boolean {
+    for (const sessionWorkerFactory of sessionWorkerFactories.values()) {
+        if (sessionWorkerFactory === factory) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/** Hands a prefetch to the worker the next session takes. */
+function postSourcePrefetch(prefetch: SourcePrefetchRecord, worker: Worker): void {
+    if (prefetch.waitTimer !== null) {
+        globalThis.clearTimeout(prefetch.waitTimer);
+        prefetch.waitTimer = null;
+    }
+    prefetch.worker = worker;
+    try {
+        worker.postMessage(prefetch.request);
+    } catch {
+        // A worker that takes no request reads nothing for it, and the next session's first run reads the head itself
+        cancelSourcePrefetch(prefetch);
+    }
+}
+
+/** Ends a prefetch: its worker releases the source unless a run took it over since, and one still waiting for a worker never starts. */
+function cancelSourcePrefetch(prefetch: SourcePrefetchRecord): void {
+    if (prefetch.waitTimer !== null) {
+        globalThis.clearTimeout(prefetch.waitTimer);
+        prefetch.waitTimer = null;
+    }
+    if (sourcePrefetch === prefetch) {
+        sourcePrefetch = null;
+    }
+    const worker = prefetch.worker;
+    prefetch.worker = null;
+    if (!worker) {
+        return;
+    }
+    const releaseRequest: DecodeWorkerReleasePrefetchRequest = { prefetchId: prefetch.request.prefetchId, type: 'release-prefetch' };
+    try {
+        worker.postMessage(releaseRequest);
+    } catch {
+        // A worker that takes no request was terminated, which ended its reads
+    }
+}
+
+/**
+ * Keeps a worker that holds no run for the page's next session from the same factory, in place of any worker that waited before it.
+ * A source prefetch that waited for a worker reads in this one.
+ */
+function parkIdleDecodeWorker(factory: CustomDecodeWorkerFactory, videoDecoderBackend: CustomDecodeVideoDecoderBackend | null, worker: Worker): void {
     releaseIdleCustomDecodeWorker();
     const releaseIfIdle = (): void => {
         if (idleDecodeWorker?.worker === worker) {
@@ -444,18 +517,39 @@ function parkIdleDecodeWorker(factory: CustomDecodeWorkerFactory, videoDecoderBa
         videoDecoderBackend,
         worker
     };
+    const prefetch = sourcePrefetch;
+    if (prefetch?.factory === factory && prefetch.worker === null) {
+        postSourcePrefetch(prefetch, worker);
+    }
 }
 
-/** Takes the page's idle worker for a session's first start when the same factory created it for the same video decoder backend. */
-function takeIdleDecodeWorker(factory: CustomDecodeWorkerFactory, videoDecoderBackend: CustomDecodeVideoDecoderBackend): Worker | null {
+/**
+ * Takes the page's idle worker for a session's first start when the same factory created it, for the same video decoder backend or by a prefetch.
+ * The session's start follows at once, and its run takes a prefetched source over when it reads the same URL.
+ * A session that takes no idle worker creates its own, whose first run reads the head itself, so the factory's prefetch ends at once.
+ */
+function takeIdleDecodeWorker(factory: CustomDecodeWorkerFactory, videoDecoderBackend: CustomDecodeVideoDecoderBackend): IdleDecodeWorker | null {
     const idleWorker = idleDecodeWorker;
-    if (idleWorker?.factory !== factory || idleWorker.videoDecoderBackend !== videoDecoderBackend) {
+    const prefetch = sourcePrefetch?.factory === factory ? sourcePrefetch : null;
+    if (
+        idleWorker?.factory !== factory
+        || (idleWorker.videoDecoderBackend !== null && idleWorker.videoDecoderBackend !== videoDecoderBackend)
+    ) {
+        if (prefetch) {
+            cancelSourcePrefetch(prefetch);
+        }
         return null;
     }
     idleDecodeWorker = null;
     globalThis.clearTimeout(idleWorker.releaseTimer);
     idleWorker.worker.removeEventListener('error', idleWorker.errorHandler);
-    return idleWorker.worker;
+    if (prefetch?.worker === idleWorker.worker) {
+        // A later cancel still posts the release, which the worker ignores once the run took the source over
+        sourcePrefetch = null;
+    } else if (prefetch) {
+        cancelSourcePrefetch(prefetch);
+    }
+    return idleWorker;
 }
 
 /** Terminates the decode worker a destroyed session left for the page's next session, if one waits, rather than at the end of its idle delay. */
@@ -468,6 +562,63 @@ export function releaseIdleCustomDecodeWorker(): void {
     globalThis.clearTimeout(idleWorker.releaseTimer);
     idleWorker.worker.removeEventListener('error', idleWorker.errorHandler);
     idleWorker.worker.terminate();
+    // The worker's reads, a prefetch's among them, ended with it
+    if (sourcePrefetch?.worker === idleWorker.worker) {
+        sourcePrefetch = null;
+    }
+}
+
+/**
+ * Starts reading a URL source's head for the page's next session from the same factory, whose first run over the same source continues on that read,
+ * so the read overlaps whatever precedes the session, such as the host's negotiation of the source.
+ * It reads in the worker that session takes: the idle one, the one a live session leaves idle once its runs are over, as a playback that a new one
+ * replaces does, or else a new one, whose startup the prefetch overlaps too, and which a session on any backend takes.
+ * A later prefetch replaces it; the worker releases its source unless a run takes it within 5 s, and a prefetch that waits that long for a worker ends.
+ * A run over another URL releases the source, so no run reads bytes it did not ask for.
+ */
+export function prefetchCustomDecodeSource(
+    source: CustomDecodeMediaSource,
+    workerFactory: CustomDecodeWorkerFactory = createDefaultWorker
+): CustomDecodeSourcePrefetch {
+    if (!isCustomDecodeMediaSource(source) || source.kind !== 'url') {
+        throw new TypeError('A custom decode source prefetch takes a URL source');
+    }
+    if (sourcePrefetch) {
+        cancelSourcePrefetch(sourcePrefetch);
+    }
+    sourcePrefetchCount += 1;
+    const prefetch: SourcePrefetchRecord = {
+        factory: workerFactory,
+        request: { prefetchId: sourcePrefetchCount, source, type: 'prefetch-source' },
+        waitTimer: null,
+        worker: null
+    };
+    sourcePrefetch = prefetch;
+    const cancel = (): void => {
+        cancelSourcePrefetch(prefetch);
+    };
+    if (hasSessionWorker(workerFactory)) {
+        // The live session's worker replaces the idle one once its runs are over, and the prefetch then reads in it
+        prefetch.waitTimer = globalThis.setTimeout((): void => {
+            prefetch.waitTimer = null;
+            cancelSourcePrefetch(prefetch);
+        }, SOURCE_PREFETCH_WAIT_MILLISECONDS);
+        return { cancel };
+    }
+    if (idleDecodeWorker?.factory === workerFactory) {
+        postSourcePrefetch(prefetch, idleDecodeWorker.worker);
+        return { cancel };
+    }
+    let worker: Worker;
+    try {
+        worker = workerFactory();
+    } catch {
+        // The session reports a worker it cannot create
+        cancelSourcePrefetch(prefetch);
+        return { cancel };
+    }
+    parkIdleDecodeWorker(workerFactory, null, worker);
+    return { cancel };
 }
 
 function isValidGeneration(generation: number): boolean {
@@ -1359,7 +1510,7 @@ export default class CustomDecodeSession {
         };
     }
 
-    /** Takes a worker into the session: a new one, or one an earlier session already ran generations in. */
+    /** Takes a worker into the session: a new one, a prefetch's, or one an earlier session already ran generations in. */
     private createWorkerRecord(worker: Worker, videoDecoderBackend: CustomDecodeVideoDecoderBackend, hasRunGeneration: boolean): WorkerRecord {
         const workerRecord: WorkerRecord = {
             errorHandler: (): void => undefined,
@@ -1381,12 +1532,13 @@ export default class CustomDecodeSession {
             this.handleWorkerCrash(workerRecord);
         };
         worker.addEventListener('message', workerRecord.messageHandler);
+        sessionWorkerFactories.set(worker, this.workerFactory);
         worker.addEventListener('error', workerRecord.errorHandler);
         return workerRecord;
     }
 
     /**
-     * Posts the active generation's start at once; the first start takes the worker an earlier session left idle, or creates one.
+     * Posts the active generation's start at once; the first start takes the worker an earlier session or a source prefetch left idle, or creates one.
      * A stopped run closed its decoders and audio attempt and canceled its reads when it stopped, so it unwinds beside the new run instead of holding it back.
      */
     private startPendingGeneration(): void {
@@ -1410,7 +1562,12 @@ export default class CustomDecodeSession {
         if (!workerRecord) {
             try {
                 const idleWorker = takeIdleDecodeWorker(this.workerFactory, generationRecord.videoDecoderBackend);
-                workerRecord = this.createWorkerRecord(idleWorker ?? this.workerFactory(), generationRecord.videoDecoderBackend, idleWorker !== null);
+                workerRecord = this.createWorkerRecord(
+                    idleWorker?.worker ?? this.workerFactory(),
+                    generationRecord.videoDecoderBackend,
+                    // A worker a prefetch created has run no generation
+                    idleWorker !== null && idleWorker.videoDecoderBackend !== null
+                );
             } catch {
                 this.activeGeneration = null;
                 this.failSession(generationRecord.generation, 'decode-failed', 'Unable to create the custom decode worker');
@@ -1548,6 +1705,7 @@ export default class CustomDecodeSession {
         workerRecord.released = true;
         workerRecord.worker.removeEventListener('message', workerRecord.messageHandler);
         workerRecord.worker.removeEventListener('error', workerRecord.errorHandler);
+        sessionWorkerFactories.delete(workerRecord.worker);
         if (this.workerRecord === workerRecord) {
             this.workerRecord = null;
         }

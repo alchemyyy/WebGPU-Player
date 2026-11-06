@@ -1,7 +1,7 @@
 // @vitest-environment node
 
 import { UrlSource } from 'mediabunny';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 
 import { MICROSECONDS_PER_SECOND, secondsToMicroseconds, type Microseconds } from 'webgpu-player/MediaTime';
 import {
@@ -9,6 +9,11 @@ import {
     URL_SOURCE_RELEASE_DELAY_MILLISECONDS,
     URLSourceRetention
 } from 'webgpu-player/demux/URLSourceRetention';
+
+type HeadReadingSource = Readonly<{
+    readHead: MockInstance<UrlSource['getSizeOrNull']>
+    source: UrlSource
+}>;
 
 const BYTES_PER_MEBIBYTE = 1024 * 1024;
 const BYTES_PER_SECOND_PER_MEGABIT = 125_000;
@@ -43,6 +48,13 @@ function createFirstSource(): UrlSource {
 
 function createSecondSource(): UrlSource {
     return new UrlSource(SECOND_MEDIA_URL);
+}
+
+/** A source whose head read waits until the test settles it, as a request the network has not answered yet. */
+function createHeadReadingSource(headRead: Promise<number | null> = new Promise<number | null>((): void => undefined)): HeadReadingSource {
+    const source = createFirstSource();
+    const readHead = vi.spyOn(source, 'getSizeOrNull').mockReturnValue(headRead);
+    return { readHead, source };
 }
 
 /** Whether a source is still in use, which a disposed source no longer can be. */
@@ -192,6 +204,63 @@ describe('URLSourceRetention', () => {
         expect(otherPinCache).not.toHaveBeenCalled();
         expect(pinCache).toHaveBeenCalledOnce();
         expect(setReadAhead).not.toHaveBeenCalled();
+        retention.release();
+    });
+
+    it('reads a prefetched source\'s head and hands the source to a run over the same media within the delay', () => {
+        vi.useFakeTimers();
+        const retention = new URLSourceRetention();
+        const { readHead, source } = createHeadReadingSource();
+
+        retention.prefetch(FIRST_MEDIA_URL, (): UrlSource => source, {});
+        expect(readHead).toHaveBeenCalledOnce();
+        vi.advanceTimersByTime(URL_SOURCE_RELEASE_DELAY_MILLISECONDS - 1);
+        expect(retention.acquire(FIRST_MEDIA_URL, createFirstSource, {})).toBe(source);
+
+        // The run took the source over, so the prefetch's release no longer applies
+        vi.advanceTimersByTime(URL_SOURCE_RELEASE_DELAY_MILLISECONDS);
+        expect(isLive(source)).toBe(true);
+        retention.release();
+    });
+
+    it('releases a prefetched source no run acquires within the delay', () => {
+        vi.useFakeTimers();
+        const retention = new URLSourceRetention();
+        const { source } = createHeadReadingSource();
+
+        retention.prefetch(FIRST_MEDIA_URL, (): UrlSource => source, {});
+        vi.advanceTimersByTime(URL_SOURCE_RELEASE_DELAY_MILLISECONDS - 1);
+        expect(isLive(source)).toBe(true);
+        vi.advanceTimersByTime(1);
+
+        expect(isLive(source)).toBe(false);
+    });
+
+    it('releases a prefetched source for a run over other media, a discarded prefetch, and a failed read, but never a run\'s', async () => {
+        const retention = new URLSourceRetention();
+        const mismatched = createHeadReadingSource();
+        retention.prefetch(FIRST_MEDIA_URL, (): UrlSource => mismatched.source, {});
+        retention.acquire(SECOND_MEDIA_URL, createSecondSource, {});
+        expect(isLive(mismatched.source)).toBe(false);
+
+        const discardedPrefetch = {};
+        const discarded = createHeadReadingSource();
+        retention.prefetch(FIRST_MEDIA_URL, (): UrlSource => discarded.source, discardedPrefetch);
+        retention.releaseHeld(discardedPrefetch);
+        expect(isLive(discarded.source)).toBe(false);
+
+        const failed = createHeadReadingSource(Promise.reject(new Error('The server is unreachable')));
+        retention.prefetch(FIRST_MEDIA_URL, (): UrlSource => failed.source, {});
+        await vi.waitFor((): void => {
+            expect(isLive(failed.source)).toBe(false);
+        });
+
+        const takenPrefetch = {};
+        const taken = createHeadReadingSource();
+        retention.prefetch(FIRST_MEDIA_URL, (): UrlSource => taken.source, takenPrefetch);
+        retention.acquire(FIRST_MEDIA_URL, createFirstSource, {});
+        retention.releaseHeld(takenPrefetch);
+        expect(isLive(taken.source)).toBe(true);
         retention.release();
     });
 });

@@ -11,6 +11,7 @@ import {
     getVideoCreditLimit,
     isDecodeWorkerRequest,
     isDecodeWorkerResponse,
+    isDecodeWorkerSourcePrefetchRequest,
     MAX_DECODED_AUDIO_CHANNELS,
     MAX_DECODED_AUDIO_FRAMES_PER_SAMPLE,
     MAX_DECODED_AUDIO_SAMPLE_CREDITS,
@@ -234,6 +235,25 @@ function createCompoundRawFrames(baseFormat: RawTestFrameFormat = 'I420', enhanc
 }
 
 describe('DecodeWorkerProtocol', () => {
+    it('accepts a source prefetch only for a URL, under a positive prefetch ID, and as no generation\'s request', () => {
+        const prefetchRequest = {
+            prefetchId: 3,
+            source: { hiddenContentRangePathPattern: /\/stream$/i, kind: 'url', url: 'https://example.test/Videos/item/stream' },
+            type: 'prefetch-source'
+        } as const;
+        const releaseRequest = { prefetchId: 3, type: 'release-prefetch' } as const;
+
+        expect(isDecodeWorkerSourcePrefetchRequest(prefetchRequest)).toBe(true);
+        expect(isDecodeWorkerSourcePrefetchRequest(releaseRequest)).toBe(true);
+        expect(isDecodeWorkerSourcePrefetchRequest({ ...prefetchRequest, source: { file: new File([], 'local.mkv'), kind: 'file' } })).toBe(false);
+        expect(isDecodeWorkerSourcePrefetchRequest({ ...prefetchRequest, source: { kind: 'url', url: '' } })).toBe(false);
+        expect(isDecodeWorkerSourcePrefetchRequest({ ...releaseRequest, prefetchId: 0 })).toBe(false);
+        expect(isDecodeWorkerSourcePrefetchRequest({ ...releaseRequest, prefetchId: 1.5 })).toBe(false);
+        expect(isDecodeWorkerSourcePrefetchRequest({ generation: 3, type: 'stop' })).toBe(false);
+        expect(isDecodeWorkerRequest(prefetchRequest)).toBe(false);
+        expect(isDecodeWorkerRequest(releaseRequest)).toBe(false);
+    });
+
     it('accepts only generation-scoped validated live downmix settings', () => {
         const request = {
             audioDownmixSettings: {
