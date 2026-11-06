@@ -48,6 +48,14 @@ Commit hashes refer to the Jellyfin Web fork's `webgpu-player` branch, where the
   Clients that ask to save data or have fewer than four threads get no warm-up, since speculative work costs them most; their stored verdicts still rerun after use.
   Only verdicts are stored, keyed by a fingerprint of the host build, the adapter, and the full browser and OS versions, because the user agent alone carries only a major version and a frozen OS.
   What no fingerprint shows, a driver or codec pack change, the acceleration setting, or a software fallback after a GPU process crash, is caught by rerunning each stored verdict after use and by clearing the store when a start it may have admitted fails before its first frame.
+- A probe that stops the page never runs again for its fingerprint, and a browser it stopped probes in the background no more (11-05).
+  On iOS, a host that starts the warm-up at load reloaded about every 8 s, in Safari and in an app's web view, until Safari reported that a problem repeatedly occurred, as it does when a page's WebContent process keeps ending.
+  On WebKit the warm-up runs a probe's first browser call after two 2 s idle bounds, and a probe whose browser call ends the WebContent process reaches no verdict, so every reload runs it again.
+  Each page now records a probe while the browser works on it, under a Web Lock of the page's own, and the next page reads the record of a page whose lock is free as a crash: the probe reads `not-probed` from then on, and the warm-up and the refreshes stop.
+  Web Locks, rather than a record in sessionStorage, tell a stopped page from one that runs, since a crash may come back in another tab or a recreated web view, and another tab's live record must never read as a crash.
+  A page holds its lock only while it has a record, though Chrome keeps no page that ever used a Web Lock in its back-forward cache, released or not (Chromium issue 421746650).
+  Only the browser calls are recorded, the configuration checks and each heavy step until its own work settles, so a page closed while it downloads or waits for a turn records nothing; nor does a hidden page, which a browser may end without a crash.
+  A crash is kept per fingerprint like a verdict, so a new build or browser version probes again, and the store names the probe that stopped the page in `readStoredCapabilityProbeVerdictState()`.
 - AVI carries only what the fork's AVI demuxer and the engine's routes play (10-15).
   The rule takes H.264, HEVC, VP8, VP9, and AV1 with AAC, MP3, AC-3, FLAC, Vorbis, and the PCM formats WAVEFORMATEX maps, all checked against FFmpeg-made AVI vectors.
   AVI times its chunks in decode order and keeps no presentation times, so HEVC stayed out at first, since the owned HEVC path presents packets as stamped, and on WebKit, whose sample sink orders decoded frames by their packets' timestamps, eligibility refused H.264 that could code B-frames (10-16).

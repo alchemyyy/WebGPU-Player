@@ -2210,11 +2210,13 @@ function createNativeSurroundAudioCapabilities(
     return Object.freeze(capabilitiesByCodec);
 }
 
-// Counts the 5.1 and the 7.1 probes together
-function getNativeSurroundAudioProbeCount(environment: WebCodecsCapabilityEnvironment): number {
-    return environment.audioDecoder && environment.nativeAudioOutputProbe ?
-        NATIVE_SURROUND_AUDIO_PROBE_DEFINITIONS.length + NATIVE_SEVEN_POINT_ONE_AUDIO_PROBE_DEFINITIONS.length :
-        0;
+// Counts the selected 5.1 and 7.1 probes together
+function getNativeSurroundAudioProbeCount(environment: WebCodecsCapabilityEnvironment, selection: ReadonlySet<CustomDecodeProbe>): number {
+    if (!environment.audioDecoder || !environment.nativeAudioOutputProbe) {
+        return 0;
+    }
+    return (selection.has('native-surround-audio') ? NATIVE_SURROUND_AUDIO_PROBE_DEFINITIONS.length : 0)
+        + (selection.has('native-seven-point-one-audio') ? NATIVE_SEVEN_POINT_ONE_AUDIO_PROBE_DEFINITIONS.length : 0);
 }
 
 async function probeNativeVideoConfig(
@@ -2654,6 +2656,27 @@ const NOT_PROBED_NATIVE_HDR_AV1_CAPABILITY: CustomNativeHDRAV1Capability = Objec
     status: 'not-probed'
 });
 
+// The audio probes' results when a run leaves them out, as it does once one was in a browser call when a page stopped
+const NOT_PROBED_NATIVE_AUDIO_CAPABILITIES: readonly CustomDecodeCodecCapability<CustomAudioCodec>[] = Object.freeze(AUDIO_PROBE_DEFINITIONS.map(
+    (definition: AudioProbeDefinition): CustomDecodeCodecCapability<CustomAudioCodec> => createNotProbedCapability(definition.codec, definition.config.codec)
+));
+
+function createNotProbedNativeSurroundAudioCapabilities(
+    definitions: readonly NativeSurroundAudioProbeDefinition[]
+): readonly CustomNativeSurroundAudioCodecCapability[] {
+    return Object.freeze(definitions.map((definition: NativeSurroundAudioProbeDefinition): CustomNativeSurroundAudioCodecCapability => Object.freeze({
+        codec: definition.codec,
+        codecString: definition.config.codec,
+        inputChannelCount: definition.inputChannelCount,
+        reason: 'not-probed',
+        sampleRate: NATIVE_SURROUND_AUDIO_CAPABILITY_VECTOR_SAMPLE_RATE,
+        status: 'not-probed'
+    })));
+}
+
+const NOT_PROBED_NATIVE_SURROUND_AUDIO_CAPABILITIES = createNotProbedNativeSurroundAudioCapabilities(NATIVE_SURROUND_AUDIO_PROBE_DEFINITIONS);
+const NOT_PROBED_NATIVE_SEVEN_POINT_ONE_AUDIO_CAPABILITIES = createNotProbedNativeSurroundAudioCapabilities(NATIVE_SEVEN_POINT_ONE_AUDIO_PROBE_DEFINITIONS);
+
 // Dolby Vision and incomplete metadata are unknown
 type VideoStreamDynamicRange = 'sdr' | 'static-hdr' | 'unknown';
 
@@ -3027,9 +3050,9 @@ function createProbeTelemetry(
     const nativeHDRVideoOutputAvailable = Boolean(environment.videoDecoder && environment.nativeHDRVideoOutputProbe);
     const rawVideoOutputAvailable = Boolean(environment.videoDecoder && environment.rawHDRVideoOutputProbe);
     return Object.freeze({
-        audioProbeCount: environment.audioDecoder ? AUDIO_PROBE_DEFINITIONS.length : 0,
+        audioProbeCount: environment.audioDecoder && selection.has('native-audio') ? AUDIO_PROBE_DEFINITIONS.length : 0,
         mediabunnyAudioCodecCount: MEDIABUNNY_PCM_AUDIO_CODEC_DEFINITIONS.length,
-        nativeSurroundAudioProbeCount: getNativeSurroundAudioProbeCount(environment),
+        nativeSurroundAudioProbeCount: getNativeSurroundAudioProbeCount(environment, selection),
         nativeHDRVideoProbeCount: nativeHDRVideoOutputAvailable ? getSelectedProbeCount(selection, NATIVE_HDR_VIDEO_PROBES) : 0,
         nativeUltraHDVideoProbeCount: getNativeUltraHDVideoProbeCount(environment, selection),
         rawHDRVideoProbeCount: rawVideoOutputAvailable ? getSelectedProbeCount(selection, RAW_VIDEO_PROBES) : 0,
@@ -3086,6 +3109,8 @@ export const BACKGROUND_PROBE_RECHECK_MILLISECONDS = 1_000;
 export const BACKGROUND_PROBE_NEGOTIATION_HOLD_MILLISECONDS = 10_000;
 // A client with fewer threads than this gets no warm-up, nor one that asks to save data
 const WARM_UP_MINIMUM_HARDWARE_CONCURRENCY = 4;
+// Without a store, no probe reads as crashed
+const NO_CRASHED_PROBES: ReadonlySet<string> = new Set();
 
 export type CustomDecodeCapabilityProbeOptions = Readonly<{
     /** Returns whether media plays; background probes wait while it does */
@@ -3097,7 +3122,7 @@ export type CustomDecodeCapabilityProbeOptions = Readonly<{
     waitForIdle?: (cancel: Promise<void>) => Promise<void>
 }>;
 
-type ProbeStarter = (queue: HeavyCapabilityProbeQueue) => Promise<unknown>;
+type ProbeStarter = (queue: HeavyCapabilityProbeQueue, environment: WebCodecsCapabilityEnvironment) => Promise<unknown>;
 
 // A warm-up runs a probe nothing asked for yet; a refresh reruns one whose stored verdict a negotiation used
 type BackgroundProbeKind = 'refresh' | 'warm-up';
@@ -3219,22 +3244,32 @@ export default class CustomDecodeCapabilityProbe {
 
     private async runProbes(selection: ReadonlySet<CustomDecodeProbe>): Promise<CustomDecodeCapabilities> {
         const environment = this.getEnvironment();
-        const audioProbes = this.startAudioProbes();
+        // A probe that was in a browser call when an earlier page stopped never runs again for this fingerprint: it reads as not probed, which no route takes as support
+        const crashedProbes = this.store ? await this.store.readCrashedProbes() : NO_CRASHED_PROBES;
+        const probedSelection = crashedProbes.size === 0 ?
+            selection :
+            new Set([ ...selection ].filter((probe: CustomDecodeProbe): boolean => !crashedProbes.has(probe)));
+        const audioProbes = this.startAudioProbes(probedSelection);
         // Video work joins the heavy queue behind every audio probe, so a video timeout never costs audio its verdicts
         const videoProbes = this.startVideoProbes(
-            selection,
+            probedSelection,
             this.heavyProbeScheduler.after(audioProbes)
         );
         const [ audioResults, videoResults ] = await Promise.all([ audioProbes, videoProbes ]);
-        return createCustomDecodeCapabilities(environment, selection, audioResults, videoResults);
+        return createCustomDecodeCapabilities(environment, probedSelection, audioResults, videoResults);
     }
 
-    /** Starts every audio probe once per page, because a playing item can switch to any of its audio tracks. */
-    private async startAudioProbes(): Promise<AudioProbeResults> {
+    /** Starts every selected audio probe once per page; every item selects them all, because a playing item can switch to any of its audio tracks. */
+    private async startAudioProbes(selection: ReadonlySet<CustomDecodeProbe>): Promise<AudioProbeResults> {
         const [ nativeAudio, nativeSurroundAudio, nativeSevenPointOneAudio ] = await Promise.all([
-            this.startProbe<Array<CustomDecodeCodecCapability<CustomAudioCodec>>>('native-audio', this.heavyProbeScheduler),
-            this.startProbe<CustomNativeSurroundAudioCodecCapability[]>('native-surround-audio', this.heavyProbeScheduler),
-            this.startProbe<CustomNativeSurroundAudioCodecCapability[]>('native-seven-point-one-audio', this.heavyProbeScheduler)
+            this.startSelectedProbe(selection, 'native-audio', this.heavyProbeScheduler, NOT_PROBED_NATIVE_AUDIO_CAPABILITIES),
+            this.startSelectedProbe(selection, 'native-surround-audio', this.heavyProbeScheduler, NOT_PROBED_NATIVE_SURROUND_AUDIO_CAPABILITIES),
+            this.startSelectedProbe(
+                selection,
+                'native-seven-point-one-audio',
+                this.heavyProbeScheduler,
+                NOT_PROBED_NATIVE_SEVEN_POINT_ONE_AUDIO_CAPABILITIES
+            )
         ]);
         return { nativeAudio, nativeSevenPointOneAudio, nativeSurroundAudio };
     }
@@ -3327,14 +3362,51 @@ export default class CustomDecodeCapabilityProbe {
         };
     }
 
-    /** Returns how to start each probe on a queue; each identifier always starts the same probe. */
+    /** Returns how to start each probe on a queue and an environment; each identifier always starts the same probe. */
     private getProbeStarter(probe: CustomDecodeProbe): ProbeStarter {
-        this.probeStarters ??= createProbeStarters(this.getEnvironment());
+        this.probeStarters ??= createProbeStarters();
         const starter = this.probeStarters.get(probe);
         if (!starter) {
             throw new RangeError(`Unknown capability probe: ${probe}`);
         }
         return starter;
+    }
+
+    /**
+     * Runs a probe while the store records each of its browser calls: a configuration check, or a heavy step until that step's own work settles, even past its timeout.
+     * A page that stops in such a call leaves the probe recorded, so no later page of this fingerprint runs it again.
+     */
+    private runRecorded(probe: CustomDecodeProbe, queue: HeavyCapabilityProbeQueue): Promise<unknown> {
+        const environment = this.getEnvironment();
+        const store = this.store;
+        if (!store) {
+            return this.getProbeStarter(probe)(queue, environment);
+        }
+        const record = async <Value>(call: () => Promise<Value>): Promise<Value> => {
+            const end = await store.markRunning(probe);
+            try {
+                return await call();
+            } finally {
+                end();
+            }
+        };
+        const { audioDecoder, videoDecoder } = environment;
+        const recordedQueue: HeavyCapabilityProbeQueue = {
+            get assetPriority(): RequestPriority {
+                return queue.assetPriority;
+            },
+            run: <Value>(step: () => Promise<Value>) => queue.run(() => record(step)),
+            runTimed: <Value>(step: () => Promise<Value>) => queue.runTimed(() => record(step))
+        };
+        return this.getProbeStarter(probe)(recordedQueue, {
+            ...environment,
+            audioDecoder: audioDecoder && {
+                isConfigSupported: (config: AudioDecoderConfig): Promise<AudioDecoderSupport> => record(() => audioDecoder.isConfigSupported(config))
+            },
+            videoDecoder: videoDecoder && {
+                isConfigSupported: (config: VideoDecoderConfig): Promise<VideoDecoderSupport> => record(() => videoDecoder.isConfigSupported(config))
+            }
+        });
     }
 
     /**
@@ -3383,7 +3455,7 @@ export default class CustomDecodeCapabilityProbe {
 
     /** Runs a probe and stores its result when it is a verdict throughout. */
     private async runProbe(probe: CustomDecodeProbe, queue: HeavyCapabilityProbeQueue): Promise<unknown> {
-        const result = await this.getProbeStarter(probe)(queue);
+        const result = await this.runRecorded(probe, queue);
         void this.store?.write(probe, result);
         return result;
     }
@@ -3428,12 +3500,14 @@ export default class CustomDecodeCapabilityProbe {
     /** Runs the background probes one after another, so at most one is ever ahead of a negotiation's probes in the heavy queue. */
     private async runBackgroundQueue(): Promise<void> {
         try {
-            while (this.backgroundQueue.size > 0 && !this.heavyProbeScheduler.isBackgroundHalted) {
+            // A browser on which a probe stopped a page probes only in negotiations from then on, so no page load runs a probe nothing asked for
+            const crashed = this.store !== null && (await this.store.readCrashedProbes()).size > 0;
+            while (!crashed && this.backgroundQueue.size > 0 && !this.heavyProbeScheduler.isBackgroundHalted) {
                 const [ probe, kind ] = [ ...this.backgroundQueue ][0];
                 this.backgroundQueue.delete(probe);
                 await this.runBackgroundProbe(probe, kind);
             }
-            // After a background timeout only negotiations probe, so the timed-out work is never joined by more
+            // After a background timeout, or on such a browser, only negotiations probe, so the timed-out work is never joined by more
             this.backgroundQueue.clear();
         } finally {
             this.backgroundDriverActive = false;
@@ -3469,7 +3543,7 @@ export default class CustomDecodeCapabilityProbe {
     private async startBackgroundRun(probe: CustomDecodeProbe, run: BackgroundCapabilityProbeRun): Promise<BackgroundProbeOutcome> {
         try {
             await run.waitForTurn();
-            const result = await this.getProbeStarter(probe)(this.heavyProbeScheduler.background(run));
+            const result = await this.runRecorded(probe, this.heavyProbeScheduler.background(run));
             return { discarded: run.timedOut || hasCapabilityProbeTimeout(result), result };
         } catch {
             return { discarded: true, result: null };
@@ -3486,30 +3560,31 @@ export default class CustomDecodeCapabilityProbe {
     }
 }
 
-function createProbeStarters(environment: WebCodecsCapabilityEnvironment): ReadonlyMap<CustomDecodeProbe, ProbeStarter> {
+/** Returns how to start each probe on a queue and an environment; a run passes its own, which record the probe's browser calls. */
+function createProbeStarters(): ReadonlyMap<CustomDecodeProbe, ProbeStarter> {
     const starters = new Map<CustomDecodeProbe, ProbeStarter>([
-        [ 'native-audio', (queue) => Promise.all(createAudioProbePromises(environment, queue)) ],
-        [ 'native-surround-audio', (queue) => Promise.all(createNativeSurroundAudioProbePromises(
+        [ 'native-audio', (queue, environment) => Promise.all(createAudioProbePromises(environment, queue)) ],
+        [ 'native-surround-audio', (queue, environment) => Promise.all(createNativeSurroundAudioProbePromises(
             NATIVE_SURROUND_AUDIO_PROBE_DEFINITIONS,
             environment,
             queue
         )) ],
-        [ 'native-seven-point-one-audio', (queue) => Promise.all(createNativeSurroundAudioProbePromises(
+        [ 'native-seven-point-one-audio', (queue, environment) => Promise.all(createNativeSurroundAudioProbePromises(
             NATIVE_SEVEN_POINT_ONE_AUDIO_PROBE_DEFINITIONS,
             environment,
             queue
         )) ],
-        [ 'h264-profiles', (queue) => probeH264(environment, queue) ],
-        [ 'native-dolby-vision-hevc', (queue) => probeNativeDolbyVisionHEVC(
+        [ 'h264-profiles', (queue, environment) => probeH264(environment, queue) ],
+        [ 'native-dolby-vision-hevc', (queue, environment) => probeNativeDolbyVisionHEVC(
             environment.videoDecoder,
             environment.nativeDolbyVisionVideoOutputProbe,
             queue
         ) ],
-        [ 'native-hdr-hevc', (queue) => probeNativeHDRHEVC(environment.videoDecoder, environment.nativeHDRVideoOutputProbe, queue) ],
-        [ 'native-hdr-av1', (queue) => probeNativeHDRAV1(environment.videoDecoder, environment.nativeHDRVideoOutputProbe, queue) ]
+        [ 'native-hdr-hevc', (queue, environment) => probeNativeHDRHEVC(environment.videoDecoder, environment.nativeHDRVideoOutputProbe, queue) ],
+        [ 'native-hdr-av1', (queue, environment) => probeNativeHDRAV1(environment.videoDecoder, environment.nativeHDRVideoOutputProbe, queue) ]
     ]);
     for (const definition of NATIVE_SDR_VIDEO_PROBE_DEFINITIONS) {
-        starters.set(getNativeSDRVideoProbe(definition.codec), (queue) => probeNativeVideoConfig(
+        starters.set(getNativeSDRVideoProbe(definition.codec), (queue, environment) => probeNativeVideoConfig(
             definition,
             environment.videoDecoder,
             environment.nativeVideoOutputProbe,
@@ -3517,7 +3592,7 @@ function createProbeStarters(environment: WebCodecsCapabilityEnvironment): Reado
         ));
     }
     for (const definition of NATIVE_ULTRA_HD_VIDEO_PROBE_DEFINITIONS) {
-        starters.set(getNativeUltraHDVideoProbe(definition.codec), (queue) => probeNativeUltraHDVideoConfig(
+        starters.set(getNativeUltraHDVideoProbe(definition.codec), (queue, environment) => probeNativeUltraHDVideoConfig(
             definition,
             environment.videoDecoder,
             environment.nativeVideoOutputProbe,
@@ -3525,7 +3600,7 @@ function createProbeStarters(environment: WebCodecsCapabilityEnvironment): Reado
         ));
     }
     for (const definition of RAW_HDR_VIDEO_PROBE_DEFINITIONS) {
-        starters.set(getRawVideoProbe(definition.codec), (queue) => probeRawHDRVideoConfig(
+        starters.set(getRawVideoProbe(definition.codec), (queue, environment) => probeRawHDRVideoConfig(
             definition,
             environment.videoDecoder,
             environment.rawHDRVideoOutputProbe,
@@ -3534,7 +3609,7 @@ function createProbeStarters(environment: WebCodecsCapabilityEnvironment): Reado
     }
     for (const variant of HEVC_RANGE_EXTENSION_VARIANTS) {
         const definition = HEVC_RANGE_EXTENSION_PROBE_DEFINITIONS[variant];
-        starters.set(getHEVCRangeExtensionVideoProbe(variant), (queue) => probeExactRawFormatConfig(
+        starters.set(getHEVCRangeExtensionVideoProbe(variant), (queue, environment) => probeExactRawFormatConfig(
             'hevc',
             definition,
             createHEVCRangeExtensionBaseCapability(definition),
@@ -3546,7 +3621,7 @@ function createProbeStarters(environment: WebCodecsCapabilityEnvironment): Reado
     }
     for (const variant of AV1_RAW_FORMAT_VARIANTS) {
         const definition = AV1_RAW_FORMAT_PROBE_DEFINITIONS[variant];
-        starters.set(getAV1RawFormatVideoProbe(variant), (queue) => probeExactRawFormatConfig(
+        starters.set(getAV1RawFormatVideoProbe(variant), (queue, environment) => probeExactRawFormatConfig(
             'av1',
             definition,
             createAV1RawFormatBaseCapability(definition),
@@ -3558,7 +3633,7 @@ function createProbeStarters(environment: WebCodecsCapabilityEnvironment): Reado
     }
     for (const variant of H264_RAW_FORMAT_VARIANTS) {
         const definition = H264_RAW_FORMAT_PROBE_DEFINITIONS[variant];
-        starters.set(getH264RawFormatVideoProbe(variant), (queue) => probeExactRawFormatConfig(
+        starters.set(getH264RawFormatVideoProbe(variant), (queue, environment) => probeExactRawFormatConfig(
             'h264',
             definition,
             createH264RawFormatBaseCapability(definition),

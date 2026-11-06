@@ -16,6 +16,8 @@ import CustomDecodeCapabilityProbe, {
     type WebCodecsCapabilityEnvironment
 } from 'webgpu-player/capability/CustomDecodeCapabilities';
 
+import { createFakeWebLocks, type FakeWebLocks } from '../helpers/fakeWebLocks';
+
 type ProbeHarness = {
     audioProbe: Mock<(config: AudioDecoderConfig) => Promise<AudioDecoderSupport>>
     environment: WebCodecsCapabilityEnvironment
@@ -112,6 +114,17 @@ function createMemoryStorage(): CapabilityProbeStorage & { entries: Map<string, 
 
 function createStore(storage: CapabilityProbeStorage): CapabilityProbeStore {
     return new CapabilityProbeStore({ now: Date.now, readFingerprint: () => Promise.resolve(FINGERPRINT), storage: () => storage });
+}
+
+/** Creates the store of one page that records its runs, sharing the storage and the Web Locks with the test's other pages. */
+function createPageStore(storage: CapabilityProbeStorage, locks: FakeWebLocks, pageId: string): CapabilityProbeStore {
+    return new CapabilityProbeStore({
+        locks: () => locks.forPage(pageId),
+        now: Date.now,
+        pageId,
+        readFingerprint: () => Promise.resolve(FINGERPRINT),
+        storage: () => storage
+    });
 }
 
 function createProbe(harness: ProbeHarness, options: CustomDecodeCapabilityProbeOptions = {}): CustomDecodeCapabilityProbe {
@@ -361,5 +374,73 @@ describe('stored capability probe verdicts', () => {
         expect(laterHarness.videoProbe).toHaveBeenCalled();
         expect(renegotiated.video.hevc).toMatchObject({ status: 'unsupported' });
         expect(await store.read('native-sdr:hevc')).toMatchObject({ status: 'unsupported' });
+    });
+});
+
+describe('a probe that stops the page', () => {
+    // A decode the page stops in never returns
+    const neverReturns = <Value>(): Promise<Value> => new Promise<Value>(() => undefined);
+
+    beforeEach(() => {
+        vi.useFakeTimers();
+    });
+
+    afterEach(() => {
+        vi.useRealTimers();
+    });
+
+    it('in the warm-up stops the warm-up of every later page, whose negotiations leave it out', async () => {
+        const storage = createMemoryStorage();
+        const locks = createFakeWebLocks();
+        const stoppedHarness = createHarness();
+        stoppedHarness.nativeAudioOutputProbe.mockImplementationOnce(neverReturns);
+        createProbe(stoppedHarness, { store: createPageStore(storage, locks, 'page-1') }).warmUp();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(countOutputProbes(stoppedHarness, AAC_CODEC_STRING)).toBe(1);
+        locks.stopPage('page-1');
+
+        const harness = createHarness();
+        const store = createPageStore(storage, locks, 'page-2');
+        const probe = createProbe(harness, { store });
+        probe.warmUp();
+        await vi.runAllTimersAsync();
+
+        // Every page load warmed up again, and stopped in the same decode, before a page remembered it
+        expect(harness.audioProbe).not.toHaveBeenCalled();
+        expect(harness.videoProbe).not.toHaveBeenCalled();
+
+        const capabilities = await probe.probe(MPEG2_ITEM);
+
+        expect(store.readState()?.crashedProbes).toEqual([ 'native-audio' ]);
+        expect(capabilities.audio.aac).toMatchObject({ reason: 'not-probed', status: 'not-probed' });
+        expect(capabilities.probeStates?.['native-audio']).toBe('not-probed');
+        expect(countOutputProbes(harness, AAC_CODEC_STRING)).toBe(0);
+        expect(capabilities.nativeSurroundAudio?.aac).toMatchObject({ status: 'supported' });
+    });
+
+    it('in a negotiation is left out of a later page\'s negotiation, while the probes that settled keep their verdicts', async () => {
+        const storage = createMemoryStorage();
+        const locks = createFakeWebLocks();
+        const stoppedHarness = createHarness();
+        // The first page stops in its 1080p HEVC decode
+        stoppedHarness.nativeVideoOutputProbe.mockImplementation((probeRequest: NativeVideoOutputProbeRequest): Promise<boolean> => (
+            probeRequest.expectedCodedWidth === 1_920 ? neverReturns() : Promise.resolve(true)
+        ));
+        void createProbe(stoppedHarness, { store: createPageStore(storage, locks, 'page-1') }).probe(HEVC_ITEM);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(stoppedHarness.nativeVideoOutputProbe.mock.calls.map(([ probeRequest ]) => probeRequest.expectedCodedWidth)).toContain(1_920);
+        locks.stopPage('page-1');
+
+        const harness = createHarness();
+        const store = createPageStore(storage, locks, 'page-2');
+        const capabilities = await createProbe(harness, { store, waitForIdle: createIdleGate().waitForIdle }).probe(HEVC_ITEM);
+
+        expect(store.readState()?.crashedProbes).toEqual([ 'native-sdr:hevc' ]);
+        expect(capabilities.video.hevc).toMatchObject({ status: 'not-probed' });
+        expect(capabilities.probeStates?.['native-sdr:hevc']).toBe('not-probed');
+        expect(harness.nativeVideoOutputProbe.mock.calls.map(([ probeRequest ]) => probeRequest.expectedCodedWidth)).not.toContain(1_920);
+        // The audio probes settled before the stop, so their stored verdicts answer at once
+        expect(harness.audioProbe).not.toHaveBeenCalled();
+        expect(capabilities.audio.aac).toMatchObject({ status: 'supported' });
     });
 });

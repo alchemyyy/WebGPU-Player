@@ -38,7 +38,7 @@ function describeBrowser(state: CapabilityProbeStoreState): string {
     return state.fingerprint.userAgent;
 }
 
-/** Describes the stored verdicts in terse lines: their count and age, the build key, the adapter, and the browser. */
+/** Describes the stored verdicts in terse lines: their count and age, the build key, the adapter, the browser, and any probe that stopped a page. */
 export function describeStoredProbeVerdicts(state: CapabilityProbeStoreState | null): string {
     if (state === null) {
         return NOTHING_STORED_TEXT;
@@ -51,7 +51,8 @@ export function describeStoredProbeVerdicts(state: CapabilityProbeStoreState | n
             'adapter',
             adapterInfo ? joinTextParts([ String(adapterInfo.vendor ?? ''), String(adapterInfo.architecture ?? '') ]) : NO_ADAPTER_TEXT
         ]),
-        describeBrowser(state)
+        describeBrowser(state),
+        ...(state.crashedProbes.length > 0 ? [ joinTextParts([ 'crashed', state.crashedProbes.join(', ') ]) ] : [])
     ].join(LINE_SEPARATOR);
 }
 

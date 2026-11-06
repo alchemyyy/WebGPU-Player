@@ -90,6 +90,7 @@ A host may start the probes before its first negotiation with `warmCustomDecodeC
   A probe no background run started runs at once, as without a warm-up, so a negotiation waits for at most the one background step already in the queue.
 - A background step that times out marks only its run and halts the background for the page: no later background step runs, and the run's result, like any background result with a `probe-timeout` part, is discarded rather than kept as the page's result.
   The scheduler's timeout poison stays unset, and a negotiation that needs the probe runs it again.
+- A browser on which a probe stopped a page, as a crash stops it, runs no background probe from then on: the warm-up and the refreshes of stored verdicts end before their first probe, and only negotiations probe; see [Probes that stop the page](#probes-that-stop-the-page).
 
 ### Stored verdicts
 
@@ -106,8 +107,24 @@ A host may start the probes before its first negotiation with `warmCustomDecodeC
   A hit answers at once and schedules the probe to run again in the background, which overwrites the stored verdict and the page's result when it reaches a verdict; a rerun that reaches none leaves both.
 - A start that falls back with `decode-failed` or `startup-timeout` before its first frame clears the entry and the stored verdicts the page holds, when the page used any (`clearAfterStartFailure`, from `CustomPlaybackController`), so the renegotiation probes again.
   Driver updates, OS codec packs, the hardware acceleration setting, and Chrome's software fallback after a GPU process crash change no fingerprint.
-- `clearStoredCapabilityProbeVerdicts()` clears it, and `readStoredCapabilityProbeVerdictState()` returns the stored fingerprint, write time, age, and probe names.
+- `clearStoredCapabilityProbeVerdicts()` clears it, crashed probes included, and `readStoredCapabilityProbeVerdictState()` returns the stored fingerprint, write time, age, probe names, and crashed probe names.
 - The MSE AC-3/E-AC-3 probe and the GPU presentation authorizations are not stored: the first is not a `CustomDecodeProbe`, and the second are measured on the presenter's device, which keeps them for that device.
+
+### Probes that stop the page
+
+A probe whose browser call stops the page, as a WebContent crash on WebKit does, never returns, so it reaches no verdict and the next page would run it again.
+The store therefore keeps a run journal beside the verdicts, and a probe that was in a browser call when a page stopped never runs again for that fingerprint.
+
+- `CustomDecodeCapabilityProbe` records a probe on the store (`markRunning`) before each of its browser calls: each `isConfigSupported` check, and each heavy step until the step's own work settles, even past its timeout.
+  Downloads, idle waits, and steps waiting in the queue are not recorded, so a background run's record covers only the moments the browser works on it.
+- Each page keeps its record, the probes it has in a call and its fingerprint, under its own random id in the localStorage entry `webgpu-player-capability-probe-runs`, and drops it once its last call ends.
+- A hidden page records nothing, since a browser may end a hidden page without a crash: the page drops its record as it hides, and as it unloads or enters the back-forward cache (`pagehide`), whatever a later visibility change reads, and writes it again as it shows.
+- A page holds a Web Lock of its own id while it has a record: it takes the lock before it writes the record and lets go of it after it drops the record, so an idle page holds none.
+  The browser frees a page's locks when the page ends, however it ends, so a record whose lock is free is a stopped page's.
+- A page's first probe run (`readCrashedProbes`) takes the record of every other page whose lock is free, holding that lock while it does, so no page of that id writes one meanwhile.
+  It records the probes of such a record of the verdicts' fingerprint as crashed and drops their verdicts; a record of another fingerprint goes with no crash, and a page whose lock is held still runs, so its record stays.
+  Without Web Locks, or when the lock manager takes more than 2 s, the page records nothing and reads no crash.
+- A negotiation leaves the crashed probes out of its selection: they read `not-probed`, which no route takes as support, and `probeStates` names them `not-probed`, including the audio probes, which every item otherwise runs.
 
 ## Route catalog
 
