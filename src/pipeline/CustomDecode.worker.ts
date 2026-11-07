@@ -2398,6 +2398,20 @@ function copyAudioSampleWindow(run: DecodeRun, sample: AudioSample, startTimeMic
     }
 }
 
+// Gecko's AppleVTDecoder holds back no frames for reordering under the low-latency option (GetMaxRefFrames returns 0 for H.264
+// and HEVC with CreateDecoderParams::Option::LowLatency), and VideoToolbox outputs in decode order, so B-frames present out of order on macOS.
+const GECKO_USER_AGENT = /\bFirefox\//u;
+// macOS states "Macintosh; Intel Mac OS X", on Apple Silicon as well
+const MAC_USER_AGENT = /\bMacintosh\b/u;
+
+/** Returns whether a native video decoder may be asked to optimize for latency: not on Gecko for macOS for codecs that reorder frames. */
+function optimizesNativeVideoDecodeForLatency(codec: PreparedVideoTrack['codec']): boolean {
+    const reordersFrames = codec === 'avc' || codec === 'hevc';
+    const userAgent = globalThis.navigator.userAgent;
+    const isGeckoOnMac = GECKO_USER_AGENT.test(userAgent) && MAC_USER_AGENT.test(userAgent);
+    return !(reordersFrames && isGeckoOnMac);
+}
+
 function createOwnedHEVCVideoDecoderPort(
     run: DecodeRun,
     preparedVideoTrack: PreparedVideoTrack,
@@ -2411,7 +2425,7 @@ function createOwnedHEVCVideoDecoderPort(
         {
             ...preparedVideoTrack.decoderConfig,
             hardwareAcceleration: preparedVideoTrack.videoHardwareAcceleration,
-            optimizeForLatency: true
+            optimizeForLatency: optimizesNativeVideoDecodeForLatency(preparedVideoTrack.codec)
         },
         inputFormat,
         {
@@ -3694,7 +3708,7 @@ async function streamVideoSampleFrames(
     }
     const iterator = iterateVideoSamples(preparedVideoTrack.videoTrack, startTimeSeconds, {
         hardwareAcceleration: preparedVideoTrack.videoHardwareAcceleration,
-        optimizeForLatency: true
+        optimizeForLatency: optimizesNativeVideoDecodeForLatency(preparedVideoTrack.codec)
     });
     run.videoIterator = iterator;
 
