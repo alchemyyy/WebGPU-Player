@@ -17,7 +17,7 @@ Each source file's tests are at the same relative path under `test/`, and integr
 ## presentation/
 
 - `WebGPUPresenter.ts`: the GPU device and canvas; rVFC and pushed-frame submission; each route's built-in chain, planned and recorded through `passes/`; HDR and Dolby Vision authorization; device-loss recovery; the latched fallback.
-  It also holds the engine API for presentation: the host's preset of user passes, live parameter changes, the plan report, HDR output for HDR sources, the deinterlacing mode, and the black bar crop.
+  It also holds the engine API for presentation: the host's preset of user passes, live parameter changes, the plan report, HDR output for HDR sources, the deinterlacing mode, the black bar crop, and the observer each drawn picture reaches in the task that drew it.
   While a plan deinterlaces it shows the frame before the newest, tells the frame loop its lookahead, and draws held fields from history.
   While a plan holds a display-rate pass it measures the display's refresh rate from the frame loop's animation frames, takes frames one refresh ahead, and redraws from history at each tick's clock time.
   While the black bar crop is on it reads back each new frame's black bar statistics and fits the picture the detector's bars leave, rounded to a standard aspect ratio near it.

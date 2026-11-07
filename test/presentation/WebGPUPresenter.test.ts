@@ -255,6 +255,7 @@ import {
 import { createDolbyVisionAuthorizationRPUVector } from 'webgpu-player/capability/vectors/DolbyVisionAuthorizationVector';
 import WebGPUPresenter, {
     type PresentationSurface,
+    type PresentedPicture,
     WEBGPU_RESOURCE_OPERATION_TIMEOUT_MICROSECONDS
 } from 'webgpu-player/presentation/WebGPUPresenter';
 import type {
@@ -1403,6 +1404,81 @@ describe('WebGPUPresenter', () => {
             lastPresentedMediaTimeMicroseconds: 2_000_000,
             presentationSource: 'decoded'
         });
+    });
+
+    it('hands each drawn picture to the observer inside the drawing call, with the canvas region the picture covers, until it stops', async () => {
+        const gpuHarness = createGPUHarness();
+        const contextHarness = createCanvasContextHarness();
+        // A 16:9 frame in a square video box, which contain fits with bars above and below
+        const surfaceHarness = createSurfaceHarness(1_000, 1_000);
+        surfaceHarness.surface.video.style.objectFit = 'contain';
+        installGPU(gpuHarness.gpu);
+        installCanvasContext(contextHarness.context);
+        const presenter = new WebGPUPresenter(vi.fn());
+        const pictures: PresentedPicture[] = [];
+        const stopObserving = presenter.setPresentedPictureObserver((picture: PresentedPicture): void => {
+            pictures.push(picture);
+        });
+        const presentFrame = (seconds: number): boolean => presenter.presentDecodedFrame({
+            durationMicroseconds: secondsToMicroseconds(1 / 24),
+            frame: { close: vi.fn(), codedHeight: 1_080, codedWidth: 1_920, displayHeight: 1_080, displayWidth: 1_920 } as unknown as VideoFrame,
+            mediaTimeMicroseconds: secondsToMicroseconds(seconds),
+            outputMode: 'video-frame'
+        }, 1);
+
+        presenter.startSession(1);
+        presenter.setDecodedFramePushMode(true, 1);
+        presenter.attach(surfaceHarness.surface, 1);
+        await vi.waitFor(() => expect(
+            surfaceHarness.surface.container.querySelector('.webgpuPlayerCanvas')
+        ).toBeInstanceOf(HTMLCanvasElement));
+
+        expect(presentFrame(2)).toBe(true);
+        expect(pictures).toEqual([ {
+            canvas: surfaceHarness.surface.container.querySelector('.webgpuPlayerCanvas'),
+            height: 562.5,
+            width: 1_000,
+            x: 0,
+            y: 218.75
+        } ]);
+        await vi.waitFor(() => expect(presenter.getTelemetry().presentedFrameCount).toBe(1));
+
+        stopObserving();
+        expect(presentFrame(3)).toBe(true);
+        await vi.waitFor(() => expect(presenter.getTelemetry().presentedFrameCount).toBe(2));
+        expect(pictures).toHaveLength(1);
+    });
+
+    it('logs an observer\'s error and keeps presenting', async () => {
+        const gpuHarness = createGPUHarness();
+        const contextHarness = createCanvasContextHarness();
+        const surfaceHarness = createSurfaceHarness();
+        installGPU(gpuHarness.gpu);
+        installCanvasContext(contextHarness.context);
+        const fallbackHandler = vi.fn();
+        const presenter = new WebGPUPresenter(fallbackHandler);
+        const warn = vi.spyOn(console, 'warn').mockImplementation((): void => undefined);
+        presenter.setPresentedPictureObserver((): void => {
+            throw new Error('copy refused');
+        });
+
+        presenter.startSession(1);
+        presenter.setDecodedFramePushMode(true, 1);
+        presenter.attach(surfaceHarness.surface, 1);
+        await vi.waitFor(() => expect(
+            surfaceHarness.surface.container.querySelector('.webgpuPlayerCanvas')
+        ).toBeInstanceOf(HTMLCanvasElement));
+
+        expect(presenter.presentDecodedFrame({
+            durationMicroseconds: secondsToMicroseconds(1 / 24),
+            frame: { close: vi.fn(), codedHeight: 1_080, codedWidth: 1_920, displayHeight: 1_080, displayWidth: 1_920 } as unknown as VideoFrame,
+            mediaTimeMicroseconds: secondsToMicroseconds(2),
+            outputMode: 'video-frame'
+        }, 1)).toBe(true);
+        await vi.waitFor(() => expect(presenter.getTelemetry().presentedFrameCount).toBe(1));
+        expect(warn).toHaveBeenCalledWith('presented-picture-observer: copy refused');
+        expect(fallbackHandler).not.toHaveBeenCalled();
+        expect(presenter.getTelemetry().state).toBe('presenting');
     });
 
     it('reports a decoded frame left undrawn while the video has no layout box, and draws once it has one', async () => {

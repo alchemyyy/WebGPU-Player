@@ -224,6 +224,9 @@ The backing size is the CSS size times the device pixel ratio, capped by `maxTex
 - The `frame.rate` fact is the stream's declared frame rate (`PresentationInput.getPresentationFrameRate`): its average frame rate, else its real frame rate when the average is missing or at least 1000, which `configurePresentationColorPipeline` carries as `PresentationColorPipelineConfiguration.frameRate`.
 - Authorization renders the default chain through the same planner and executor, so a preset never changes the route.
 - With HDR output enabled by the host, an HDR source presents extended-range values on an `rgba16float` canvas.
+- `setPresentedPictureObserver` hands each picture a submission draws to the host's observer, in the task that drew it, with the canvas and the picture's region of its backing store, the plan's viewport.
+  A WebGPU canvas holds its picture for reading only until that task ends, so a host that copies the picture, as the plugin's picture-in-picture window does, copies it there.
+  One observer observes at a time, and its error is logged and never fails presentation.
 
 ### Deinterlacing
 

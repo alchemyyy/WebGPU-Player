@@ -217,6 +217,21 @@ export type PresentationSurface = {
     video: HTMLVideoElement
 };
 
+/** A picture presentation drew: the canvas it drew into, and the region of the canvas's backing store the picture covers, in pixels. */
+export type PresentedPicture = Readonly<{
+    canvas: HTMLCanvasElement
+    height: number
+    width: number
+    x: number
+    y: number
+}>;
+
+/**
+ * Receives each picture presentation draws, in the task that drew it.
+ * A WebGPU canvas holds its picture for reading only until that task ends, so a copy of the canvas, as `drawImage` makes, must be made in the call.
+ */
+export type PresentedPictureObserver = (picture: PresentedPicture) => void;
+
 export type PresentationFallbackReason =
     | 'adapter-unavailable'
     | 'canvas-context-unavailable'
@@ -1460,6 +1475,8 @@ export default class WebGPUPresenter {
     // The display rate plans read as display.rate, which follows the measurement once it moves past DISPLAY_RATE_REPLAN_TOLERANCE; null before one
     private plannedDisplayRate: number | null = null;
     private presentationLayoutDirty = true;
+    // The host's observer of every picture a submission draws, which a copy of the canvas reads in the drawing task
+    private presentedPictureObserver: PresentedPictureObserver | null = null;
     // The host's preset, in preset order, which outlives sessions
     private presetPasses: readonly PresetPass[] = [];
     // The render settings uniform the active route last wrote, which a new executor takes over
@@ -2329,6 +2346,20 @@ export default class WebGPUPresenter {
     getDisplayRefreshIntervalMicroseconds(): Microseconds | null {
         const interval = this.displayRefresh.getIntervalMilliseconds();
         return interval === null ? null : millisecondsToMicroseconds(interval);
+    }
+
+    /**
+     * Hands every picture a submission draws from now on to the observer, in the task that drew it, the only time a copy of the canvas reads it;
+     * returns a function that stops it.
+     * One observer observes at a time, so a new one replaces the last; an observer's error is logged and never fails presentation.
+     */
+    setPresentedPictureObserver(observer: PresentedPictureObserver): () => void {
+        this.presentedPictureObserver = observer;
+        return (): void => {
+            if (this.presentedPictureObserver === observer) {
+                this.presentedPictureObserver = null;
+            }
+        };
     }
 
     /**
@@ -4153,11 +4184,35 @@ export default class WebGPUPresenter {
             throw error;
         }
 
-        return {
+        const submission: FrameSubmission = {
             device,
             presentedTimeMicroseconds: requireMicroseconds(frame.presentedTimeMicroseconds, 'Presented frame time'),
             validationResult: validateSubmission ? device.popErrorScope() : null
         };
+        // After the validation scope, so nothing the observer does reaches it
+        this.notifyPresentedPicture(layout);
+        return submission;
+    }
+
+    /** Hands the picture a submission drew to the host's observer, with the region of the canvas the plan's viewport covers. */
+    private notifyPresentedPicture(layout: CachedPresentationLayout): void {
+        const observer = this.presentedPictureObserver;
+        const canvas = this.canvas;
+        if (!observer || !canvas) {
+            return;
+        }
+        const presentation = layout.presentation;
+        try {
+            observer({
+                canvas,
+                height: presentation.viewportHeight,
+                width: presentation.viewportWidth,
+                x: presentation.viewportX,
+                y: presentation.viewportY
+            });
+        } catch (error) {
+            console.warn(`presented-picture-observer: ${getErrorMessage(error)}`);
+        }
     }
 
     /** Records a draw from history alone at a clock time, at the last frame's layout; returns null while the surface has no layout box. */
