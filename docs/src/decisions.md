@@ -71,6 +71,9 @@ Commit hashes refer to the Jellyfin Web fork's `webgpu-player` branch, where the
 - Raw format probes first ask whether the browser has the pixel format (11-05).
   `canHoldVideoFrameFormat` builds a 2x2 VideoFrame of the format, and a `TypeError` means the browser has no such format, as every shipping Safari lacks the 10-bit and 12-bit formats.
   The raw HDR, range-extension, AV1 raw format, and H.264 raw format probes then read `unsupported` with `output-copy-unsupported` without downloading their vector or decoding.
+- The HEVC exact vectors are encodes VideoToolbox decodes (11-11).
+  Chrome on macOS and FFmpeg's VideoToolbox hwaccel rejected the old `main-1080p` and `main10-4k` access units, so `nativeHDRHEVC` read `unsupported` on Apple Silicon.
+  The same recipe re-encoded with x265 4.3+1-e9b8812 decodes on both, and its 4K frame matches `HEVC_MAIN10_BLACK_DECODED_FRAME_FINGERPRINT`.
 - A negotiation's probe steps run in parallel within derived limits, and the background's one at a time (11-05).
   The heavy queue ran one probe at a time, so a cold page waited for the sum of its decodes.
   `CapabilityProbeManager` admits every browser call as a step with a cost from the codec specs; a negotiation's steps run side by side while the running decoders and bytes stay within limits, and a step larger than the limits runs alone.
