@@ -418,6 +418,9 @@ These were settled on stock Chrome on Windows, with a Chromium 153 source audit.
   Each rewritten header must itself declare limited BT.2020 with the non-constant-luminance matrix and the route's transfer, and only the HLG code point proves HLG, because AV1 has no alternative transfer characteristics message.
   The AV1 keys have their own lossless vector and authorize on first use rather than at device creation, because only AV1 HDR items need them and the HEVC keys alone shape a host's transcode ranges.
   The HEVC keys then started with the device; since 11-05 they start on first use too (see "External HDR authorization starts on first use").
+- The external HDR authorization takes a frame's coded size from its visible size to the vector's (11-11).
+  VideoToolbox reports the 1080-row HEVC vector's coded height as 1080, not the padded 1088, so on macOS every HEVC frame failed as `decoder-output-mismatch`.
+  The native SDR output probe already accepts that range.
 - Startup is bounded by progress, not by a fixed timer (10-07).
   A 72 Mbps 4K TrueHD source under six concurrent players produced no audio within a fixed 20 s bound and fell back to a server transcode that also stalled; the stage that stalled was not recorded.
   The controller fails after 20 s without progress, or at 60 s regardless, and the fallback message names the counters it reached.

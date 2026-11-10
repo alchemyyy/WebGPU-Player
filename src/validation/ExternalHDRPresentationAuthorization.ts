@@ -369,9 +369,12 @@ export function createExternalHDRShaderSignature(
 
 function frameMatchesAuthorizationContract(frame: VideoFrame, vector: ExternalHDRAuthorizationVector): boolean {
     const visibleRectangle = frame.visibleRect;
+    // VideoToolbox reports the coded size unpadded
     return frame.format === null
-        && frame.codedWidth === vector.codedWidth
-        && frame.codedHeight === vector.codedHeight
+        && frame.codedWidth >= vector.displayWidth
+        && frame.codedWidth <= vector.codedWidth
+        && frame.codedHeight >= vector.displayHeight
+        && frame.codedHeight <= vector.codedHeight
         && frame.displayWidth === vector.displayWidth
         && frame.displayHeight === vector.displayHeight
         && frame.timestamp === 0

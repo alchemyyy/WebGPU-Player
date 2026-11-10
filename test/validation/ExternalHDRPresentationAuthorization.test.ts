@@ -656,6 +656,61 @@ describe('External HDR presentation authorization', () => {
         expect(close).toHaveBeenCalledOnce();
     });
 
+    it.each([
+        [ 1_080, true ],
+        [ 1_072, false ]
+    ])('takes an HEVC frame coded %i lines high only from its visible height to the vector\'s coded one', async (codedHeight, accepted) => {
+        let decoderInit: VideoDecoderInit | null = null;
+        const close = vi.fn();
+        class FakeEncodedVideoChunk {}
+        class FakeVideoDecoder {
+            public static readonly isConfigSupported = vi.fn(
+                async (config: VideoDecoderConfig): Promise<VideoDecoderSupport> => ({ config, supported: true })
+            );
+
+            public constructor(init: VideoDecoderInit) {
+                decoderInit = init;
+            }
+
+            public close(): void {
+                return undefined;
+            }
+
+            public configure(): void {
+                return undefined;
+            }
+
+            public decode(): void {
+                decoderInit?.output({
+                    close,
+                    codedHeight,
+                    codedWidth: 1_920,
+                    colorSpace: { fullRange: false, matrix: 'bt709', primaries: 'bt709', transfer: 'bt709' },
+                    displayHeight: 1_080,
+                    displayWidth: 1_920,
+                    format: null,
+                    timestamp: 0,
+                    visibleRect: { height: 1_080, width: 1_920, x: 0, y: 0 }
+                } as unknown as VideoFrame);
+            }
+
+            public async flush(): Promise<void> {
+                return undefined;
+            }
+        }
+        vi.stubGlobal('EncodedVideoChunk', FakeEncodedVideoChunk);
+        vi.stubGlobal('VideoDecoder', FakeVideoDecoder);
+
+        const result = createExternalHDRAuthorizationFrame('hevc');
+        if (accepted) {
+            await expect(result).resolves.toMatchObject({ codedHeight });
+            expect(close).not.toHaveBeenCalled();
+        } else {
+            await expect(result).rejects.toThrow('decoder-output-mismatch');
+            expect(close).toHaveBeenCalledOnce();
+        }
+    });
+
     it('rejects an unsupported decoder configuration before building an executor or opening a decoder', async () => {
         isConfigSupported.mockImplementation(async (config: VideoDecoderConfig): Promise<VideoDecoderSupport> => ({ config, supported: false }));
         const harness = createDeviceHarness(createExpectedObservations(PQ_ROUTE_KEY));
