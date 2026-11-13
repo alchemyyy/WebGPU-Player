@@ -33,7 +33,8 @@ const GENERATION = 7;
 const MAXIMUM_CODED_DIMENSION = 3_840;
 // The session returns one credit for each VideoFrame it receives
 const RETURNED_FRAME_CREDITS = 1;
-const OPEN_ENDED_RANGE_PATTERN = /^bytes=(\d+)-$/;
+// An open-ended range, as Mediabunny asks for, or a closed one, as the worker's container metadata reads ask for
+const BYTE_RANGE_PATTERN = /^bytes=(\d+)-(\d*)$/;
 // A raw-plane copy reads a decoded frame as 10-bit 4:2:0 in BT.2020 PQ
 const DECODED_FRAME_FORMAT = 'I420P10';
 const DECODED_FRAME_COLOR_SPACE = {
@@ -245,24 +246,27 @@ function getRangeHeader(requestInit: RequestInit | undefined): string {
     return rangeKey ? headers[rangeKey] : '';
 }
 
-/** Serves files as a range-capable media endpoint: Mediabunny asks for open-ended ranges. */
+/** Serves files as a range-capable media endpoint, for open-ended and closed ranges alike. */
 function createMediaFetch(files: ReadonlyMap<string, Uint8Array>): typeof fetch {
     return async (input: RequestInfo | URL, requestInit?: RequestInit): Promise<Response> => {
         const data = files.get(String(input));
         if (!data) {
             return new Response(null, { status: 404 });
         }
-        const rangeMatch = OPEN_ENDED_RANGE_PATTERN.exec(getRangeHeader(requestInit));
+        const rangeMatch = BYTE_RANGE_PATTERN.exec(getRangeHeader(requestInit));
         const firstByte = rangeMatch ? Number(rangeMatch[1]) : 0;
-        const body = new Uint8Array(data.byteLength - firstByte);
-        body.set(data.subarray(firstByte));
+        // A closed range ends at its last byte, within the file; an open-ended one at the file's end
+        const endByte = rangeMatch && rangeMatch[2] !== '' ?
+            Math.min(Number(rangeMatch[2]) + 1, data.byteLength) :
+            data.byteLength;
+        const body = data.slice(firstByte, endByte);
         if (!rangeMatch) {
             return new Response(body, { status: 200 });
         }
         return new Response(body, {
             headers: {
                 'Content-Length': String(body.byteLength),
-                'Content-Range': `bytes ${firstByte}-${data.byteLength - 1}/${data.byteLength}`
+                'Content-Range': `bytes ${firstByte}-${endByte - 1}/${data.byteLength}`
             },
             status: 206
         });

@@ -1,4 +1,4 @@
-// EBML element builders shared by the synthetic Matroska tests, and a Matroska file of one video track
+// EBML element builders shared by the synthetic Matroska tests, and Matroska files of video tracks
 
 import { concatenate } from './byteArrays';
 
@@ -10,7 +10,7 @@ export type SyntheticMatroskaBlock = Readonly<{
     timestampMilliseconds: number
 }>;
 
-/** The one video track of a synthetic Matroska file, its blocks in one cluster. */
+/** A video track of a synthetic Matroska file, its blocks in the file's one cluster. */
 export type SyntheticMatroskaVideoTrack = Readonly<{
     blocks: readonly SyntheticMatroskaBlock[]
     codecID: string
@@ -21,6 +21,10 @@ export type SyntheticMatroskaVideoTrack = Readonly<{
     infoElements?: readonly Uint8Array[]
     pixelHeight: number
     pixelWidth: number
+    /** Elements of the track's TrackEntry after its Video element, such as a BlockAdditionMapping */
+    trackElements?: readonly Uint8Array[]
+    /** The track's TrackNumber, also its TrackUID; 1 by default */
+    trackNumber?: number
     /** Elements of the track's Video element after its pixel size, such as FlagInterlaced and FieldOrder */
     videoElements?: readonly Uint8Array[]
 }>;
@@ -57,11 +61,11 @@ const MATROSKA_DOC_TYPE = 'matroska';
 const MATROSKA_DOC_TYPE_VERSION = 4;
 const MATROSKA_DOC_TYPE_READ_VERSION = 2;
 const VIDEO_TRACK_TYPE = 1;
-const MATROSKA_TRACK_NUMBER = 1;
-const MATROSKA_TRACK_UID = 1;
-const KEY_FRAME_FLAG = 0x80;
-// A SimpleBlock's track number is a one-byte variable-length integer
+const DEFAULT_TRACK_NUMBER = 1;
+// A SimpleBlock stores its track number in a one-byte variable-length integer, whose largest value 127 means unknown
 const TRACK_NUMBER_MARKER = 0x80;
+const MAXIMUM_ONE_BYTE_TRACK_NUMBER = 126;
+const KEY_FRAME_FLAG = 0x80;
 const BYTE_MASK = 0xFF;
 const BITS_PER_BYTE = 8;
 
@@ -129,9 +133,12 @@ export function createASCIIElement(id: number, value: string): Uint8Array {
     );
 }
 
-function createSimpleBlock(block: SyntheticMatroskaBlock): Uint8Array {
+function createSimpleBlock(trackNumber: number, block: SyntheticMatroskaBlock): Uint8Array {
+    if (!Number.isSafeInteger(trackNumber) || trackNumber < 1 || trackNumber > MAXIMUM_ONE_BYTE_TRACK_NUMBER) {
+        throw new RangeError('A synthetic Matroska track number must fit one byte');
+    }
     return createElement(SIMPLE_BLOCK_ID, concatenate([
-        new Uint8Array([ TRACK_NUMBER_MARKER | MATROSKA_TRACK_NUMBER ]),
+        new Uint8Array([ TRACK_NUMBER_MARKER | trackNumber ]),
         new Uint8Array([
             (block.timestampMilliseconds >> BITS_PER_BYTE) & BYTE_MASK,
             block.timestampMilliseconds & BYTE_MASK,
@@ -141,8 +148,38 @@ function createSimpleBlock(block: SyntheticMatroskaBlock): Uint8Array {
     ]));
 }
 
-/** Returns a Matroska file of one video track, its blocks in one cluster at millisecond timestamps. */
-export function createVideoTrackMatroska(track: SyntheticMatroskaVideoTrack): Uint8Array {
+function createTrackEntry(track: SyntheticMatroskaVideoTrack): Uint8Array {
+    const trackNumber = track.trackNumber ?? DEFAULT_TRACK_NUMBER;
+    return createElement(TRACK_ENTRY_ID, concatenate([
+        createUnsignedIntegerElement(TRACK_NUMBER_ID, trackNumber),
+        createUnsignedIntegerElement(TRACK_UID_ID, trackNumber),
+        createUnsignedIntegerElement(TRACK_TYPE_ID, VIDEO_TRACK_TYPE),
+        createASCIIElement(CODEC_ID, track.codecID),
+        ...(track.codecPrivate ? [ createElement(CODEC_PRIVATE_ID, track.codecPrivate) ] : []),
+        createUnsignedIntegerElement(DEFAULT_DURATION_ID, track.defaultDurationMilliseconds * NANOSECONDS_PER_MILLISECOND),
+        createElement(VIDEO_ID, concatenate([
+            createUnsignedIntegerElement(PIXEL_WIDTH_ID, track.pixelWidth),
+            createUnsignedIntegerElement(PIXEL_HEIGHT_ID, track.pixelHeight),
+            ...(track.videoElements ?? [])
+        ])),
+        ...(track.trackElements ?? [])
+    ]));
+}
+
+/**
+ * Returns a Matroska file of video tracks in the given order, their blocks in one cluster at millisecond timestamps, in timestamp order and,
+ * at one timestamp, in track order.
+ */
+export function createVideoTracksMatroska(
+    tracks: readonly SyntheticMatroskaVideoTrack[],
+    infoElements: readonly Uint8Array[] = []
+): Uint8Array {
+    const blocks = tracks
+        .flatMap((track: SyntheticMatroskaVideoTrack) => track.blocks.map((block: SyntheticMatroskaBlock) => ({
+            block,
+            trackNumber: track.trackNumber ?? DEFAULT_TRACK_NUMBER
+        })))
+        .sort((first, second): number => first.block.timestampMilliseconds - second.block.timestampMilliseconds);
     return concatenate([
         createElement(EBML_ID, concatenate([
             createUnsignedIntegerElement(EBML_VERSION_ID, 1),
@@ -154,25 +191,18 @@ export function createVideoTrackMatroska(track: SyntheticMatroskaVideoTrack): Ui
         createElement(SEGMENT_ID, concatenate([
             createElement(INFO_ID, concatenate([
                 createUnsignedIntegerElement(TIMESTAMP_SCALE_ID, MATROSKA_MILLISECOND_TIMESTAMP_SCALE),
-                ...(track.infoElements ?? [])
+                ...infoElements
             ])),
-            createElement(TRACKS_ID, createElement(TRACK_ENTRY_ID, concatenate([
-                createUnsignedIntegerElement(TRACK_NUMBER_ID, MATROSKA_TRACK_NUMBER),
-                createUnsignedIntegerElement(TRACK_UID_ID, MATROSKA_TRACK_UID),
-                createUnsignedIntegerElement(TRACK_TYPE_ID, VIDEO_TRACK_TYPE),
-                createASCIIElement(CODEC_ID, track.codecID),
-                ...(track.codecPrivate ? [ createElement(CODEC_PRIVATE_ID, track.codecPrivate) ] : []),
-                createUnsignedIntegerElement(DEFAULT_DURATION_ID, track.defaultDurationMilliseconds * NANOSECONDS_PER_MILLISECOND),
-                createElement(VIDEO_ID, concatenate([
-                    createUnsignedIntegerElement(PIXEL_WIDTH_ID, track.pixelWidth),
-                    createUnsignedIntegerElement(PIXEL_HEIGHT_ID, track.pixelHeight),
-                    ...(track.videoElements ?? [])
-                ]))
-            ]))),
+            createElement(TRACKS_ID, concatenate(tracks.map(createTrackEntry))),
             createElement(CLUSTER_ID, concatenate([
                 createUnsignedIntegerElement(CLUSTER_TIMESTAMP_ID, 0),
-                ...track.blocks.map(createSimpleBlock)
+                ...blocks.map(({ block, trackNumber }) => createSimpleBlock(trackNumber, block))
             ]))
         ]))
     ]);
+}
+
+/** Returns a Matroska file of one video track, its blocks in one cluster at millisecond timestamps. */
+export function createVideoTrackMatroska(track: SyntheticMatroskaVideoTrack): Uint8Array {
+    return createVideoTracksMatroska([ track ], track.infoElements);
 }

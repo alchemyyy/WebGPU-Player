@@ -9,6 +9,7 @@ import {
     vi
 } from 'vitest';
 
+import { createDolbyVisionAuthorizationRPUVector } from 'webgpu-player/capability/vectors/DolbyVisionAuthorizationVector';
 import type DolbyVisionRPUParserSession from 'webgpu-player/demux/dolby-vision/DolbyVisionRPUParserSession';
 
 import {
@@ -20,10 +21,14 @@ import {
     spyOnRPUParserSessions,
     startDecodeWorker
 } from '../helpers/decodeWorkerHarness';
-import { createHEVCMatroska } from '../helpers/hevcMatroskaVector';
+import { createHEVCMatroska, createSeparateDolbyVisionEnhancementTrackMatroska } from '../helpers/hevcMatroskaVector';
+import { createNALUnit } from '../helpers/hevcNALUnits';
 
 const MATROSKA_FILE_NAME = 'hevc-main10.mkv';
+const DUAL_TRACK_MATROSKA_FILE_NAME = 'dolby-vision-p7-dual-track.mkv';
 const DOLBY_VISION_RPU_PROFILE = 8;
+const DOLBY_VISION_DUAL_LAYER_PROFILE = 7;
+const HEVC_UNSPEC62_NAL_UNIT_TYPE = 62;
 
 beforeEach(() => {
     vi.resetModules();
@@ -60,6 +65,31 @@ describe('CustomDecode.worker HEVC route', () => {
         // The sample carries no RPU, so the session is never asked to parse
         expect(session.parse).not.toHaveBeenCalled();
         expect(session.close).toHaveBeenCalledOnce();
+        expect(getFrameResponses(responses)).toHaveLength(1);
+    });
+
+    it('reads a separate EL track\'s RPUs, finding the track by its container track number rather than its position', async () => {
+        const createSession = await spyOnRPUParserSessions();
+        const session = {
+            close: vi.fn(),
+            parse: vi.fn().mockResolvedValue(createDolbyVisionAuthorizationRPUVector(DOLBY_VISION_DUAL_LAYER_PROFILE, 'mel'))
+        };
+        createSession.mockReturnValue(session as unknown as DolbyVisionRPUParserSession);
+        const rpu = createNALUnit(HEVC_UNSPEC62_NAL_UNIT_TYPE, [ 25, 8, 9 ]);
+        // TrackNumbers 5 and 9, where the tracks' positions are 1 and 2
+        const workerScope = await startDecodeWorker(new Map([ [
+            DUAL_TRACK_MATROSKA_FILE_NAME,
+            createSeparateDolbyVisionEnhancementTrackMatroska({ base: 5, enhancement: 9 }, rpu)
+        ] ]));
+
+        const responses = await decodeToEnd(workerScope, createWorkerStartRequest(DUAL_TRACK_MATROSKA_FILE_NAME, {
+            ...RAW_I420P10_ROUTE,
+            dolbyVisionProfile: DOLBY_VISION_DUAL_LAYER_PROFILE
+        }));
+
+        // The BL packet carries no RPU, so the one parsed came from the EL track's packet
+        expect(session.parse).toHaveBeenCalledOnce();
+        expect(session.parse.mock.calls[0][0]).toEqual(rpu);
         expect(getFrameResponses(responses)).toHaveLength(1);
     });
 });

@@ -381,6 +381,7 @@ type DecodeRun = {
 type PreparedVideoTrack = {
     availableVideoTracks: readonly InputVideoTrack[]
     codec: VideoCodec | FocusedVideoRoute['codec']
+    /** The track's own ID in its container (`InputTrack.containerTrackId`), by which the container's Dolby Vision configuration names tracks */
     containerTrackNumber: number
     decoderConfig: VideoDecoderConfig
     geometry: RawVideoFrameGeometry
@@ -943,6 +944,7 @@ type FocusedVideoTrackInput = Readonly<{
     codedHeight: number
     codedWidth: number
     containerCodec: VideoCodec | null
+    containerTrackNumber: number
     displayHeight: number
     displayWidth: number
     internalCodecID: unknown
@@ -1179,7 +1181,7 @@ async function prepareFocusedVideoTrack(input: FocusedVideoTrackInput): Promise<
     return {
         availableVideoTracks: input.availableVideoTracks,
         codec: route.codec,
-        containerTrackNumber: input.videoTrack.id,
+        containerTrackNumber: input.containerTrackNumber,
         decoderConfig: {
             codec: route.decoderCodec,
             codedHeight: input.codedHeight,
@@ -1408,7 +1410,9 @@ async function prepareVideoTrack(
     if (exceedsNegotiatedCodedSize(codedWidth, codedHeight, request.maximumCodedWidth, request.maximumCodedHeight)) {
         throw new UnsupportedCustomDecodeSourceError('The selected video track exceeds its negotiated decode route');
     }
-    if (!Number.isSafeInteger(videoTrack.id) || videoTrack.id <= 0) {
+    // Mediabunny's InputTrack.id is the track's position among the file's tracks, while the container's Dolby Vision configuration names its own IDs
+    const containerTrackNumber = videoTrack.containerTrackId;
+    if (containerTrackNumber === null || !Number.isSafeInteger(containerTrackNumber) || containerTrackNumber <= 0) {
         throw new UnsupportedCustomDecodeSourceError('The selected video container track number is invalid');
     }
 
@@ -1419,6 +1423,7 @@ async function prepareVideoTrack(
         codedHeight,
         codedWidth,
         containerCodec: codec,
+        containerTrackNumber,
         displayHeight,
         displayWidth,
         fourCCContainer,
@@ -1464,7 +1469,7 @@ async function prepareVideoTrack(
     return {
         availableVideoTracks: videoTracks,
         codec,
-        containerTrackNumber: videoTrack.id,
+        containerTrackNumber,
         decoderConfig,
         geometry: { codedHeight, codedWidth, displayHeight, displayWidth },
         ...(staticHDRMetadataScan ? { staticHDRMetadataScan } : {}),
@@ -1498,7 +1503,7 @@ async function findSeparateDolbyVisionEnhancementTrack(
     reference: SeparateDolbyVisionEnhancementTrackReference
 ): Promise<SeparateDolbyVisionEnhancementTrack | null> {
     const videoTrack = preparedVideoTrack.availableVideoTracks.find(
-        (candidate: InputVideoTrack): boolean => candidate.id === reference.trackNumber
+        (candidate: InputVideoTrack): boolean => candidate.containerTrackId === reference.trackNumber
     );
     if (!videoTrack || videoTrack === preparedVideoTrack.videoTrack) {
         return null;

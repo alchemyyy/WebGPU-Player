@@ -314,6 +314,7 @@ These were settled on stock Chrome on Windows, with a Chromium 153 source audit.
   `ISOBaseMediaDolbyVisionSampleEntry.ts` writes the wrapped codec into the track's internal info, contained the way `MatroskaVFWVideoConfiguration.ts` is, so Mediabunny itself stays unmodified.
   Mediabunny 1.61.5 still gives them no codec (10-15).
   The fork reads `dvh1` and `dvhe` as HEVC, `dva1` and `dvav` as AVC (`avc1` and `avc3`), and `dav1` as AV1 (branch `v2-isobmff-dolby-vision-sample-entries`), so `ISOBaseMediaDolbyVisionSampleEntry.ts` left, and every track's decoder configuration is the one the engine assigned (10-27).
+  Since Mediabunny 1.66.0 an ISO BMFF HEVC codec string starts with its sample entry's `hvc1` or `hev1`, so the fork reads `dvh1` as `hvc1` and `dvhe` as `hev1` (11-13).
 - AV1 codec strings come from the bitstream (10-08).
   Without an `av1C` record, as in every Matroska track, Mediabunny 1.52.2 reads the first packet's sequence header, but it reads `decoder_model_info_present_flag` without timing info and the initial display delay flag once per operating point.
   Its `color_config` also skips the color description and range, and takes the Professional profile below 12 bits as 4:2:0.
@@ -691,6 +692,7 @@ These were settled on stock Chrome on Windows, with a Chromium 153 source audit.
   A container without one hands nothing, since temporal units carry their sequence headers, and a change in the internals fails the track with a named check.
   Mediabunny 1.61.5 still keeps the CodecPrivate to itself (10-15).
   The fork hands the record on as the decoder configuration's description, a Matroska or WebM CodecPrivate or an ISO base media `av1C` box, and reads a Matroska track's codec string from its CodecPrivate when the first block has no sequence header (branch `v2-av1-codec-configuration-record`), so `AV1CodecConfigurationRecord.ts` is gone (10-27).
+  Mediabunny 1.66.0 itself reads a Matroska AV1 track's codec string from the sequence header in its CodecPrivate, and from the first block only without one, so the fork's reading of the record's fixed fields is the last resort (11-13).
   The frame-pool route posts that description as codec private data, and every other route configures the browser's decoder without it, as before, since the WebCodecs AV1 registration uses no description (10-27).
 - VC-1 in MPEG-TS and M2TS is unreachable (10-13).
   Mediabunny 1.52.2 drops stream type 0xEA, and its video setup and packet splitter handle only AVC and HEVC, in private methods the engine cannot wrap.
@@ -1187,9 +1189,9 @@ These were settled on Firefox 157 on Windows.
   The worklet format and the output timeline never change, and the route tables are checked against the decoded values.
   The worker reports each bound format with `audio-source-format`, which the session's telemetry and ready event prefer over the declaration.
   Declared formats were wrong in the field:
-  - Mediabunny reports the Matroska SamplingFrequency, which for HE-AAC is the 24 kHz core, and never reads OutputSamplingFrequency or detects implicit SBR;
+  - Mediabunny reported the Matroska SamplingFrequency, which for HE-AAC is the 24 kHz core, until 1.66.0 read OutputSamplingFrequency (11-13), and it detects no implicit SBR;
   - in MP4 the AudioSpecificConfig overwrites the sample entry, so HE-AAC declares 24 kHz and, with Parametric Stereo, mono;
-  - the dec3 parse can declare a 7.1 E-AC-3 track as 6 or 7 channels.
+  - the dec3 parse can declare a 7.1 E-AC-3 track as 6 or 7 channels, though Mediabunny 1.66.0 no longer counts 7.1 as 7 (11-13).
 - Timestamps are reconciled within 2 s (10-07).
   Two field failures came from containers, not from audio.
   One was a TrueHD access unit that decoded to no PCM (833 us) plus 1 ms of Matroska rounding.
@@ -1472,6 +1474,10 @@ These were settled on Firefox 157 on Windows.
   It merged upstream's `main` again at 1.62.1 (10-27), with `main`'s fixes to the sinks v2 removed moved into its packet reader and PCM decoder; AVC and HEVC in MPEG-TS take their access unit's PTS since, rather than their first slice's, while MPEG-1, MPEG-2, and VC-1 keep the PTS of the PES packet their picture starts in.
   It merged upstream's `main` again at 1.65.2 (11-04), whose audio encoders start their packets before 0 by their measured priming delay, and whose demuxers read such timestamps: Matroska's CodecDelay as a shift back, an MP3's LAME priming, and a Vorbis track's priming packet.
   Of `main`'s changes to the sinks v2 removed, the audio pre-roll lands in the sample cursor: `AudioSampleCursor` starts decoding at the key packet a codec's pre-roll (`InputAudioTrack.getPreRollDuration()`) ahead of a seek target, and answers an audio seek with the sample that holds the target time, since pre-roll and the Opus pre-skip move decoded sample boundaries off packet timestamps.
+  It merged upstream's `main` again at 1.66.0 (11-13), a release of fixes across its demuxers, muxers, sources, and decoders.
+  Of `main`'s changes to the sinks v2 removed, the decoder fixes land in v2's decoder wrappers, among them one input timestamp per shown frame, which keeps VP8 and VP9 frame times right when hidden frames sit in packets of their own.
+  1.66.0 makes `InputTrack.id` a track's position in `getTracks()` rather than its container's own ID, so the fork adds `InputTrack.containerTrackId`: the ISO BMFF `track_ID`, the Matroska TrackNumber, the MPEG-TS PID, the program stream ID as FFmpeg numbers it, the Ogg serial number, the AVI stream index plus one, or the ASF stream number.
+  The worker reads a separate Dolby Vision EL track's configuration, and finds the track, by that ID; `test/pipeline/CustomDecodeWorkerHEVCRoute.test.ts` plays a dual-track Matroska whose TrackNumbers are not its tracks' positions.
   Branches meant for upstream's `v2` are cut from it with a `v2-` prefix: `v2-fix-matroska-laced-header-stripping`, `v2-fix-custom-decoder-close-after-failure`, `v2-url-source-read-ahead`, and `v2-matroska-block-additions` (10-16), `v2-matroska-field-order`, `v2-isobmff-mj2-signature`, `v2-isobmff-dolby-vision-sample-entries`, `v2-av1-codec-configuration-record`, `v2-av1-codec-string`, and `v2-drop-avc-leading-pictures` (10-27), and `v2-cursor-start-before-first-key`, `v2-avc-recovery-point-keys`, `v2-hevc-inter-rps-count`, `v2-avcc-extension-reserved-bits`, `v2-avc-codec-string-from-sps`, `v2-matroska-deferred-attachments`, and `v2-matroska-zero-segment-size` (10-29).
   Fixes to fork-only code, such as the AVI demuxer or the fork's VC-1 codec, are cut from the fork's `v2` with the same prefix: `v2-avi-presentation-times`, `v2-avi-hevc-zero-tag`, `v2-avi-opendml-index`, `v2-avi-unpack-packed-bframes`, `v2-avi-wave-format-extensible`, `v2-avi-flac-vorbis`, `v2-avi-keep-unmapped-video-tracks`, and `v2-isobmff-vc1-dvc1` (10-27), `v2-mpeg-ts-unregistered-vc1`, `v2-avi-keep-unmapped-audio-tracks`, and `v2-asf-demuxer` (10-28), and `v2-avi-audio-framing` and `v2-mpeg-ps-demuxer` (10-29), the last of which also opens the MPEG-TS demuxer's reading context and stream setup to the program stream demuxer.
   `v2-drop-avc-leading-pictures`, cut from upstream's `v2`, drops the leading pictures of an open H.264 group when decoding starts at its key packet, as v2 drops RASL pictures for HEVC; Chromium's decoder drops them too, and the sample path, which hands decoded frames its input timestamps in order, otherwise gave every later frame one leading picture's timestamp too early after a seek into such a group (10-27).

@@ -1,4 +1,4 @@
-// A one-frame Matroska HEVC Main 10 vector, muxed from the first access unit of hdr10plus_tool's x265 sample
+// One-frame and few-frame Matroska HEVC Main 10 vectors, muxed from the first access unit of hdr10plus_tool's x265 sample
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
@@ -13,8 +13,10 @@ import {
 import { parseHEVCNALUnits, type HEVCNALUnit } from 'webgpu-player/demux/dolby-vision/DolbyVisionHEVCSplitter';
 import { parseHEVCSPS } from 'webgpu-player/demux/hevc/HEVCSPSParser';
 
+import { concatenate } from './byteArrays';
 import { TEST_VECTORS_DIRECTORY } from './enginePaths';
 import { encodeAnnexBNALUnits } from './hevcNALUnits';
+import { createElement, createUnsignedIntegerElement, createVideoTracksMatroska } from './matroskaElements';
 
 /** How the vector's packets carry NAL units: Annex B with in-band parameter sets, as hev1 does, or length-prefixed with an hvcC, as hvc1 does. */
 export type HEVCMatroskaPacketFormat = 'annex-b' | 'length-prefixed';
@@ -42,6 +44,27 @@ const HVCC_AVERAGE_FRAME_RATE_BYTES = [ 0x00, 0x00 ];
 const HVCC_TEMPORAL_AND_LENGTH_BYTE = 0x0F;
 const HVCC_ARRAY_COMPLETENESS = 0x80;
 const NAL_UNIT_LENGTH_BYTE_LENGTH = 4;
+const FRAME_DURATION_MILLISECONDS = 40;
+const MATROSKA_HEVC_CODEC_ID = 'V_MPEGH/ISO/HEVC';
+
+// A BlockAdditionMapping of type dvcC carries a track's Dolby Vision configuration record in its BlockAddIDExtraData
+const MATROSKA_BLOCK_ADDITION_MAPPING_ID = 0x41E4;
+const MATROSKA_BLOCK_ADD_ID_TYPE_ID = 0x41E7;
+const MATROSKA_BLOCK_ADD_ID_EXTRA_DATA_ID = 0x41ED;
+const MATROSKA_DVCC_BLOCK_ADD_ID_TYPE = 0x6476_6343;
+const DOLBY_VISION_CONFIGURATION_RECORD_BYTE_LENGTH = 24;
+const DOLBY_VISION_VERSION_MAJOR = 1;
+const DOLBY_VISION_PROFILE = 7;
+const DOLBY_VISION_LEVEL = 6;
+// dv_bl_signal_compatibility_id 6, the BT.2100 PQ base Profile 7 declares
+const DOLBY_VISION_BL_SIGNAL_COMPATIBILITY_ID = 6;
+
+/** The x265 sample's first access unit and the coded size its SPS declares. */
+type X265FirstAccessUnit = Readonly<{
+    codedHeight: number
+    codedWidth: number
+    nalUnits: readonly HEVCNALUnit[]
+}>;
 
 /** Builds an hvcC that carries the parameter sets of an access unit, one array per type. */
 function createHEVCDecoderConfigurationRecord(nalUnits: readonly HEVCNALUnit[]): Uint8Array {
@@ -97,15 +120,7 @@ function demoteIRAPNALUnit(nalUnit: HEVCNALUnit): Uint8Array {
     return data;
 }
 
-/**
- * Muxes the x265 sample's first access unit once per entry of keyframes, length-prefixed with an hvcC: a key packet as it is, a delta packet with its IDR slice
- * retyped as a trailing picture's, which a parser stub never reads, each packet one frame duration after the one before.
- * appendedNALUnits gives each packet, by index, NAL units that follow its picture's, such as a Dolby Vision RPU.
- */
-export async function createHEVCMatroskaWithKeyframes(
-    keyframes: readonly boolean[],
-    appendedNALUnits: readonly (readonly Uint8Array[])[] = []
-): Promise<Uint8Array> {
+function readX265FirstAccessUnit(): X265FirstAccessUnit {
     const nalUnits = parseHEVCNALUnits(new Uint8Array(readFileSync(X265_SAMPLE_PATH)), { kind: 'annex-b' });
     const secondDelimiterIndex = nalUnits.findIndex(
         (nalUnit: HEVCNALUnit, nalUnitIndex: number): boolean => nalUnitIndex > 0 && nalUnit.type === HEVC_AUD_NAL_UNIT_TYPE
@@ -116,14 +131,33 @@ export async function createHEVCMatroskaWithKeyframes(
         throw new Error('The x265 sample\'s first access unit has no SPS');
     }
     const { codedHeight, codedWidth } = parseHEVCSPS(sequenceParameterSet.data);
-    const pictureNALUnits = firstAccessUnit.filter((nalUnit: HEVCNALUnit): boolean => !HEVC_PARAMETER_SET_NAL_UNIT_TYPES.includes(nalUnit.type));
+    return { codedHeight, codedWidth, nalUnits: firstAccessUnit };
+}
+
+/** Returns the access unit's NAL units but its parameter sets, which an hvcC carries out of band. */
+function getPictureNALUnits(accessUnit: X265FirstAccessUnit): HEVCNALUnit[] {
+    return accessUnit.nalUnits.filter((nalUnit: HEVCNALUnit): boolean => !HEVC_PARAMETER_SET_NAL_UNIT_TYPES.includes(nalUnit.type));
+}
+
+/**
+ * Muxes the x265 sample's first access unit once per entry of keyframes, length-prefixed with an hvcC: a key packet as it is, a delta packet with its IDR slice
+ * retyped as a trailing picture's, which a parser stub never reads, each packet one frame duration after the one before.
+ * appendedNALUnits gives each packet, by index, NAL units that follow its picture's, such as a Dolby Vision RPU.
+ */
+export async function createHEVCMatroskaWithKeyframes(
+    keyframes: readonly boolean[],
+    appendedNALUnits: readonly (readonly Uint8Array[])[] = []
+): Promise<Uint8Array> {
+    const accessUnit = readX265FirstAccessUnit();
+    const { codedHeight, codedWidth } = accessUnit;
+    const pictureNALUnits = getPictureNALUnits(accessUnit);
     const keyNALUnits = pictureNALUnits.map((nalUnit: HEVCNALUnit): Uint8Array => nalUnit.data);
     const deltaNALUnits = pictureNALUnits.map(demoteIRAPNALUnit);
     const decoderConfig: VideoDecoderConfig = {
         codec: HEVC_MAIN_10_CODEC,
         codedHeight,
         codedWidth,
-        description: createHEVCDecoderConfigurationRecord(firstAccessUnit)
+        description: createHEVCDecoderConfigurationRecord(accessUnit.nalUnits)
     };
 
     const target = new BufferTarget();
@@ -146,16 +180,8 @@ export async function createHEVCMatroskaWithKeyframes(
 
 /** Muxes the x265 sample's first access unit as a one-frame Matroska HEVC Main 10 track without Dolby Vision. */
 export async function createHEVCMatroska(packetFormat: HEVCMatroskaPacketFormat = 'annex-b'): Promise<Uint8Array> {
-    const nalUnits = parseHEVCNALUnits(new Uint8Array(readFileSync(X265_SAMPLE_PATH)), { kind: 'annex-b' });
-    const secondDelimiterIndex = nalUnits.findIndex(
-        (nalUnit: HEVCNALUnit, nalUnitIndex: number): boolean => nalUnitIndex > 0 && nalUnit.type === HEVC_AUD_NAL_UNIT_TYPE
-    );
-    const firstAccessUnit = nalUnits.slice(0, secondDelimiterIndex);
-    const sequenceParameterSet = firstAccessUnit.find((nalUnit: HEVCNALUnit): boolean => nalUnit.type === HEVC_SPS_NAL_UNIT_TYPE);
-    if (!sequenceParameterSet) {
-        throw new Error('The x265 sample\'s first access unit has no SPS');
-    }
-    const { codedHeight, codedWidth } = parseHEVCSPS(sequenceParameterSet.data);
+    const accessUnit = readX265FirstAccessUnit();
+    const { codedHeight, codedWidth } = accessUnit;
 
     const target = new BufferTarget();
     const output = new Output({ format: new MkvOutputFormat(), target });
@@ -166,15 +192,13 @@ export async function createHEVCMatroska(packetFormat: HEVCMatroskaPacketFormat 
     let decoderConfig: VideoDecoderConfig;
     switch (packetFormat) {
         case 'annex-b':
-            accessUnitData = encodeAnnexBNALUnits(firstAccessUnit.map((nalUnit: HEVCNALUnit): Uint8Array => nalUnit.data));
+            accessUnitData = encodeAnnexBNALUnits(accessUnit.nalUnits.map((nalUnit: HEVCNALUnit): Uint8Array => nalUnit.data));
             decoderConfig = { codec: HEVC_MAIN_10_CODEC, codedHeight, codedWidth };
             break;
         case 'length-prefixed':
             // The parameter sets move out of band into the hvcC
-            accessUnitData = encodeLengthPrefixedNALUnits(firstAccessUnit
-                .filter((nalUnit: HEVCNALUnit): boolean => !HEVC_PARAMETER_SET_NAL_UNIT_TYPES.includes(nalUnit.type))
-                .map((nalUnit: HEVCNALUnit): Uint8Array => nalUnit.data));
-            decoderConfig = { codec: HEVC_MAIN_10_CODEC, codedHeight, codedWidth, description: createHEVCDecoderConfigurationRecord(firstAccessUnit) };
+            accessUnitData = encodeLengthPrefixedNALUnits(getPictureNALUnits(accessUnit).map((nalUnit: HEVCNALUnit): Uint8Array => nalUnit.data));
+            decoderConfig = { codec: HEVC_MAIN_10_CODEC, codedHeight, codedWidth, description: createHEVCDecoderConfigurationRecord(accessUnit.nalUnits) };
             break;
     }
     await source.add(new EncodedPacket(accessUnitData, 'key', 0, FRAME_DURATION_SECONDS), { decoderConfig });
@@ -184,4 +208,54 @@ export async function createHEVCMatroska(packetFormat: HEVCMatroskaPacketFormat 
         throw new Error('Mediabunny did not finalize the Matroska vector');
     }
     return new Uint8Array(target.buffer);
+}
+
+/** A Dolby Vision configuration record of version 1.0, Profile 7 at level 6, for a stream that carries the RPUs and the EL but not the BL, as an EL track's does. */
+function createEnhancementTrackDolbyVisionConfigurationRecord(): Uint8Array {
+    const record = new Uint8Array(DOLBY_VISION_CONFIGURATION_RECORD_BYTE_LENGTH);
+    record[0] = DOLBY_VISION_VERSION_MAJOR;
+    // dv_profile (7 bits), dv_level (6 bits), rpu_present_flag, el_present_flag, and bl_present_flag, which is clear
+    const profileLevelAndFlags = (DOLBY_VISION_PROFILE << 9) | (DOLBY_VISION_LEVEL << 3) | (1 << 2) | (1 << 1);
+    record[2] = profileLevelAndFlags >> 8;
+    record[3] = profileLevelAndFlags & 0xFF;
+    record[4] = DOLBY_VISION_BL_SIGNAL_COMPATIBILITY_ID << 4;
+    return record;
+}
+
+/**
+ * Builds a separate-track Dolby Vision Profile 7 Matroska from the x265 sample's first access unit, length-prefixed with an hvcC, one key frame per track
+ * at time 0: the BL track holds the picture, and the EL track, whose dvcC mapping marks it as the EL, the picture followed by rpuNALUnit.
+ * The BL track comes first, and each track's TrackNumber is the given one, whatever its position.
+ */
+export function createSeparateDolbyVisionEnhancementTrackMatroska(
+    trackNumbers: Readonly<{ base: number, enhancement: number }>,
+    rpuNALUnit: Uint8Array
+): Uint8Array {
+    const accessUnit = readX265FirstAccessUnit();
+    const pictureNALUnits = getPictureNALUnits(accessUnit).map((nalUnit: HEVCNALUnit): Uint8Array => nalUnit.data);
+    const track = {
+        codecID: MATROSKA_HEVC_CODEC_ID,
+        codecPrivate: createHEVCDecoderConfigurationRecord(accessUnit.nalUnits),
+        defaultDurationMilliseconds: FRAME_DURATION_MILLISECONDS,
+        pixelHeight: accessUnit.codedHeight,
+        pixelWidth: accessUnit.codedWidth
+    };
+    return createVideoTracksMatroska([
+        {
+            ...track,
+            blocks: [ { data: encodeLengthPrefixedNALUnits(pictureNALUnits), keyframe: true, timestampMilliseconds: 0 } ],
+            trackNumber: trackNumbers.base
+        },
+        {
+            ...track,
+            blocks: [ { data: encodeLengthPrefixedNALUnits([ ...pictureNALUnits, rpuNALUnit ]), keyframe: true, timestampMilliseconds: 0 } ],
+            trackElements: [
+                createElement(MATROSKA_BLOCK_ADDITION_MAPPING_ID, concatenate([
+                    createUnsignedIntegerElement(MATROSKA_BLOCK_ADD_ID_TYPE_ID, MATROSKA_DVCC_BLOCK_ADD_ID_TYPE),
+                    createElement(MATROSKA_BLOCK_ADD_ID_EXTRA_DATA_ID, createEnhancementTrackDolbyVisionConfigurationRecord())
+                ]))
+            ],
+            trackNumber: trackNumbers.enhancement
+        }
+    ]);
 }
