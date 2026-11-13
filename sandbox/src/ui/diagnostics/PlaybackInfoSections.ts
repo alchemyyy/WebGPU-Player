@@ -632,14 +632,17 @@ function describePresenterRows(presenter: PresentationTelemetry): InfoRow[] {
         createRow('Fallback', formatFailure(presenter.fallbackReason, presenter.fallbackDetail), 'failure'));
     rows.push(createRow('Device recoveries', String(presenter.deviceRecoveryCount), getCountTone(presenter.deviceRecoveryCount, 'warning')));
     rows.push(createRow('Black bars', describeBlackBarCrop(presenter.blackBarCrop, presenter.blackBarAspectRatio), presenter.blackBarCrop === null ? 'muted' : 'normal'));
+    rows.push(createRow('Tone mapping', joinPresentValues([
+        `${presenter.staticToneMappedFrameCount} static`,
+        presenter.lastDynamicInputPeakNits === null ? null : `last peak ${Math.round(presenter.lastDynamicInputPeakNits)} nits`
+    ])));
     rows.push(createRow('HDR10+', joinPresentValues([
         `${presenter.appliedHDR10PlusFrameCount} applied`,
         `${presenter.carriedHDR10PlusFrameCount} carried`,
-        `${presenter.staticFallbackHDR10PlusFrameCount} static fallback`,
-        presenter.lastHDR10PlusMetadataStatus === null ? null : `last ${presenter.lastHDR10PlusMetadataStatus}`,
-        presenter.lastHDR10PlusInputPeakNits === null ? null : `peak ${Math.round(presenter.lastHDR10PlusInputPeakNits)} nits`
+        presenter.lastHDR10PlusMetadataStatus === null ? null : `last ${presenter.lastHDR10PlusMetadataStatus}`
     ])));
     rows.push(createRow('Dolby Vision', joinPresentValues([
+        `${presenter.appliedDolbyVisionLevel1FrameCount} L1`,
         `${presenter.dolbyVisionDualLayerFELPresentedFrameCount} FEL`,
         `${presenter.dolbyVisionDualLayerFELBaseFallbackPresentedFrameCount} FEL as base`,
         `${presenter.dolbyVisionDualLayerMELPresentedFrameCount} MEL`

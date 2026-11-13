@@ -236,7 +236,8 @@ import {
     DOLBY_VISION_ENCODED_METADATA_SCHEMA_VERSION,
     type TransferableDolbyVisionEncodedFrameMetadata
 } from 'webgpu-player/demux/dolby-vision/DolbyVisionEncodedMetadataProtocol';
-import { DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH } from 'webgpu-player/demux/dolby-vision/DolbyVisionRPUParser';
+import { DOLBY_VISION_RPU_PQ_CODE_MAXIMUM, DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH } from 'webgpu-player/demux/dolby-vision/DolbyVisionRPUParser';
+import { applyPQEOTF } from 'webgpu-player/color/ColorPipeline';
 import {
     DOLBY_VISION_RPU_ENHANCEMENT_LAYER_BIT_DEPTH_WORD_OFFSET
 } from 'webgpu-player/demux/dolby-vision/DolbyVisionRPUDataLayout';
@@ -325,6 +326,19 @@ const CURVE_DYNAMIC_MODE = 2;
 // The scene peak and curve target of the HDR10+ vectors
 const HDR10_PLUS_VECTOR_SCENE_PEAK_NITS = 834.75;
 const HDR10_PLUS_VECTOR_CURVE_TARGET_NITS = 1_000;
+const UNIFORM_DYNAMIC_SCENE_AVERAGE_INDEX = 12;
+// The RPU snapshot words a Dolby Vision frame's luminance comes from: the flags with L1's bit, the mastering display's maximum, and L1's scene
+// minimum, maximum, and average, each a 12-bit PQ code
+const RPU_FLAGS_BYTE_OFFSET = 12;
+const RPU_LEVEL1_FLAG = 1 << 2;
+const RPU_SOURCE_MAXIMUM_PQ_BYTE_OFFSET = 144;
+const RPU_LEVEL1_MINIMUM_PQ_BYTE_OFFSET = 152;
+const RPU_LEVEL1_MAXIMUM_PQ_BYTE_OFFSET = 156;
+const RPU_LEVEL1_AVERAGE_PQ_BYTE_OFFSET = 160;
+// About 1000 nits of mastering display, and a scene of about 600 nits peak and 100 nits average, apart from FFmpeg's default 4000 nits
+const MASTERING_MAXIMUM_PQ_CODE = 3_079;
+const LEVEL1_MAXIMUM_PQ_CODE = 2_851;
+const LEVEL1_AVERAGE_PQ_CODE = 2_081;
 
 // The failures these tests simulate, and the details the presenter's fallbacks report for them
 const SIMULATED_DEVICE_REQUEST_FAILURE = 'simulated device request failure';
@@ -2257,9 +2271,9 @@ describe('WebGPUPresenter', () => {
         expect(presenter.getTelemetry()).toMatchObject({
             appliedHDR10PlusFrameCount: 1,
             lastHDR10PlusMetadataStatus: 'valid',
-            staticFallbackHDR10PlusFrameCount: 0
+            staticToneMappedFrameCount: 0
         });
-        expect(presenter.getTelemetry().lastHDR10PlusInputPeakNits).toBeCloseTo(834.75);
+        expect(presenter.getTelemetry().lastDynamicInputPeakNits).toBeCloseTo(834.75);
 
         const malformedFrame = createRawFrame('I420P10', metadata);
         expect(presenter.presentDecodedFrame({
@@ -2279,9 +2293,9 @@ describe('WebGPUPresenter', () => {
         expect(new Float32Array(renderSettingsWrite.buffer)[6]).toBe(1_000);
         expect(presenter.getTelemetry()).toMatchObject({
             appliedHDR10PlusFrameCount: 1,
-            lastHDR10PlusInputPeakNits: null,
+            lastDynamicInputPeakNits: null,
             lastHDR10PlusMetadataStatus: 'malformed',
-            staticFallbackHDR10PlusFrameCount: 1
+            staticToneMappedFrameCount: 1
         });
 
         presenter.seek(2);
@@ -2340,9 +2354,9 @@ describe('WebGPUPresenter', () => {
         expect(presenter.getRenderSettings()).toEqual(manualSettings);
         expect(presenter.getTelemetry()).toMatchObject({
             appliedHDR10PlusFrameCount: 1,
-            lastHDR10PlusInputPeakNits: 4_000,
+            lastDynamicInputPeakNits: 4_000,
             lastHDR10PlusMetadataStatus: 'valid',
-            staticFallbackHDR10PlusFrameCount: 0
+            staticToneMappedFrameCount: 0
         });
     });
 
@@ -2401,7 +2415,7 @@ describe('WebGPUPresenter', () => {
             appliedHDR10PlusFrameCount: 1,
             carriedHDR10PlusFrameCount: 1,
             lastHDR10PlusMetadataStatus: 'absent',
-            staticFallbackHDR10PlusFrameCount: 0
+            staticToneMappedFrameCount: 0
         });
 
         // Profile A has no curve, so its targeted display of 0 is never read
@@ -2428,9 +2442,9 @@ describe('WebGPUPresenter', () => {
         expect(presenter.getTelemetry()).toMatchObject({
             appliedHDR10PlusFrameCount: 3,
             carriedHDR10PlusFrameCount: 2,
-            lastHDR10PlusInputPeakNits: null,
+            lastDynamicInputPeakNits: null,
             lastHDR10PlusMetadataStatus: 'unsupported',
-            staticFallbackHDR10PlusFrameCount: 1
+            staticToneMappedFrameCount: 1
         });
     });
 
@@ -2569,6 +2583,89 @@ describe('WebGPUPresenter', () => {
 
         presenter.endSession(2);
         expect(RPUBuffer.destroy).toHaveBeenCalledOnce();
+    });
+
+    it('tone-maps a Dolby Vision RPU route from its RPU\'s L1, then from HDR10+, then from its RPU\'s mastering display peak', async () => {
+        webSettingsMockState.hdrToneMappingEnabled = true;
+        const gpuHarness = createGPUHarness();
+        const contextHarness = createCanvasContextHarness();
+        const surfaceHarness = createSurfaceHarness();
+        installGPU(gpuHarness.gpu);
+        installCanvasContext(contextHarness.context);
+        const fallbackHandler = vi.fn();
+        const presenter = new WebGPUPresenter(fallbackHandler);
+
+        presenter.startSession(1);
+        presenter.setDecodedFramePushMode(true, 1);
+        presenter.attach(surfaceHarness.surface, 1);
+        await vi.waitFor(() => expect(
+            surfaceHarness.surface.container.querySelector('.webgpuPlayerCanvas')
+        ).toBeInstanceOf(HTMLCanvasElement));
+        await expect(presenter.configureColorPipeline({
+            inputMode: 'raw-dolby-vision',
+            profile: 8,
+            rawFrameFormat: 'I420P10',
+            settings: createHDRToSDRRenderSettings({ toneMapping: { inputPeakNits: 4_000 } })
+        }, 1)).resolves.toBe(true);
+        const deviceHarness = gpuHarness.devices[0];
+        const validHDR10PlusMetadata = parseHEVCHDR10PlusMetadata(createHDR10PlusHEVCVector('valid'), { kind: 'annex-b' });
+        const createRPU = (withLevel1: boolean): ArrayBuffer => {
+            const packedRPUData = createDolbyVisionAuthorizationRPUVector();
+            const view = new DataView(packedRPUData);
+            view.setUint32(RPU_SOURCE_MAXIMUM_PQ_BYTE_OFFSET, MASTERING_MAXIMUM_PQ_CODE, true);
+            if (withLevel1) {
+                view.setUint32(RPU_FLAGS_BYTE_OFFSET, view.getUint32(RPU_FLAGS_BYTE_OFFSET, true) | RPU_LEVEL1_FLAG, true);
+                view.setUint32(RPU_LEVEL1_MINIMUM_PQ_BYTE_OFFSET, 0, true);
+                view.setUint32(RPU_LEVEL1_MAXIMUM_PQ_BYTE_OFFSET, LEVEL1_MAXIMUM_PQ_CODE, true);
+                view.setUint32(RPU_LEVEL1_AVERAGE_PQ_BYTE_OFFSET, LEVEL1_AVERAGE_PQ_CODE, true);
+            }
+            return packedRPUData;
+        };
+        let presentedFrameCount = 0;
+        const presentFrame = async (packedRPUData: ArrayBuffer, HDR10PlusMetadata?: HDR10PlusFrameMetadata): Promise<{
+            floatValues: Float32Array
+            integerValues: Uint32Array
+        }> => {
+            deviceHarness.queueWriteBuffer.mockClear();
+            const frame = createRawFrame('I420P10', createPQColorMetadata());
+            expect(presenter.presentDecodedFrame({
+                ...(HDR10PlusMetadata ? { HDR10PlusMetadata } : {}),
+                durationMicroseconds: frame.durationMicroseconds ?? secondsToMicroseconds(0),
+                encodedDolbyVisionMetadata: createDolbyVisionEncodedMetadata(packedRPUData),
+                frame,
+                mediaTimeMicroseconds: frame.timestampMicroseconds,
+                outputMode: 'raw-planes'
+            }, 1)).toBe(true);
+            presentedFrameCount += 1;
+            await vi.waitFor(() => expect(presenter.getTelemetry().presentedFrameCount).toBe(presentedFrameCount));
+            const renderSettingsWrite = getRenderSettingsWrites(deviceHarness).at(-1);
+            expect(renderSettingsWrite?.byteLength).toBe(RENDER_SETTINGS_UNIFORM_BYTE_LENGTH);
+            const uniformBuffer = (renderSettingsWrite as Uint8Array<ArrayBuffer>).buffer;
+            return { floatValues: new Float32Array(uniformBuffer), integerValues: new Uint32Array(uniformBuffer) };
+        };
+
+        // L1 describes the reconstructed picture, so it outranks the HDR10+ the frame also carries
+        let uniform = await presentFrame(createRPU(true), validHDR10PlusMetadata);
+        expect(uniform.integerValues[UNIFORM_DYNAMIC_MODE_INDEX]).toBe(SCENE_STATISTICS_DYNAMIC_MODE);
+        expect(uniform.floatValues[UNIFORM_INPUT_PEAK_INDEX]).toBeCloseTo(applyPQEOTF(LEVEL1_MAXIMUM_PQ_CODE / DOLBY_VISION_RPU_PQ_CODE_MAXIMUM), 1);
+        expect(uniform.floatValues[UNIFORM_DYNAMIC_SCENE_AVERAGE_INDEX]).toBeCloseTo(
+            applyPQEOTF(LEVEL1_AVERAGE_PQ_CODE / DOLBY_VISION_RPU_PQ_CODE_MAXIMUM),
+            1
+        );
+        expect(presenter.getTelemetry()).toMatchObject({ appliedDolbyVisionLevel1FrameCount: 1, appliedHDR10PlusFrameCount: 0 });
+
+        // Without L1, the frame's HDR10+ applies as on a PQ route
+        uniform = await presentFrame(createRPU(false), validHDR10PlusMetadata);
+        expect(uniform.integerValues[UNIFORM_DYNAMIC_MODE_INDEX]).toBe(CURVE_DYNAMIC_MODE);
+        expect(uniform.floatValues[UNIFORM_INPUT_PEAK_INDEX]).toBeCloseTo(HDR10_PLUS_VECTOR_SCENE_PEAK_NITS);
+        expect(presenter.getTelemetry()).toMatchObject({ appliedDolbyVisionLevel1FrameCount: 1, appliedHDR10PlusFrameCount: 1 });
+
+        // Without either, the frame tone-maps statically from its RPU's mastering display rather than the configuration's 4000 nits
+        uniform = await presentFrame(createRPU(false));
+        expect(uniform.floatValues[UNIFORM_INPUT_PEAK_INDEX]).toBeCloseTo(applyPQEOTF(MASTERING_MAXIMUM_PQ_CODE / DOLBY_VISION_RPU_PQ_CODE_MAXIMUM), 1);
+        expect(uniform.floatValues[UNIFORM_DYNAMIC_SCENE_AVERAGE_INDEX]).toBe(0);
+        expect(presenter.getTelemetry()).toMatchObject({ lastDynamicInputPeakNits: null, staticToneMappedFrameCount: 1 });
+        expect(fallbackHandler).not.toHaveBeenCalled();
     });
 
     it('presents Profile 7 MEL and explicit FEL HDR10-base fallback frames', async () => {

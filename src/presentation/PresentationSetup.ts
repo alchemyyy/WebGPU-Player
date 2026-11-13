@@ -180,7 +180,8 @@ const HEVC_VIDEO_CODECS: readonly string[] = [ 'H265', 'HEVC' ];
 /** The raw format Dolby Vision reconstruction falls back to when the stream does not name its own. */
 export const DEFAULT_DOLBY_VISION_RAW_FRAME_FORMAT: RawDolbyVisionVideoFrameFormat = 'I420P10';
 const RAW_SDR_ROUTE_KEY_SUFFIX = ':sdr';
-// The nominal input peak a Dolby Vision presentation's render configuration starts from
+// The input peak a Dolby Vision presentation's render configuration starts from, the mastering peak of FFmpeg's default RPU color metadata;
+// while the input peak follows the detected one, the presenter replaces it with each frame's own, from the frame's RPU
 const DOLBY_VISION_INPUT_PEAK_NITS = 4_000;
 const DOLBY_VISION_PROFILE_5 = 5;
 const DOLBY_VISION_PROFILE_4 = 4;

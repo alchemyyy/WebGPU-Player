@@ -1,5 +1,5 @@
 // The built-in color track: the legacy fused shader's processColor, split into one color function per transition.
-// Apart from the entry points, the WGSL is the legacy text, so the default chains render exactly as that shader did.
+// Every tone mapper hands the output encodes light from black to the output peak.
 import { assertValidInputColorMetadata, HDR_REFERENCE_WHITE_NITS, type InputColorMetadata } from '../../../color/ColorMetadata';
 import {
     getGamutToBT709Matrix,
@@ -320,31 +320,45 @@ fn evaluateSmoothstep(edge0: f32, edge1: f32, value: f32) -> f32 {
     return normalizedValue * normalizedValue * (3.0 - 2.0 * normalizedValue);
 }
 
-fn evaluateSplineToneMapPQ(inputIntensityPQ: f32) -> f32 {
-    let inputMinimum = encodePerceptualPQ(0.000001);
-    let inputMaximum = encodePerceptualPQ(renderSettings.inputPeakNits);
-    let outputMinimum = encodePerceptualPQ(renderSettings.outputPeakNits / 1000.0);
-    let outputMaximum = encodePerceptualPQ(renderSettings.outputPeakNits);
-    var sourcePivot = mix(inputMinimum, inputMaximum, 0.4);
-    if (renderSettings.dynamicHDRMode == 1u
+// libplacebo's st2094_pick_knee between the given PQ ends of the input and output: the source knee is the scene average where dynamic
+// metadata gives one, else 40% of the input range, and the output knee lies between it and its relative position in the output range
+fn pickToneMapKneePQ(
+    inputMinimum: f32,
+    inputMaximum: f32,
+    outputMinimum: f32,
+    outputMaximum: f32
+) -> vec2f {
+    var sourceKnee = mix(inputMinimum, inputMaximum, 0.4);
+    if (renderSettings.dynamicHDRMode != 0u
         && renderSettings.dynamicSceneAverageNits > 0.0) {
-        sourcePivot = clamp(
+        sourceKnee = clamp(
             encodePerceptualPQ(renderSettings.dynamicSceneAverageNits),
             mix(inputMinimum, inputMaximum, 0.1),
             mix(inputMinimum, inputMaximum, 0.8)
         );
     }
-    let sourceTarget = (sourcePivot - inputMinimum) / (inputMaximum - inputMinimum);
-    let adaptedPivot = mix(outputMinimum, outputMaximum, sourceTarget);
+    let sourceTarget = (sourceKnee - inputMinimum) / (inputMaximum - inputMinimum);
+    let adaptedKnee = mix(outputMinimum, outputMaximum, sourceTarget);
     let tuning = 1.0
         - evaluateSmoothstep(0.8, 0.4, sourceTarget)
         * evaluateSmoothstep(0.1, 0.4, sourceTarget);
     let adaptation = mix(0.4, 1.0, tuning);
-    let destinationPivot = clamp(
-        mix(sourcePivot, adaptedPivot, adaptation),
+    let destinationKnee = clamp(
+        mix(sourceKnee, adaptedKnee, adaptation),
         mix(outputMinimum, outputMaximum, 0.1),
         mix(outputMinimum, outputMaximum, 0.8)
     );
+    return vec2f(sourceKnee, destinationKnee);
+}
+
+fn evaluateSplineToneMapPQ(inputIntensityPQ: f32) -> f32 {
+    let inputMinimum = encodePerceptualPQ(0.000001);
+    let inputMaximum = encodePerceptualPQ(renderSettings.inputPeakNits);
+    let outputMinimum = encodePerceptualPQ(renderSettings.outputPeakNits / 1000.0);
+    let outputMaximum = encodePerceptualPQ(renderSettings.outputPeakNits);
+    let knee = pickToneMapKneePQ(inputMinimum, inputMaximum, outputMinimum, outputMaximum);
+    let sourcePivot = knee.x;
+    let destinationPivot = knee.y;
     let linearSlope = (destinationPivot - outputMinimum)
         / (sourcePivot - inputMinimum);
     let peakRatio = inputMaximum / outputMaximum - 1.0;
@@ -396,12 +410,12 @@ fn getBinomialCoefficient(degree: u32, index: u32) -> f32 {
     return coefficient;
 }
 
-fn getHDR10PlusIntercept(degree: u32, kneeX: f32, kneeY: f32) -> f32 {
+fn getST2094Intercept(degree: f32, kneeX: f32, kneeY: f32) -> f32 {
     if (kneeX <= 0.0 || kneeY >= 1.0) {
-        return 1.0 / f32(degree);
+        return 1.0 / degree;
     }
     let slope = kneeY / kneeX * (1.0 - kneeX) / (1.0 - kneeY);
-    return min(slope / f32(degree), 1.0);
+    return min(slope / degree, 1.0);
 }
 
 fn getHDR10PlusControlPoint(
@@ -421,7 +435,7 @@ fn getHDR10PlusControlPoint(
         let adaptation = max(outputPeakNits / targetPeakNits, 0.0);
         if (pointIndex == 1u) {
             controlPoint = mix(
-                getHDR10PlusIntercept(degree, kneeX, kneeY),
+                getST2094Intercept(f32(degree), kneeX, kneeY),
                 controlPoint,
                 adaptation
             );
@@ -438,7 +452,7 @@ fn getHDR10PlusControlPoint(
         ), 1.4);
         if (pointIndex == 1u) {
             controlPoint = mix(
-                getHDR10PlusIntercept(degree, kneeX, kneeY),
+                getST2094Intercept(f32(degree), kneeX, kneeY),
                 controlPoint,
                 adaptation
             );
@@ -453,14 +467,8 @@ fn getHDR10PlusControlPoint(
     return controlPoint;
 }
 
-fn toneMapHDR10PlusPerceptualToSDR(linearInputNits: vec3f) -> vec3f {
-    let exposedRGB = max(
-        linearInputNits * pow(2.0, renderSettings.exposure),
-        vec3f(0.0)
-    );
-    let sourceIPT = convertLinearRGBNitsToIPTPQ(exposedRGB);
-    let originalIntensity = sourceIPT.x;
-    let originalNits = decodePerceptualPQ(originalIntensity);
+// The frame's HDR10+ curve at a normalized input: its knee and anchors for its targeted display, adapted to the output peak as libplacebo adapts them
+fn evaluateHDR10PlusCurve(normalizedInput: f32) -> f32 {
     let degree = renderSettings.dynamicBezierAnchorCount + 1u;
     let targetPeakNits = clamp(
         renderSettings.dynamicTargetPeakNits,
@@ -493,38 +501,87 @@ fn toneMapHDR10PlusPerceptualToSDR(linearInputNits: vec3f) -> vec3f {
         kneeY = mix(linearKnee, kneeY, adaptation);
     }
 
-    let normalizedInput = clamp(
-        originalNits / renderSettings.inputPeakNits,
+    if (normalizedInput <= kneeX && kneeX > 0.0) {
+        return normalizedInput * kneeY / kneeX;
+    }
+    let curvePosition = clamp(
+        (normalizedInput - kneeX) / max(1.0 - kneeX, 0.000001),
         0.0,
         1.0
     );
-    var normalizedOutput = 0.0;
-    if (normalizedInput <= kneeX && kneeX > 0.0) {
-        normalizedOutput = normalizedInput * kneeY / kneeX;
-    } else {
-        let curvePosition = clamp(
-            (normalizedInput - kneeX) / max(1.0 - kneeX, 0.000001),
-            0.0,
-            1.0
-        );
-        var bezierValue = 0.0;
-        for (var pointIndex = 0u; pointIndex <= degree; pointIndex += 1u) {
-            var controlPoint = 0.0;
-            if (pointIndex > 0u) {
-                controlPoint = getHDR10PlusControlPoint(
-                    pointIndex,
-                    degree,
-                    kneeX,
-                    kneeY,
-                    targetPeakNits
-                );
-            }
-            bezierValue += getBinomialCoefficient(degree, pointIndex)
-                * pow(curvePosition, f32(pointIndex))
-                * pow(1.0 - curvePosition, f32(degree - pointIndex))
-                * controlPoint;
+    var bezierValue = 0.0;
+    for (var pointIndex = 0u; pointIndex <= degree; pointIndex += 1u) {
+        var controlPoint = 0.0;
+        if (pointIndex > 0u) {
+            controlPoint = getHDR10PlusControlPoint(
+                pointIndex,
+                degree,
+                kneeX,
+                kneeY,
+                targetPeakNits
+            );
         }
-        normalizedOutput = kneeY + (1.0 - kneeY) * bezierValue;
+        // pow(0, 0) is undefined, and the curve's ends reach it, so a power of 0 is 1 outright
+        let risingPower = select(pow(curvePosition, f32(pointIndex)), 1.0, pointIndex == 0u);
+        let fallingPower = select(pow(1.0 - curvePosition, f32(degree - pointIndex)), 1.0, pointIndex == degree);
+        bezierValue += getBinomialCoefficient(degree, pointIndex)
+            * risingPower
+            * fallingPower
+            * controlPoint;
+    }
+    return kneeY + (1.0 - kneeY) * bezierValue;
+}
+
+// libplacebo's st2094_40 without a curve: through the tone-map knee, counted from the output floor as the curve's output is from black, a line,
+// then the Bezier whose control points are 0, the intercept that matches the line's slope, and 1
+fn evaluateBrightnessMatchingCurve(normalizedInput: f32) -> f32 {
+    let outputMinimumNits = renderSettings.outputPeakNits / 1000.0;
+    let knee = pickToneMapKneePQ(
+        encodePerceptualPQ(0.000001),
+        encodePerceptualPQ(renderSettings.inputPeakNits),
+        encodePerceptualPQ(outputMinimumNits),
+        encodePerceptualPQ(renderSettings.outputPeakNits)
+    );
+    let kneeX = decodePerceptualPQ(knee.x) / renderSettings.inputPeakNits;
+    let kneeY = clamp(
+        (decodePerceptualPQ(knee.y) - outputMinimumNits)
+            / (renderSettings.outputPeakNits - outputMinimumNits),
+        0.0,
+        1.0
+    );
+    if (normalizedInput <= kneeX) {
+        return normalizedInput * kneeY / kneeX;
+    }
+    let slope = kneeY / kneeX * (1.0 - kneeX) / (1.0 - kneeY);
+    let degree = clamp(ceil(slope), 2.0, 16.0);
+    let intercept = getST2094Intercept(degree, kneeX, kneeY);
+    let curvePosition = clamp((normalizedInput - kneeX) / (1.0 - kneeX), 0.0, 1.0);
+    // The Bernstein sum of those points is 1 less the terms the points below 1 lack: all of the first's, and 1 less the intercept of the second's
+    let remainder = 1.0 - curvePosition;
+    let bezierValue = 1.0
+        - pow(remainder, degree)
+        - degree * curvePosition * pow(remainder, degree - 1.0) * (1.0 - intercept);
+    return kneeY + (1.0 - kneeY) * bezierValue;
+}
+
+// libplacebo's st2094_40 on the IPT intensity, from the input peak to the output peak: the frame's HDR10+ curve, or without one a brightness-matching curve
+fn toneMapST2094PerceptualToSDR(linearInputNits: vec3f) -> vec3f {
+    let exposedRGB = max(
+        linearInputNits * pow(2.0, renderSettings.exposure),
+        vec3f(0.0)
+    );
+    let sourceIPT = convertLinearRGBNitsToIPTPQ(exposedRGB);
+    let originalIntensity = sourceIPT.x;
+    let normalizedInput = clamp(
+        decodePerceptualPQ(originalIntensity) / renderSettings.inputPeakNits,
+        0.0,
+        1.0
+    );
+    var normalizedOutput: f32;
+    if (renderSettings.dynamicHDRMode == 2u) {
+        normalizedOutput = evaluateHDR10PlusCurve(normalizedInput);
+    } else {
+        normalizedOutput = evaluateBrightnessMatchingCurve(normalizedInput);
     }
     let mappedIntensity = encodePerceptualPQ(
         clamp(normalizedOutput, 0.0, 1.0) * renderSettings.outputPeakNits
@@ -608,10 +665,14 @@ fn toneMapSplinePerceptualToSDR(linearInputNits: vec3f) -> vec3f {
         originalIntensity / mappedIntensity,
         mappedHull / originalHull
     ), 0.0, 1.0);
-    return perceptuallyMapIPTPQToBT709(vec3f(
+    let mappedNits = perceptuallyMapIPTPQToBT709(vec3f(
         mappedIntensity,
         sourceIPT.yz * chromaScale
     ));
+    // The spline ends at libplacebo's 1000:1 output floor, which its black point compensation takes off again
+    let outputMinimumNits = renderSettings.outputPeakNits / 1000.0;
+    return max(mappedNits - vec3f(outputMinimumNits), vec3f(0.0))
+        * (renderSettings.outputPeakNits / (renderSettings.outputPeakNits - outputMinimumNits));
 }
 
 fn toneMapToSDR(linearBT709Nits: vec3f) -> vec3f {
@@ -654,8 +715,8 @@ const TONE_MAP_ENTRY_WGSL = /* wgsl */ `
 fn ${TONE_MAP_ENTRY_POINT}(color: vec4f, position: vec2f) -> vec4f {
     let linearInputNits = color.rgb;
     var toneMappedNits: vec3f;
-    if (renderSettings.dynamicHDRMode == 2u) {
-        toneMappedNits = toneMapHDR10PlusPerceptualToSDR(linearInputNits);
+    if (renderSettings.toneMapOperator == 3u) {
+        toneMappedNits = toneMapST2094PerceptualToSDR(linearInputNits);
     } else if (renderSettings.toneMapOperator == 2u) {
         toneMappedNits = toneMapSplinePerceptualToSDR(linearInputNits);
     } else {
@@ -675,18 +736,7 @@ fn encodeSRGB(linearValue: f32) -> f32 {
 
 const SDR_OUTPUT_ENCODE_WGSL = /* wgsl */ `
 fn encodeOutputComponent(componentNits: f32) -> f32 {
-    let outputMinimumNits = select(
-        0.0,
-        renderSettings.outputPeakNits / 1000.0,
-        renderSettings.toneMapOperator == 2u
-    );
-    let linearValue = clamp(
-        (componentNits - outputMinimumNits)
-            / (renderSettings.outputPeakNits - outputMinimumNits),
-        0.0,
-        1.0
-    );
-    return encodeSRGB(linearValue);
+    return encodeSRGB(clamp(componentNits / renderSettings.outputPeakNits, 0.0, 1.0));
 }
 
 fn ${OUTPUT_ENCODE_ENTRY_POINT}(color: vec4f, position: vec2f) -> vec4f {

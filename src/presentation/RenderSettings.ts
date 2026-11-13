@@ -17,7 +17,7 @@ export const HDR_RENDER_SETTING_RANGES = Object.freeze({
 export type RenderMode = 'hdr-to-sdr' | 'identity-sdr';
 // The configured WebGPU canvas uses the sRGB output color space
 export type OutputTransfer = 'srgb';
-export type ToneMapOperator = 'aces' | 'reinhard' | 'spline';
+export type ToneMapOperator = 'aces' | 'reinhard' | 'spline' | 'st2094-40';
 
 export type ToneMappingSettings = {
     desaturationStrength: number
@@ -55,10 +55,14 @@ export type HDRToSDRRenderSettingsOverrides = {
     toneMapping?: Partial<ToneMappingSettings>
 };
 
-export type HDR10PlusFrameRenderSettings = Readonly<{
+/**
+ * One frame's dynamic HDR metadata: the scene peak and average of its HDR10+ or Dolby Vision L1 metadata,
+ * and an HDR10+ curve with its targeted display, which only the ST 2094-40 operator follows.
+ */
+export type DynamicHDRFrameRenderSettings = Readonly<{
     averageNits: number
     inputPeakNits: number
-    /** Read only with a curve; HDR10+ profile A, which has none, leaves it 0. */
+    /** Read only with a curve; HDR10+ profile A and Dolby Vision L1, which have none, leave it 0. */
     targetedSystemDisplayMaximumLuminanceNits: number
     toneMapping: Readonly<{
         bezierCurveAnchors: readonly number[]
@@ -85,6 +89,7 @@ const DEFAULT_DISPLAY_SETTINGS: DisplaySettings = {
 const ACES_OPERATOR_CODE = 0;
 const REINHARD_OPERATOR_CODE = 1;
 const SPLINE_OPERATOR_CODE = 2;
+const ST2094_40_OPERATOR_CODE = 3;
 const SRGB_OUTPUT_TRANSFER_CODE = 1;
 
 const UNIFORM_VERSION_INDEX = 0;
@@ -135,6 +140,7 @@ export function assertValidRenderSettings(settings: RenderSettings): void {
         case 'aces':
         case 'reinhard':
         case 'spline':
+        case 'st2094-40':
             break;
         default:
             throw new RangeError(`operator: unsupported '${String(settings.toneMapping.operator)}'`);
@@ -191,6 +197,8 @@ function getToneMapOperatorCode(operator: ToneMapOperator): number {
             return REINHARD_OPERATOR_CODE;
         case 'spline':
             return SPLINE_OPERATOR_CODE;
+        case 'st2094-40':
+            return ST2094_40_OPERATOR_CODE;
     }
 }
 
@@ -201,8 +209,8 @@ function getOutputTransferCode(outputTransfer: OutputTransfer): number {
     return SRGB_OUTPUT_TRANSFER_CODE;
 }
 
-/** Throws `dynamic <field>: <value> <problem>` when one frame's HDR10+ settings cannot drive the tone mapper. */
-function assertValidDynamicFrameSettings(settings: HDRToSDRRenderSettings, dynamicFrameSettings: HDR10PlusFrameRenderSettings): void {
+/** Throws `dynamic <field>: <value> <problem>` when one frame's dynamic HDR settings cannot drive the tone mapper. */
+function assertValidDynamicFrameSettings(settings: HDRToSDRRenderSettings, dynamicFrameSettings: DynamicHDRFrameRenderSettings): void {
     const toneMapping = dynamicFrameSettings.toneMapping;
     const anchors = toneMapping?.bezierCurveAnchors ?? [];
     requireSettingRange(
@@ -238,7 +246,7 @@ function assertValidDynamicFrameSettings(settings: HDRToSDRRenderSettings, dynam
 /** Serializes adjustable renderer controls into the versioned WGSL layout. */
 export function createRenderSettingsUniformData(
     settings: HDRToSDRRenderSettings,
-    dynamicFrameSettings: HDR10PlusFrameRenderSettings | null = null
+    dynamicFrameSettings: DynamicHDRFrameRenderSettings | null = null
 ): Uint8Array<ArrayBuffer> {
     assertValidRenderSettings(settings);
 

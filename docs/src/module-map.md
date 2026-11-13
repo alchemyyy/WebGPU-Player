@@ -30,7 +30,7 @@ Each source file's tests are at the same relative path under `test/`, and integr
 - `DolbyVisionGeometry.ts`: the P4 and P7 EL coded size (half the BL when the BL is wider than 1920).
 - `PresentationSetup.ts`: what a host calls around the eligibility, without state of its own: the play options' presentation input, the authorizations that gate the eligibility's presentation routes, the offers of the host's GPU decoder packages for a stream (`getGPUVideoDecoderOffers`) and the factory of their sessions on the presenter's device, the presenter's color pipeline for the chosen route, Dolby Vision bases included, and static HDR metadata updates.
 - `PresentationGeometry.ts`: pure object-fit and object-position math to viewport and texture transforms, fitting a crop of the source, the black bar crop's, as the whole object.
-- `RenderSettings.ts`: versioned (v7) HDR-to-SDR settings and their 144-byte uniform, HDR10+ fields included.
+- `RenderSettings.ts`: versioned (v7) HDR-to-SDR settings, the four tone map operators, and their 144-byte uniform, with the dynamic fields of HDR10+ and Dolby Vision L1.
 - `WebGPUConstants.ts`: the WebGPU values presentation and GPU decode share: canvas configuration, texture formats, features, and default limits.
 
 ### presentation/passes/

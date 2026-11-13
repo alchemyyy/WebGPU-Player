@@ -463,6 +463,19 @@ These were settled on stock Chrome on Windows, with a Chromium 153 source audit.
   Until then a stream whose HDR10+ flag was set while its transfer was not PQ got no presentation metadata, so an SDR stream with the flag was declined as `metadata-unsupported`, and the HTML path did not count it as SDR either.
   HDR10+ dynamic metadata adjusts the tone mapping of a PQ signal, and the presenter applies it only on a PQ route, so on an SDR or HLG stream it would change nothing: such a stream now plays on its own transfer's route, and the metadata its packets carry is parsed and ignored.
   The parse never fails a frame: a malformed payload only marks the frame's status.
+- The spline's output floor is the spline's own (11-12).
+  libplacebo's spline maps black to a 1000:1 output floor, which its black point compensation takes off again.
+  Until 11-12 the SDR output encode took the floor off whenever the operator setting was Spline, also from a frame whose HDR10+ curve had replaced the spline and mapped black to 0, so everything the curve mapped below a thousandth of the output peak turned black; the HDR output encode never took it off, so Spline's black sat at a thousandth of the output peak, 1 nit at a 1000-nit peak.
+  The spline now takes off its own floor, so every tone mapper hands either output encode light from black, and neither encode takes anything off.
+- An HDR10+ curve applies only under the ST 2094-40 operator (11-12).
+  Until 11-12 a frame whose HDR10+ carried a Bezier curve followed it whatever operator the user had chosen, while libplacebo follows a curve only with its `st2094-40` function and otherwise tone-maps with its default spline from the frame's scene statistics.
+  Adapted from a 400-nit targeted display to SDR's 100 nits, a curve can crush a dark scene's shadows and lift its midtones, the likely cause of a report on jellyfin-plugin-webgpu-player (issue 13) in which the same stream's RPU route looked brighter.
+  ST 2094-40 is now an operator of its own: it follows a frame's curve, and without one builds libplacebo's brightness-matching curve through the scene's knee; every other operator takes a frame with a curve as it takes a profile A frame, from its scene peak and average.
+  The curve's Bernstein sum evaluated pow(0, 0) at both of its ends, which is NaN in Chrome on Windows, so until 11-12 every pixel at or above the scene peak presented black; a power of 0 is now 1 outright.
+- Dolby Vision RPU routes tone-map from their RPU's luminance metadata (11-12).
+  Until 11-12 every RPU route tone-mapped from a fixed 4000-nit input peak and ignored both the RPU's L1 and any HDR10+, while the native compatible base of a stream with HDR10+ tone-mapped from it, so such a title looked flat on one route and dynamic on the other.
+  libplacebo takes a frame's L1 maximum and average as its scene statistics and the RPU's mastering display maximum, `source_max_pq`, as its static peak, with HDR10+ ranked between them; the presenter now reads both from each frame's snapshot and ranks them the same way.
+  An RPU without display management metadata takes FFmpeg's default color metadata, whose 4000 nits the routes used before.
 
 ## GPU decode
 

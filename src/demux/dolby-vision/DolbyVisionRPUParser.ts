@@ -25,6 +25,8 @@ export const DOLBY_VISION_RPU_PARSER_REVISION_PREFIX = 0x38AD_EC04;
 export const DOLBY_VISION_RPU_SCHEMA_MAGIC = 0x5052_5644;
 export const MAXIMUM_DOLBY_VISION_RPU_PARSER_INPUT_BYTE_LENGTH = 64 * 1_024;
 export const MAXIMUM_DOLBY_VISION_RPU_PARSER_MEMORY_BYTE_LENGTH = 16 * 1_024 * 1_024;
+/** The largest 12-bit PQ code of an RPU's luminance fields, which libplacebo divides them by */
+export const DOLBY_VISION_RPU_PQ_CODE_MAXIMUM = 4_095;
 
 const MAXIMUM_PARSER_ARTIFACT_BYTE_LENGTH = 2 * 1_024 * 1_024;
 const MAXIMUM_PARSER_ERROR_BYTE_LENGTH = 512;
@@ -39,6 +41,12 @@ const PROFILE_BYTE_OFFSET = 20;
 const BASE_LAYER_BIT_DEPTH_BYTE_OFFSET = 48;
 const ENHANCEMENT_LAYER_BIT_DEPTH_BYTE_OFFSET = 52;
 const DISABLE_RESIDUAL_BYTE_OFFSET = 80;
+// Byte offsets of the luminance words: the mastering display's range, and L1's scene minimum, maximum, and average
+const SOURCE_MINIMUM_PQ_BYTE_OFFSET = 140;
+const SOURCE_MAXIMUM_PQ_BYTE_OFFSET = 144;
+const LEVEL1_MINIMUM_PQ_BYTE_OFFSET = 152;
+const LEVEL1_MAXIMUM_PQ_BYTE_OFFSET = 156;
+const LEVEL1_AVERAGE_PQ_BYTE_OFFSET = 160;
 
 const FLAG_USED_PREVIOUS_MAPPING = 1 << 0;
 const FLAG_EXPLICIT_COLOR_METADATA = 1 << 1;
@@ -497,6 +505,30 @@ export function readDolbyVisionRPUSnapshotHeader(packedData: ArrayBuffer): Dolby
     };
 }
 
+/** The luminance an RPU declares, as 12-bit PQ codes: its mastering display's maximum, and its L1 scene maximum and average, null without L1. */
+export type DolbyVisionRPUSceneLuminance = Readonly<{
+    level1AveragePQ: number | null
+    level1MaximumPQ: number | null
+    sourceMaximumPQ: number
+}>;
+
+/**
+ * Reads the luminance of a snapshot whose whole the worker's parser validated, or returns null for a snapshot this build cannot read,
+ * which presentation refuses on its own.
+ */
+export function readDolbyVisionRPUSceneLuminance(packedData: unknown): DolbyVisionRPUSceneLuminance | null {
+    if (!hasCompatibleDolbyVisionRPUSnapshotHeader(packedData)) {
+        return null;
+    }
+    const view = new DataView(packedData);
+    const hasLevel1 = (view.getUint32(FLAGS_BYTE_OFFSET, true) & FLAG_LEVEL1_METADATA) !== 0;
+    return {
+        level1AveragePQ: hasLevel1 ? view.getUint32(LEVEL1_AVERAGE_PQ_BYTE_OFFSET, true) : null,
+        level1MaximumPQ: hasLevel1 ? view.getUint32(LEVEL1_MAXIMUM_PQ_BYTE_OFFSET, true) : null,
+        sourceMaximumPQ: view.getUint32(SOURCE_MAXIMUM_PQ_BYTE_OFFSET, true)
+    };
+}
+
 /** Validates and decodes one owned schema-versioned parser snapshot. */
 export function decodeDolbyVisionRPUSnapshot(packedData: ArrayBuffer): DolbyVisionRPUSnapshot {
     if (!(packedData instanceof ArrayBuffer) || packedData.byteLength !== DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH) {
@@ -527,9 +559,9 @@ export function decodeDolbyVisionRPUSnapshot(packedData: ArrayBuffer): DolbyVisi
     const nonlinearMatrix = readPaddedMatrix(view, DOLBY_VISION_RPU_PACKED_HEADER_BYTE_LENGTH + 16, 'Dolby Vision nonlinear matrix');
     const linearMatrix = readPaddedMatrix(view, DOLBY_VISION_RPU_PACKED_HEADER_BYTE_LENGTH + 64, 'Dolby Vision linear matrix');
     const previousMappingID = readOptionalUnsignedInteger(view.getUint32(88, true));
-    const level1MinimumPQ = readOptionalUnsignedInteger(view.getUint32(152, true));
-    const level1MaximumPQ = readOptionalUnsignedInteger(view.getUint32(156, true));
-    const level1AveragePQ = readOptionalUnsignedInteger(view.getUint32(160, true));
+    const level1MinimumPQ = readOptionalUnsignedInteger(view.getUint32(LEVEL1_MINIMUM_PQ_BYTE_OFFSET, true));
+    const level1MaximumPQ = readOptionalUnsignedInteger(view.getUint32(LEVEL1_MAXIMUM_PQ_BYTE_OFFSET, true));
+    const level1AveragePQ = readOptionalUnsignedInteger(view.getUint32(LEVEL1_AVERAGE_PQ_BYTE_OFFSET, true));
     validateOptionalSnapshotMetadata(
         flags,
         validatedFlags.mel,
@@ -565,8 +597,8 @@ export function decodeDolbyVisionRPUSnapshot(packedData: ArrayBuffer): DolbyVisi
         sceneRefresh: (flags & FLAG_SCENE_REFRESH) !== 0,
         schemaVersion,
         signalBitDepth: view.getUint32(124, true),
-        sourceMaximumPQ: view.getUint32(144, true),
-        sourceMinimumPQ: view.getUint32(140, true),
+        sourceMaximumPQ: view.getUint32(SOURCE_MAXIMUM_PQ_BYTE_OFFSET, true),
+        sourceMinimumPQ: view.getUint32(SOURCE_MINIMUM_PQ_BYTE_OFFSET, true),
         usedPreviousMapping: (flags & FLAG_USED_PREVIOUS_MAPPING) !== 0,
         vdrBitDepth: view.getUint32(56, true)
     };

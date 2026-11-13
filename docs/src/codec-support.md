@@ -194,14 +194,18 @@ The host maps it to a presenter input mode.
 
 [Eligibility and routes](routes.md#video-route-selection) gives the order in which they are tried.
 
-HDR10+ dynamic metadata is applied on VF-PQ, DV base PQ, and RAW PQ, and ignored on VF-DV5 and the RAW-DV routes.
+HDR10+ dynamic metadata is applied on VF-PQ, DV base PQ, RAW PQ, and GPU PQ, and on the RPU routes (VF-DV5, VF-DV8, RAW-DV, and GPU-DV) to a frame whose RPU has no L1.
 HEVC carries it in SEI, and AV1 in ITU-T T.35 metadata OBUs, whose trailing bits the engine removes as dav1d does: it drops the trailing zero bytes, then the byte holding the trailing one bit, which must be 0x80, or the frame's metadata is malformed.
 VP9 has no metadata of its own, so Matroska and WebM carry each frame's ITU-T T.35 message beside it in a BlockAdditional, and VP9 in MP4 carries none.
 The engine recognizes the message by its T.35 header whatever its BlockAddID, so WebM, which has no BlockAdditionMapping, reads like Matroska, which maps FFmpeg's BlockAddID 4 to the ITU-T T.35 type.
-A frame with a Bezier curve follows the curve; a frame without one, such as every profile A frame, tone-maps from its scene peak and average and never reads the targeted display.
+A frame's scene peak and average drive every tone map operator; only the ST 2094-40 operator follows a frame's Bezier curve, adapted from its targeted display, and without a curve it builds libplacebo's brightness-matching curve from the scene's knee.
+A frame without a curve, such as every profile A frame, never has its targeted display read.
 A frame without HDR10+ metadata of its own, or whose payload fails to parse, takes the last metadata before it in decode order, as in FFmpeg (see [Decisions](decisions.md#video-decode-and-dolby-vision)).
 Conflicting metadata, unsupported metadata, and a curve with a targeted display of 0 tone-map their frame statically and end the carried metadata until the next valid payload.
 Each decode attempt and each seek starts without carried metadata.
+
+An RPU route tone-maps each frame from its RPU, as libplacebo ranks the metadata: from its L1 scene peak and average, else from HDR10+, else statically from the peak of the mastering display the RPU names (`source_max_pq`), which an RPU without display management metadata leaves at FFmpeg's default of 4000 nits.
+An L1 whose maximum or average is 0, as an RPU whose CM v2.9 section codes no L1 presents, counts as none.
 
 ## Evidence
 

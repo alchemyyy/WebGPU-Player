@@ -147,6 +147,7 @@ export function createControllerTelemetry(overrides: Partial<CustomPlaybackTelem
 
 export function createPresenterTelemetry(overrides: Partial<PresentationTelemetry> = {}): PresentationTelemetry {
     return {
+        appliedDolbyVisionLevel1FrameCount: 0,
         appliedHDR10PlusFrameCount: 0,
         blackBarAspectRatio: null,
         blackBarCrop: null,
@@ -163,7 +164,7 @@ export function createPresenterTelemetry(overrides: Partial<PresentationTelemetr
         firstPresentedMediaTimeMicroseconds: null,
         lastCallbackTimeMicroseconds: null,
         lastExpectedDisplayTimeMicroseconds: null,
-        lastHDR10PlusInputPeakNits: null,
+        lastDynamicInputPeakNits: null,
         lastHDR10PlusMetadataStatus: null,
         lastPresentedMediaTimeMicroseconds: null,
         mode: 'identity-sdr',
@@ -172,7 +173,7 @@ export function createPresenterTelemetry(overrides: Partial<PresentationTelemetr
         presentationSource: null,
         presentedFrameCount: 0,
         sessionStartedMicroseconds: ZERO_MICROSECONDS,
-        staticFallbackHDR10PlusFrameCount: 0,
+        staticToneMappedFrameCount: 0,
         state: 'idle',
         ...overrides
     };

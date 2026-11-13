@@ -140,13 +140,17 @@ describe('RenderSettings', () => {
         expect(floatValues[11]).toBeCloseTo(0.75);
     });
 
-    it('serializes the spline operator without changing the uniform footprint', () => {
-        const data = createRenderSettingsUniformData(createHDRToSDRRenderSettings({ toneMapping: { operator: 'spline' } }));
+    // The shader selects the perceptual operators by these codes
+    it.each([
+        [ 'spline', 2 ],
+        [ 'st2094-40', 3 ]
+    ] as const)('serializes the %s operator as code %i without changing the uniform footprint', (operator, operatorCode) => {
+        const data = createRenderSettingsUniformData(createHDRToSDRRenderSettings({ toneMapping: { operator } }));
         const integerValues = new Uint32Array(data.buffer);
 
         expect(data.byteLength).toBe(RENDER_SETTINGS_UNIFORM_BYTE_LENGTH);
         expect(integerValues[0]).toBe(RENDER_SETTINGS_VERSION);
-        expect(integerValues[1]).toBe(2);
+        expect(integerValues[1]).toBe(operatorCode);
     });
 
     it('serializes per-frame HDR10+ state without mutating persistent settings', () => {

@@ -502,7 +502,7 @@ describe('describePlaybackInfo', () => {
                     fallbackReason: 'frame-render-failed',
                     lastCallbackTimeMicroseconds: microseconds(CALLBACK_TIME_MICROSECONDS),
                     lastExpectedDisplayTimeMicroseconds: microseconds(EXPECTED_DISPLAY_TIME_MICROSECONDS),
-                    lastHDR10PlusInputPeakNits: HDR10_PLUS_PEAK_NITS,
+                    lastDynamicInputPeakNits: HDR10_PLUS_PEAK_NITS,
                     lastHDR10PlusMetadataStatus: 'valid',
                     lastPresentedMediaTimeMicroseconds: microseconds(PRESENTED_TIME_MICROSECONDS),
                     presentationSkipReason: SURFACE_EMPTY_REASON
@@ -515,7 +515,8 @@ describe('describePlaybackInfo', () => {
         expect(requireRow(section, 'Fallback')).toEqual({ label: 'Fallback', tone: 'failure', value: `frame-render-failed: ${PRESENTER_FALLBACK_DETAIL}` });
         expect(requireRow(section, 'Not drawn')).toEqual({ label: 'Not drawn', tone: 'failure', value: SURFACE_EMPTY_REASON });
         expect(requireRow(section, 'Last frame').value).toBe(`0:10.000, ${DISPLAY_LEAD_TEXT}`);
-        expect(requireRow(section, 'HDR10+').value).toBe('0 applied, 0 carried, 0 static fallback, last valid, peak 1000 nits');
+        expect(requireRow(section, 'Tone mapping').value).toBe('0 static, last peak 1000 nits');
+        expect(requireRow(section, 'HDR10+').value).toBe('0 applied, 0 carried, last valid');
         expect(requireRow(section, 'FEL authorization')).toEqual({ label: 'FEL authorization', tone: 'failure', value: FEL_FAILURE });
         expect(requireRow(section, 'Plan').value).toBe(`2 passes, 1 textures, ${plan.sourceKind} source`);
         expect(requireRow(section, 'Render settings').value).toBe(

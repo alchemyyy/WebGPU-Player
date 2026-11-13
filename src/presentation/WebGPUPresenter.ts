@@ -14,7 +14,7 @@ import {
     assertValidRenderSettings,
     createDefaultRenderSettings,
     createRenderSettingsUniformData,
-    type HDR10PlusFrameRenderSettings,
+    type DynamicHDRFrameRenderSettings,
     type HDRToSDRRenderSettings,
     type IdentitySDRRenderSettings,
     type RenderMode,
@@ -28,7 +28,13 @@ import {
     isDolbyVisionDualLayerProfile,
     type DolbyVisionReconstructionProfile
 } from './PresentationInput';
-import { readDolbyVisionRPUSnapshotHeader, type DolbyVisionRPUSnapshotHeader } from '../demux/dolby-vision/DolbyVisionRPUParser';
+import {
+    DOLBY_VISION_RPU_PQ_CODE_MAXIMUM,
+    readDolbyVisionRPUSceneLuminance,
+    readDolbyVisionRPUSnapshotHeader,
+    type DolbyVisionRPUSnapshotHeader
+} from '../demux/dolby-vision/DolbyVisionRPUParser';
+import { applyPQEOTF } from '../color/ColorPipeline';
 import {
     getRawFormatBitDepth,
     isRawDolbyVisionVideoFrameFormat,
@@ -46,7 +52,8 @@ import {
 import {
     getHDR10PlusSceneLuminance,
     isHDR10PlusFrameMetadata,
-    type HDR10PlusFrameMetadata
+    type HDR10PlusFrameMetadata,
+    type HDR10PlusMetadata
 } from '../demux/hdr/HDR10PlusMetadata';
 import { getGPUDecoderFormatFacts, isGPUDecoderOutputFormat, type GPUDecoderOutputFormat } from '../decode/video/gpu/GPUDecodeFormats';
 import { getGPUFramePoolByteLimit } from '../decode/video/gpu/GPUFramePool';
@@ -236,6 +243,9 @@ export type PresentationFallbackReason =
     | 'request-video-frame-callback-unavailable';
 
 export type PresentationTelemetry = {
+    /** HDR-to-SDR frames that tone-mapped from their Dolby Vision RPU's L1 scene peak and average. */
+    appliedDolbyVisionLevel1FrameCount: number
+    /** HDR-to-SDR frames that tone-mapped from HDR10+ scene statistics, and with the ST 2094-40 operator from its curve. */
     appliedHDR10PlusFrameCount: number
     /** The standard aspect ratio the cropped picture presents at, rounded from its measured shape; null while nothing crops or no standard ratio is near. */
     blackBarAspectRatio: StandardAspectRatio | null
@@ -259,7 +269,8 @@ export type PresentationTelemetry = {
     lastCallbackTimeMicroseconds: Microseconds | null
     lastExpectedDisplayTimeMicroseconds: Microseconds | null
     lastPresentedMediaTimeMicroseconds: Microseconds | null
-    lastHDR10PlusInputPeakNits: number | null
+    /** The input peak the last frame's dynamic metadata, HDR10+ or Dolby Vision L1, set; null while frames tone-map statically. */
+    lastDynamicInputPeakNits: number | null
     lastHDR10PlusMetadataStatus: HDR10PlusFrameMetadata['status'] | null
     mode: RenderMode
     nativeFrameCount: number
@@ -267,7 +278,8 @@ export type PresentationTelemetry = {
     presentationSkipReason: string | null
     presentationSource: 'decoded' | 'native' | null
     presentedFrameCount: number
-    staticFallbackHDR10PlusFrameCount: number
+    /** HDR-to-SDR frames that tone-mapped without dynamic metadata: from the static input peak, or a Dolby Vision RPU's mastering display peak. */
+    staticToneMappedFrameCount: number
     sessionStartedMicroseconds: Microseconds
     state: 'fallback' | 'idle' | 'initializing' | 'presenting'
 };
@@ -956,6 +968,7 @@ function layoutPlanSizesMatch(first: CachedPresentationLayout, second: CachedPre
 
 function createTelemetry(settings: RenderSettings): PresentationTelemetry {
     return {
+        appliedDolbyVisionLevel1FrameCount: 0,
         appliedHDR10PlusFrameCount: 0,
         blackBarAspectRatio: null,
         blackBarCrop: null,
@@ -973,7 +986,7 @@ function createTelemetry(settings: RenderSettings): PresentationTelemetry {
         lastCallbackTimeMicroseconds: null,
         lastExpectedDisplayTimeMicroseconds: null,
         lastPresentedMediaTimeMicroseconds: null,
-        lastHDR10PlusInputPeakNits: null,
+        lastDynamicInputPeakNits: null,
         lastHDR10PlusMetadataStatus: null,
         mode: settings.mode,
         nativeFrameCount: 0,
@@ -981,7 +994,7 @@ function createTelemetry(settings: RenderSettings): PresentationTelemetry {
         presentationSource: null,
         presentedFrameCount: 0,
         sessionStartedMicroseconds: getMonotonicMicroseconds(),
-        staticFallbackHDR10PlusFrameCount: 0,
+        staticToneMappedFrameCount: 0,
         state: 'idle'
     };
 }
@@ -1181,6 +1194,69 @@ function getRawDolbyVisionEnhancementFrameFailure(decodedFrame: DecodedRawPresen
         return `enhancement-timestamp: ${enhancementFrame.timestampMicroseconds}, expected ${decodedFrame.mediaTimeMicroseconds}`;
     }
     return prefixFailure('enhancement-layout', getRawPlaneLayoutFailure(enhancementFrame));
+}
+
+/** Where a frame's dynamic tone mapping came from. */
+type DynamicHDRSource = 'dolby-vision-level1' | 'hdr10plus';
+
+/** A frame's scene statistics in nits, each null where its metadata gives none. */
+type SceneLuminance = Readonly<{
+    averageNits: number | null
+    peakNits: number | null
+}>;
+
+/** The luminance a Dolby Vision frame's RPU declares, in nits. */
+type DolbyVisionFrameLuminance = Readonly<{
+    /** The L1 scene statistics, null without a usable L1 */
+    level1: SceneLuminance | null
+    masteringPeakNits: number
+}>;
+
+function decodeDolbyVisionPQCode(code: number): number {
+    return applyPQEOTF(code / DOLBY_VISION_RPU_PQ_CODE_MAXIMUM);
+}
+
+/**
+ * Returns the luminance of a Dolby Vision frame's one RPU, or null without one this build reads, which the frame's render then refuses.
+ * An L1 whose maximum or average is 0, as an RPU without an L1 of CM v2.9 presents, is none, as libplacebo takes it.
+ */
+function getDolbyVisionFrameLuminance(decodedFrame: DecodedPresentationFrame): DolbyVisionFrameLuminance | null {
+    const metadata = decodedFrame.outputMode === 'frame-pool' ?
+        decodedFrame.dolbyVision?.encodedMetadata :
+        decodedFrame.encodedDolbyVisionMetadata;
+    const parsedRPUData: unknown = metadata?.parsedRPUData;
+    if (!Array.isArray(parsedRPUData) || parsedRPUData.length !== 1) {
+        return null;
+    }
+    const luminance = readDolbyVisionRPUSceneLuminance(parsedRPUData[0]);
+    if (!luminance) {
+        return null;
+    }
+    const { level1AveragePQ, level1MaximumPQ } = luminance;
+    return {
+        level1: level1MaximumPQ && level1AveragePQ ?
+            { averageNits: decodeDolbyVisionPQCode(level1AveragePQ), peakNits: decodeDolbyVisionPQCode(level1MaximumPQ) } :
+            null,
+        masteringPeakNits: decodeDolbyVisionPQCode(luminance.sourceMaximumPQ)
+    };
+}
+
+/** Returns a frame's dynamic settings from its scene statistics, whose peak replaces the input peak while the input peak follows the detected one. */
+function createDynamicFrameSettings(
+    settings: HDRToSDRRenderSettings,
+    automaticInputPeakNits: boolean,
+    sceneLuminance: SceneLuminance,
+    curve: Pick<HDR10PlusMetadata, 'targetedSystemDisplayMaximumLuminanceNits' | 'toneMapping'> | null
+): DynamicHDRFrameRenderSettings {
+    const inputPeakNits = automaticInputPeakNits ?
+        Math.max(settings.toneMapping.paperWhiteNits, sceneLuminance.peakNits ?? settings.toneMapping.inputPeakNits) :
+        settings.toneMapping.inputPeakNits;
+    return {
+        averageNits: Math.min(inputPeakNits, Math.max(0, sceneLuminance.averageNits ?? 0)),
+        inputPeakNits,
+        targetedSystemDisplayMaximumLuminanceNits: curve?.targetedSystemDisplayMaximumLuminanceNits ?? 0,
+        toneMapping: curve?.toneMapping ?? null
+    };
 }
 
 function createRPUFailure<Data>(failure: string): DolbyVisionRPUResult<Data> {
@@ -1428,7 +1504,7 @@ export default class WebGPUPresenter {
     // The chroma the stream's decoder configuration declares, which the newest frame carried
     private streamChromaLocation: ChromaLocation | null = null;
     private streamChromaSubsampling: ChromaSubsampling | null = null;
-    private dynamicHDR10PlusSettingsActive = false;
+    private dynamicHDRSettingsActive = false;
     private executor: PresentationExecutor | null = null;
     private executorBuild: ExecutorBuild | null = null;
     private executorPlan: PresentationPlan | null = null;
@@ -1512,7 +1588,7 @@ export default class WebGPUPresenter {
         this.decodedFramePushActive = false;
         this.setDesiredChainConfiguration(EXTERNAL_IDENTITY_CHAIN_CONFIGURATION);
         this.deviceRecoveryAttempts = 0;
-        this.dynamicHDR10PlusSettingsActive = false;
+        this.dynamicHDRSettingsActive = false;
         this.fallbackLatched = false;
         this.pendingColorConfiguration = null;
         this.pendingSubmissionValidation = null;
@@ -1573,7 +1649,7 @@ export default class WebGPUPresenter {
         this.invalidatePresentationLayout();
         if (this.settings.mode === 'hdr-to-sdr') {
             this.writeRenderSettingsUniform(this.settings);
-            this.dynamicHDR10PlusSettingsActive = false;
+            this.dynamicHDRSettingsActive = false;
         }
         if (this.surface && !this.fallbackLatched) {
             void this.activateSurface(generation);
@@ -1609,7 +1685,7 @@ export default class WebGPUPresenter {
         this.activeInputMode = 'external-texture';
         this.activeRawFrameFormat = null;
         this.decodedFramePushActive = false;
-        this.dynamicHDR10PlusSettingsActive = false;
+        this.dynamicHDRSettingsActive = false;
         this.pendingColorConfiguration = null;
         this.cancelFrameCallback();
         this.discardPendingSubmissionValidation();
@@ -1930,7 +2006,7 @@ export default class WebGPUPresenter {
             ) {
                 return false;
             }
-            if (!this.applyHDR10PlusFrameMetadata(decodedFrame, generation)) {
+            if (!this.applyDynamicHDRFrameMetadata(decodedFrame, generation)) {
                 return false;
             }
             this.followFrameFields(decodedFrame);
@@ -2040,7 +2116,7 @@ export default class WebGPUPresenter {
         } else {
             this.renderSettingsData = null;
         }
-        this.dynamicHDR10PlusSettingsActive = false;
+        this.dynamicHDRSettingsActive = false;
 
         this.activeDolbyVisionProfile = preparedPipeline.dolbyVisionProfile;
         this.activeDolbyVisionFELReconstruction = preparedPipeline.dolbyVisionFELReconstruction;
@@ -2062,7 +2138,7 @@ export default class WebGPUPresenter {
     /** Writes the render settings uniform and keeps it for executors built later; returns what failed, or null. */
     private writeRenderSettingsUniform(
         settings: HDRToSDRRenderSettings,
-        dynamicFrameSettings: HDR10PlusFrameRenderSettings | null = null
+        dynamicFrameSettings: DynamicHDRFrameRenderSettings | null = null
     ): string | null {
         try {
             const renderSettingsData = createRenderSettingsUniformData(settings, dynamicFrameSettings).buffer;
@@ -2074,61 +2150,81 @@ export default class WebGPUPresenter {
         }
     }
 
-    private applyHDR10PlusFrameMetadata(decodedFrame: DecodedPresentationFrame, generation: number): boolean {
+    /**
+     * Returns a frame's dynamic tone mapping and where it came from, or null settings for a frame that tone-maps statically.
+     * A Dolby Vision route takes its RPU's L1 scene statistics, then HDR10+, then its RPU's mastering display peak, as libplacebo ranks them;
+     * a PQ route takes HDR10+.
+     */
+    private resolveDynamicFrameSettings(
+        decodedFrame: DecodedPresentationFrame,
+        settings: HDRToSDRRenderSettings
+    ): { frameSettings: DynamicHDRFrameRenderSettings | null; source: DynamicHDRSource | null } {
+        const dolbyVisionRoute = this.activeDolbyVisionProfile !== null;
+        const dolbyVisionLuminance = dolbyVisionRoute ? getDolbyVisionFrameLuminance(decodedFrame) : null;
+        if (dolbyVisionLuminance?.level1) {
+            return {
+                frameSettings: createDynamicFrameSettings(settings, this.automaticInputPeakNits, dolbyVisionLuminance.level1, null),
+                source: 'dolby-vision-level1'
+            };
+        }
+        // An RPU reconstructs PQ whatever its base declares, so a Dolby Vision route takes HDR10+ as a PQ route does
+        const takesHDR10Plus = dolbyVisionRoute || (
+            (this.activeInputMode === 'external-hdr' || this.activeInputMode === 'frame-pool' || this.activeInputMode === 'raw-yuv')
+            && this.activeInputColorMetadata?.transfer === 'pq'
+        );
+        const frameHDR10PlusMetadata = decodedFrame.HDR10PlusMetadata;
+        // An absent or malformed frame may carry its run's last metadata, which applies as a valid frame's own does
+        if (takesHDR10Plus && isHDR10PlusFrameMetadata(frameHDR10PlusMetadata) && frameHDR10PlusMetadata.metadata) {
+            return {
+                frameSettings: createDynamicFrameSettings(
+                    settings,
+                    this.automaticInputPeakNits,
+                    getHDR10PlusSceneLuminance(frameHDR10PlusMetadata.metadata),
+                    frameHDR10PlusMetadata.metadata
+                ),
+                source: 'hdr10plus'
+            };
+        }
+        // Without scene statistics a Dolby Vision frame tone-maps statically, from the peak of the mastering display its RPU names
+        const masteringFrameSettings = dolbyVisionLuminance && this.automaticInputPeakNits ?
+            createDynamicFrameSettings(settings, true, { averageNits: null, peakNits: dolbyVisionLuminance.masteringPeakNits }, null) :
+            null;
+        return { frameSettings: masteringFrameSettings, source: null };
+    }
+
+    /** Writes a frame's dynamic tone mapping into the render settings uniform, or the static settings back after frames that had some. */
+    private applyDynamicHDRFrameMetadata(decodedFrame: DecodedPresentationFrame, generation: number): boolean {
         if (!this.isCurrent(generation) || this.settings.mode !== 'hdr-to-sdr') {
             return true;
         }
+        const settings = this.settings;
+        const HDR10PlusStatus = decodedFrame.HDR10PlusMetadata?.status ?? 'absent';
+        this.telemetry.lastHDR10PlusMetadataStatus = HDR10PlusStatus;
 
-        const frameMetadata = decodedFrame.HDR10PlusMetadata;
-        const status = frameMetadata?.status ?? 'absent';
-        this.telemetry.lastHDR10PlusMetadataStatus = status;
-        let dynamicFrameSettings: HDR10PlusFrameRenderSettings | null = null;
-        const supportsHDR10Plus = (
-            this.activeInputMode === 'external-hdr'
-            || this.activeInputMode === 'frame-pool'
-            || this.activeInputMode === 'raw-yuv'
-        ) && this.activeInputColorMetadata?.transfer === 'pq';
-        // An absent or malformed frame may carry its run's last metadata, which applies as a valid frame's own does
-        if (
-            supportsHDR10Plus
-            && isHDR10PlusFrameMetadata(frameMetadata)
-            && frameMetadata.metadata
-        ) {
-            const sceneLuminance = getHDR10PlusSceneLuminance(frameMetadata.metadata);
-            const inputPeakNits = this.automaticInputPeakNits ?
-                Math.max(
-                    this.settings.toneMapping.paperWhiteNits,
-                    sceneLuminance.peakNits ?? this.settings.toneMapping.inputPeakNits
-                ) :
-                this.settings.toneMapping.inputPeakNits;
-            const averageNits = Math.min(inputPeakNits, Math.max(0, sceneLuminance.averageNits ?? 0));
-            dynamicFrameSettings = {
-                averageNits,
-                inputPeakNits,
-                targetedSystemDisplayMaximumLuminanceNits:
-                    frameMetadata.metadata.targetedSystemDisplayMaximumLuminanceNits,
-                toneMapping: frameMetadata.metadata.toneMapping
-            };
-        }
-
-        if (dynamicFrameSettings || this.dynamicHDR10PlusSettingsActive) {
-            const writeFailure = this.writeRenderSettingsUniform(this.settings, dynamicFrameSettings);
+        const { frameSettings, source } = this.resolveDynamicFrameSettings(decodedFrame, settings);
+        if (frameSettings || this.dynamicHDRSettingsActive) {
+            const writeFailure = this.writeRenderSettingsUniform(settings, frameSettings);
             if (writeFailure !== null) {
                 this.fallback(generation, 'frame-render-failed', writeFailure);
                 return false;
             }
-            this.dynamicHDR10PlusSettingsActive = dynamicFrameSettings !== null;
+            this.dynamicHDRSettingsActive = frameSettings !== null;
         }
-        if (dynamicFrameSettings) {
-            this.telemetry.appliedHDR10PlusFrameCount += 1;
-            if (status !== 'valid') {
-                this.telemetry.carriedHDR10PlusFrameCount += 1;
-            }
-            this.telemetry.lastHDR10PlusInputPeakNits = dynamicFrameSettings.inputPeakNits;
-        } else {
-            this.telemetry.staticFallbackHDR10PlusFrameCount += 1;
-            this.telemetry.lastHDR10PlusInputPeakNits = null;
+        switch (source) {
+            case 'dolby-vision-level1':
+                this.telemetry.appliedDolbyVisionLevel1FrameCount += 1;
+                break;
+            case 'hdr10plus':
+                this.telemetry.appliedHDR10PlusFrameCount += 1;
+                if (HDR10PlusStatus !== 'valid') {
+                    this.telemetry.carriedHDR10PlusFrameCount += 1;
+                }
+                break;
+            case null:
+                this.telemetry.staticToneMappedFrameCount += 1;
+                break;
         }
+        this.telemetry.lastDynamicInputPeakNits = source === null ? null : frameSettings?.inputPeakNits ?? null;
         return true;
     }
 
@@ -2156,7 +2252,7 @@ export default class WebGPUPresenter {
             console.warn(writeFailure);
             return false;
         }
-        this.dynamicHDR10PlusSettingsActive = false;
+        this.dynamicHDRSettingsActive = false;
 
         this.settings = cloneRenderSettings(settings);
         this.automaticInputPeakNits = automaticInputPeakNits;
@@ -3580,7 +3676,7 @@ export default class WebGPUPresenter {
 
         this.canvasFormat = canvasFormat;
         this.device = device;
-        this.dynamicHDR10PlusSettingsActive = false;
+        this.dynamicHDRSettingsActive = false;
         this.renderSettingsData = this.settings.mode === 'hdr-to-sdr' ?
             createRenderSettingsUniformData(this.settings).buffer :
             null;
@@ -4943,7 +5039,7 @@ export default class WebGPUPresenter {
         this.releaseExecutor();
         this.device = null;
         this.planRevision += 1;
-        this.dynamicHDR10PlusSettingsActive = false;
+        this.dynamicHDRSettingsActive = false;
         this.submissionValidated = false;
 
         const generation = this.activeGeneration;

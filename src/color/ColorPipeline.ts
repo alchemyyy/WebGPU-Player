@@ -32,16 +32,20 @@ const PQ_M2 = 2523 / 32;
 const PQ_PEAK_NITS = 10_000;
 const HDR_BLACK_NITS = 0.000_001;
 const SDR_CONTRAST = 1_000;
-const SPLINE_KNEE_ADAPTATION = 0.4;
-const SPLINE_KNEE_DEFAULT = 0.4;
-const SPLINE_KNEE_MAXIMUM = 0.8;
-const SPLINE_KNEE_MINIMUM = 0.1;
+// libplacebo's knee constants, which its spline and st2094_40 share
+const TONE_MAP_KNEE_ADAPTATION = 0.4;
+const TONE_MAP_KNEE_DEFAULT = 0.4;
+const TONE_MAP_KNEE_MAXIMUM = 0.8;
+const TONE_MAP_KNEE_MINIMUM = 0.1;
 const SPLINE_SLOPE_OFFSET = 0.2;
 const SPLINE_SLOPE_TUNING = 1.5;
 const SPLINE_CONTRAST = 0.5;
+// The degrees libplacebo's st2094_40 gives the Bezier it builds without an HDR10+ curve
+const ST2094_MINIMUM_DEGREE = 2;
+const ST2094_MAXIMUM_DEGREE = 16;
 
 export type ColorMatrix = readonly [ColorTriplet, ColorTriplet, ColorTriplet];
-type LegacyToneMapOperator = Exclude<ToneMappingSettings['operator'], 'spline'>;
+type LegacyToneMapOperator = Exclude<ToneMappingSettings['operator'], 'spline' | 'st2094-40'>;
 
 /** Red, green, and blue weights of a luminance or luma sum. */
 export type RGBCoefficients = Readonly<{
@@ -365,19 +369,51 @@ export function convertIPTPQToLinearRGBNits(perceptualColor: ColorTriplet, prima
     return multiplyColorMatrix(getIPTLMSToRGBMatrix(primaries), linearLMS);
 }
 
+/**
+ * Returns libplacebo's static tone-map knee between the given PQ ends of the input and output, as `[source, destination]` in PQ:
+ * the source knee at 40% of the input range, and the destination knee between it and its relative position in the output range.
+ */
+function pickToneMapKneePQ(
+    inputMinimum: number,
+    inputMaximum: number,
+    outputMinimum: number,
+    outputMaximum: number
+): readonly [number, number] {
+    const sourceKnee = mix(inputMinimum, inputMaximum, TONE_MAP_KNEE_DEFAULT);
+    const sourceTarget = (sourceKnee - inputMinimum) / (inputMaximum - inputMinimum);
+    const adaptedKnee = mix(outputMinimum, outputMaximum, sourceTarget);
+    const tuning = 1 - (
+        smoothstep(TONE_MAP_KNEE_MAXIMUM, TONE_MAP_KNEE_DEFAULT, sourceTarget)
+        * smoothstep(TONE_MAP_KNEE_MINIMUM, TONE_MAP_KNEE_DEFAULT, sourceTarget)
+    );
+    const adaptation = mix(TONE_MAP_KNEE_ADAPTATION, 1, tuning);
+    const destinationKnee = clamp(
+        mix(sourceKnee, adaptedKnee, adaptation),
+        mix(outputMinimum, outputMaximum, TONE_MAP_KNEE_MINIMUM),
+        mix(outputMinimum, outputMaximum, TONE_MAP_KNEE_MAXIMUM)
+    );
+    return [ sourceKnee, destinationKnee ];
+}
+
+function requirePositivePeaks(inputPeakNits: number, outputPeakNits: number, curveName: string): void {
+    if (!Number.isFinite(inputPeakNits)
+        || !Number.isFinite(outputPeakNits)
+        || inputPeakNits <= 0
+        || outputPeakNits <= 0) {
+        throw new RangeError(`${curveName} tone-map values must be positive and finite`);
+    }
+}
+
 /** Evaluates libplacebo's static single-pivot spline in PQ space. */
 export function evaluateSplineToneMapPQ(
     inputIntensityPQ: number,
     inputPeakNits: number,
     outputPeakNits: number
 ): number {
-    if (!Number.isFinite(inputIntensityPQ)
-        || !Number.isFinite(inputPeakNits)
-        || !Number.isFinite(outputPeakNits)
-        || inputPeakNits <= 0
-        || outputPeakNits <= 0) {
+    if (!Number.isFinite(inputIntensityPQ)) {
         throw new RangeError('Spline tone-map values must be positive and finite');
     }
+    requirePositivePeaks(inputPeakNits, outputPeakNits, 'Spline');
 
     // Match libplacebo's nominal PQ and SDR black points before constructing the spline.
     // These offsets are significant because the curve is in PQ
@@ -385,19 +421,7 @@ export function evaluateSplineToneMapPQ(
     const inputMaximum = applyPQOETF(inputPeakNits);
     const outputMinimum = applyPQOETF(outputPeakNits / SDR_CONTRAST);
     const outputMaximum = applyPQOETF(outputPeakNits);
-    const sourcePivot = mix(inputMinimum, inputMaximum, SPLINE_KNEE_DEFAULT);
-    const sourceTarget = (sourcePivot - inputMinimum) / (inputMaximum - inputMinimum);
-    const adaptedPivot = mix(outputMinimum, outputMaximum, sourceTarget);
-    const tuning = 1 - (
-        smoothstep(SPLINE_KNEE_MAXIMUM, SPLINE_KNEE_DEFAULT, sourceTarget)
-        * smoothstep(SPLINE_KNEE_MINIMUM, SPLINE_KNEE_DEFAULT, sourceTarget)
-    );
-    const adaptation = mix(SPLINE_KNEE_ADAPTATION, 1, tuning);
-    const destinationPivot = clamp(
-        mix(sourcePivot, adaptedPivot, adaptation),
-        mix(outputMinimum, outputMaximum, SPLINE_KNEE_MINIMUM),
-        mix(outputMinimum, outputMaximum, SPLINE_KNEE_MAXIMUM)
-    );
+    const [ sourcePivot, destinationPivot ] = pickToneMapKneePQ(inputMinimum, inputMaximum, outputMinimum, outputMaximum);
     const linearSlope = (destinationPivot - outputMinimum) / (sourcePivot - inputMinimum);
     const peakRatio = (inputMaximum / outputMaximum) - 1;
     const slopeRatio = clamp(SPLINE_SLOPE_TUNING * peakRatio, SPLINE_SLOPE_OFFSET, 1 + SPLINE_SLOPE_OFFSET);
@@ -417,6 +441,40 @@ export function evaluateSplineToneMapPQ(
         (((upperCubic * inputOffset) + upperQuadratic) * inputOffset + pivotSlope) * inputOffset :
         ((lowerQuadratic * inputOffset) + pivotSlope) * inputOffset;
     return clamp(mappedOffset + destinationPivot, outputMinimum, outputMaximum);
+}
+
+/**
+ * Evaluates libplacebo's st2094_40 without an HDR10+ curve, from an input relative to the input peak to an output relative to the output peak:
+ * a line to the static tone-map knee, whose output counts from the 1000:1 output floor as the curve's counts from black,
+ * then the Bezier whose control points are 0, the intercept that continues the line's slope, and 1.
+ */
+export function evaluateBrightnessMatchingCurve(normalizedInput: number, inputPeakNits: number, outputPeakNits: number): number {
+    if (!Number.isFinite(normalizedInput)) {
+        throw new RangeError('ST 2094-40 tone-map values must be positive and finite');
+    }
+    requirePositivePeaks(inputPeakNits, outputPeakNits, 'ST 2094-40');
+
+    const outputMinimumNits = outputPeakNits / SDR_CONTRAST;
+    const [ sourceKnee, destinationKnee ] = pickToneMapKneePQ(
+        applyPQOETF(HDR_BLACK_NITS),
+        applyPQOETF(inputPeakNits),
+        applyPQOETF(outputMinimumNits),
+        applyPQOETF(outputPeakNits)
+    );
+    const kneeX = applyPQEOTF(sourceKnee) / inputPeakNits;
+    const kneeY = clamp((applyPQEOTF(destinationKnee) - outputMinimumNits) / (outputPeakNits - outputMinimumNits), 0, 1);
+    const input = clamp(normalizedInput, 0, 1);
+    if (input <= kneeX) {
+        return input * kneeY / kneeX;
+    }
+    const slope = kneeY / kneeX * (1 - kneeX) / (1 - kneeY);
+    const degree = clamp(Math.ceil(slope), ST2094_MINIMUM_DEGREE, ST2094_MAXIMUM_DEGREE);
+    const intercept = Math.min(slope / degree, 1);
+    const curvePosition = clamp((input - kneeX) / (1 - kneeX), 0, 1);
+    // The Bernstein sum of those points is 1 less the terms the points below 1 lack: all of the first's, and 1 less the intercept of the second's
+    const remainder = 1 - curvePosition;
+    const bezierValue = 1 - (remainder ** degree) - (degree * curvePosition * (remainder ** (degree - 1)) * (1 - intercept));
+    return kneeY + ((1 - kneeY) * bezierValue);
 }
 
 /** Applies the BT.709 inverse transfer function and scales it to reference white. */
@@ -519,16 +577,18 @@ function perceptuallyMapIPTPQToBT709(perceptualColor: ColorTriplet, settings: To
     ];
 }
 
-function toneMapSplinePerceptualToSDR(
+/** Maps the IPT intensity of exposed linear light through mapIntensity, in PQ, and scales its chroma into the output's gamut. */
+function toneMapIPTIntensity(
     linearInputNits: ColorTriplet,
     sourcePrimaries: ColorPrimaries,
-    settings: ToneMappingSettings
+    settings: ToneMappingSettings,
+    mapIntensity: (intensityPQ: number) => number
 ): ColorTriplet {
     const exposureScale = 2 ** settings.exposure;
     const exposedRGB = mapTriplet(linearInputNits, (component: number): number => Math.max(component * exposureScale, 0));
     const sourceIPT = convertLinearRGBNitsToIPTPQ(exposedRGB, sourcePrimaries);
     const originalIntensity = sourceIPT[0];
-    const mappedIntensity = evaluateSplineToneMapPQ(originalIntensity, settings.inputPeakNits, settings.outputPeakNits);
+    const mappedIntensity = mapIntensity(originalIntensity);
     if (originalIntensity <= Number.EPSILON || mappedIntensity <= Number.EPSILON) {
         return [ 0, 0, 0 ];
     }
@@ -541,6 +601,40 @@ function toneMapSplinePerceptualToSDR(
         sourceIPT[1] * chromaScale,
         sourceIPT[2] * chromaScale
     ], settings);
+}
+
+function toneMapSplinePerceptualToSDR(
+    linearInputNits: ColorTriplet,
+    sourcePrimaries: ColorPrimaries,
+    settings: ToneMappingSettings
+): ColorTriplet {
+    const mappedRGB = toneMapIPTIntensity(
+        linearInputNits,
+        sourcePrimaries,
+        settings,
+        (intensityPQ: number): number => evaluateSplineToneMapPQ(intensityPQ, settings.inputPeakNits, settings.outputPeakNits)
+    );
+    // The spline ends at libplacebo's 1000:1 output floor, which its black point compensation takes off again
+    const outputMinimumNits = settings.outputPeakNits / SDR_CONTRAST;
+    const compensationScale = settings.outputPeakNits / (settings.outputPeakNits - outputMinimumNits);
+    return mapTriplet(mappedRGB, (component: number): number => Math.max(component - outputMinimumNits, 0) * compensationScale);
+}
+
+function toneMapST2094PerceptualToSDR(
+    linearInputNits: ColorTriplet,
+    sourcePrimaries: ColorPrimaries,
+    settings: ToneMappingSettings
+): ColorTriplet {
+    return toneMapIPTIntensity(
+        linearInputNits,
+        sourcePrimaries,
+        settings,
+        (intensityPQ: number): number => applyPQOETF(evaluateBrightnessMatchingCurve(
+            applyPQEOTF(intensityPQ) / settings.inputPeakNits,
+            settings.inputPeakNits,
+            settings.outputPeakNits
+        ) * settings.outputPeakNits)
+    );
 }
 
 /** Compresses absolute BT.709 linear light into the configured SDR luminance range. */
@@ -560,6 +654,9 @@ export function toneMapToSDR(linearBT709Nits: ColorTriplet, settings: ToneMappin
 
     if (settings.operator === 'spline') {
         return toneMapSplinePerceptualToSDR(linearBT709Nits, 'bt709', settings);
+    }
+    if (settings.operator === 'st2094-40') {
+        return toneMapST2094PerceptualToSDR(linearBT709Nits, 'bt709', settings);
     }
 
     const exposureScale = 2 ** settings.exposure;
@@ -589,23 +686,18 @@ function applyDisplayControls(encodedRGB: ColorTriplet, settings: DisplaySetting
     return mapTriplet(saturatedRGB, (component: number): number => clamp(((component - 0.5) * settings.contrast) + 0.5 + settings.brightness, 0, 1));
 }
 
-/** Encodes absolute linear-light RGB for an SDR swap-chain target. */
+/** Encodes absolute linear-light RGB, from black to the output peak, for an SDR swap-chain target. */
 export function encodeSDROutput(
     linearRGBNits: ColorTriplet,
     outputPeakNits: number,
-    transfer: ReferenceSDROutputTransfer,
-    outputMinimumNits = 0
+    transfer: ReferenceSDROutputTransfer
 ): ColorTriplet {
-    if (!Number.isFinite(outputPeakNits)
-        || !Number.isFinite(outputMinimumNits)
-        || outputPeakNits <= 0
-        || outputMinimumNits < 0
-        || outputMinimumNits >= outputPeakNits) {
+    if (!Number.isFinite(outputPeakNits) || outputPeakNits <= 0) {
         throw new RangeError('Output luminance range must be positive and finite');
     }
 
     return mapTriplet(linearRGBNits, (component: number): number => {
-        const linearValue = clamp((component - outputMinimumNits) / (outputPeakNits - outputMinimumNits), 0, 1);
+        const linearValue = clamp(component / outputPeakNits, 0, 1);
         switch (transfer) {
             case 'bt709':
                 return linearValue < 0.018 ?
@@ -633,6 +725,19 @@ export function convertSDRGamutToBT709(encodedRGB: ColorTriplet, primaries: Colo
     return encodeSDROutput(linearBT709RGB, 1, 'bt709');
 }
 
+/** Tone-maps absolute linear light in its own primaries: the perceptual operators map it in IPT, and the others in BT.709. */
+function toneMapSourceToSDR(linearNits: ColorTriplet, primaries: ColorPrimaries, settings: ToneMappingSettings): ColorTriplet {
+    switch (settings.operator) {
+        case 'spline':
+            return toneMapSplinePerceptualToSDR(linearNits, primaries, settings);
+        case 'st2094-40':
+            return toneMapST2094PerceptualToSDR(linearNits, primaries, settings);
+        case 'aces':
+        case 'reinhard':
+            return toneMapToSDR(convertLinearRGBGamut(linearNits, primaries, 'bt709'), settings);
+    }
+}
+
 /** Applies the reference color pipeline to an already converted nonlinear RGB sample. */
 export function processEncodedRGB(
     encodedRGB: ColorTriplet,
@@ -649,17 +754,8 @@ export function processEncodedRGB(
     }
 
     const decodedRGB = decodeEncodedRGBToNits(encodedRGB, metadata);
-    const toneMappedRGB = settings.toneMapping.operator === 'spline' ?
-        toneMapSplinePerceptualToSDR(decodedRGB, metadata.primaries, settings.toneMapping) :
-        toneMapToSDR(convertLinearRGBGamut(decodedRGB, metadata.primaries, 'bt709'), settings.toneMapping);
-    const encodedOutputRGB = encodeSDROutput(
-        toneMappedRGB,
-        settings.toneMapping.outputPeakNits,
-        settings.outputTransfer,
-        settings.toneMapping.operator === 'spline' ?
-            settings.toneMapping.outputPeakNits / SDR_CONTRAST :
-            0
-    );
+    const toneMappedRGB = toneMapSourceToSDR(decodedRGB, metadata.primaries, settings.toneMapping);
+    const encodedOutputRGB = encodeSDROutput(toneMappedRGB, settings.toneMapping.outputPeakNits, settings.outputTransfer);
     return applyDisplayControls(encodedOutputRGB, settings.display);
 }
 

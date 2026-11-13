@@ -40,7 +40,8 @@ const RANGED_SETTING_LABELS: Readonly<Record<RangedSettingName, string>> = {
 const TONE_MAP_OPERATOR_LABELS: Readonly<Record<ToneMapOperator, string>> = {
     aces: 'ACES',
     reinhard: 'Reinhard',
-    spline: 'Spline'
+    spline: 'Spline',
+    'st2094-40': 'ST 2094-40'
 };
 // The mode line before the presenter reports settings
 const NO_PRESENTER_MODE = 'none';

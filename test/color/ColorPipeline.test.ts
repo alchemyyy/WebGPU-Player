@@ -20,6 +20,7 @@ import {
     convertYUVToEncodedRGB,
     decodeEncodedRGBToNits,
     encodeSDROutput,
+    evaluateBrightnessMatchingCurve,
     evaluateSplineToneMapPQ,
     expandYUVRange,
     getLuminanceCoefficients,
@@ -195,10 +196,41 @@ describe('ColorPipeline', () => {
         expect(mappedRGB[2]).toBeCloseTo(mappedRGB[0], 10);
     });
 
+    it.each([ 'spline', 'st2094-40' ] as const)('maps black to black and the input peak to the output peak with the %s operator', operator => {
+        const settings = createHDRToSDRRenderSettings({ toneMapping: { desaturationStrength: 0, operator } }).toneMapping;
+        const peakRGB: ColorTriplet = [ settings.inputPeakNits, settings.inputPeakNits, settings.inputPeakNits ];
+
+        // The spline ends at libplacebo's 1000:1 output floor and takes it off again, so its black is the output's on SDR and HDR output alike
+        for (const component of toneMapToSDR([ 0, 0, 0 ], settings)) {
+            expect(component).toBeCloseTo(0, 4);
+        }
+        for (const component of toneMapToSDR(peakRGB, settings)) {
+            expect(component).toBeCloseTo(settings.outputPeakNits, 2);
+        }
+    });
+
+    it('follows libplacebo\'s ST 2094-40 Bezier without an HDR10+ curve: from black to the peak, never falling, without a kink at its knee', () => {
+        const sampleCount = 4_000;
+        const values = Array.from({ length: sampleCount + 1 }, (_value: unknown, sampleIndex: number) => (
+            evaluateBrightnessMatchingCurve(sampleIndex / sampleCount, 1_000, 100)
+        ));
+
+        expect(values[0]).toBe(0);
+        expect(values.at(-1)).toBeCloseTo(1, 12);
+        let largestSlopeChange = 0;
+        for (let sampleIndex = 1; sampleIndex < sampleCount; sampleIndex += 1) {
+            expect(values[sampleIndex]).toBeGreaterThanOrEqual(values[sampleIndex - 1]);
+            const slopeBefore = (values[sampleIndex] - values[sampleIndex - 1]) * sampleCount;
+            const slopeAfter = (values[sampleIndex + 1] - values[sampleIndex]) * sampleCount;
+            largestSlopeChange = Math.max(largestSlopeChange, Math.abs(slopeAfter - slopeBefore));
+        }
+        // The Bezier leaves the knee at the slope of the line below it, so between two samples the slope bends by little; a kink bends it by over 1
+        expect(largestSlopeChange).toBeLessThan(0.1);
+    });
+
     it('supports both SDR output encodings', () => {
         const sRGBOutput = encodeSDROutput([ 0, 50, 100 ], 100, 'srgb');
         const bt709Output = encodeSDROutput([ 0, 50, 100 ], 100, 'bt709');
-        const blackPointCompensatedOutput = encodeSDROutput([ 0.1, 50.05, 100 ], 100, 'srgb', 0.1);
 
         expect(sRGBOutput[0]).toBe(0);
         expect(sRGBOutput[1]).toBeCloseTo(0.735356983, 8);
@@ -206,9 +238,6 @@ describe('ColorPipeline', () => {
         expect(bt709Output[0]).toBe(0);
         expect(bt709Output[1]).toBeCloseTo(0.70551509, 8);
         expect(bt709Output[2]).toBeCloseTo(1, 12);
-        expect(blackPointCompensatedOutput[0]).toBe(0);
-        expect(blackPointCompensatedOutput[1]).toBeCloseTo(0.735356983, 8);
-        expect(blackPointCompensatedOutput[2]).toBeCloseTo(1, 12);
     });
 
     it('leaves identity RGB untouched and bounds HDR-to-SDR output', () => {
