@@ -386,7 +386,7 @@ function frameMatchesAuthorizationContract(frame: VideoFrame, vector: ExternalHD
         && frame.colorSpace.fullRange === false
         && frame.colorSpace.matrix === 'bt709'
         && frame.colorSpace.primaries === 'bt709'
-        && frame.colorSpace.transfer === 'bt709';
+        && frame.colorSpace.transfer === 'iec61966-2-1';
 }
 
 async function flushVideoDecoderUntilAbort(decoder: VideoDecoder, signal?: AbortSignal): Promise<void> {
@@ -423,7 +423,7 @@ function createDecoderConfiguration(vector: ExternalHDRAuthorizationVector): Vid
             fullRange: false,
             matrix: 'bt709',
             primaries: 'bt709',
-            transfer: 'bt709'
+            transfer: 'iec61966-2-1'
         },
         hardwareAcceleration: 'prefer-hardware',
         optimizeForLatency: true

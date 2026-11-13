@@ -2421,7 +2421,8 @@ function createOwnedHEVCVideoDecoderPort(
     run: DecodeRun,
     preparedVideoTrack: PreparedVideoTrack,
     inputFormat: ReturnType<typeof getHEVCNALFormat>,
-    callbacks: OwnedVideoDecoderCallbacks
+    callbacks: OwnedVideoDecoderCallbacks,
+    externalDolbyVision: boolean
 ): OwnedVideoDecoderPort {
     if (run.videoDecoderBackend !== 'native') {
         throw new Error('The frame-pool route decodes on the page, not with an HEVC decoder port');
@@ -2449,6 +2450,7 @@ function createOwnedHEVCVideoDecoderPort(
         },
         undefined,
         {
+            externalDolbyVision,
             nativeHDRTransfer: run.nativeHDRTransfer ?? undefined,
             neutralizeHDRColorMetadata: run.neutralizeHDRColorMetadata
         }
@@ -2893,7 +2895,8 @@ async function streamOwnedHEVCFrames(
                 state.enqueueDecodedOutput(output);
             },
             onProgress: notifyDecoderProgress
-        }
+        },
+        request.dolbyVisionProfile !== null && request.videoOutputMode === 'video-frame' && !run.neutralizeHDRColorMetadata
     );
     try {
         await decoder.init();

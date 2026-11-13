@@ -42,7 +42,7 @@ const NEUTRAL_COLOR_SPACE = {
     fullRange: false,
     matrix: 'bt709',
     primaries: 'bt709',
-    transfer: 'bt709'
+    transfer: 'iec61966-2-1'
 };
 const VPS = new Uint8Array([ 64, 1, 1 ]);
 const PPS = new Uint8Array([ 68, 1, 2 ]);
@@ -179,7 +179,7 @@ describe('NativeHDRHEVCColorNeutralizer', () => {
                 fullRange: false,
                 matrix: 'bt709',
                 primaries: 'bt709',
-                transfer: 'bt709'
+                transfer: 'iec61966-2-1'
             });
         }
         expect(() => neutralizeNativeHDRHEVCDecoderConfigWithValidation(
@@ -230,7 +230,7 @@ describe('NativeHDRHEVCColorNeutralizer', () => {
                 fullRange: false,
                 matrix: 'bt709',
                 primaries: 'bt709',
-                transfer: 'bt709'
+                transfer: 'iec61966-2-1'
             },
             hardwareAcceleration: 'prefer-hardware'
         });
@@ -256,7 +256,7 @@ describe('NativeHDRHEVCColorNeutralizer', () => {
             fullRange: false,
             matrix: 'bt709',
             primaries: 'bt709',
-            transfer: 'bt709'
+            transfer: 'iec61966-2-1'
         });
         expect(neutralizeNativeHDRHEVCDecoderConfigWithValidation(
             createDecoderConfig(createHVCCDescriptionWithSPS([ otherLayerSPS ])),
@@ -282,7 +282,7 @@ describe('NativeHDRHEVCColorNeutralizer', () => {
                     fullRange: false,
                     matrix: 'bt709',
                     primaries: 'bt709',
-                    transfer: 'bt709'
+                    transfer: 'iec61966-2-1'
                 });
         }
     });

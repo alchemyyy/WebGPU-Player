@@ -4,10 +4,16 @@ import {
     parseHEVCSPS,
     readHEVCSPSChroma,
     repairHEVCSPSDefaultDisplayWindow,
-    rewriteHEVCSPSColorDescriptionToBT709
+    rewriteHEVCSPSColorDescriptionToBT709,
+    rewriteHEVCSPSDolbyVisionColorDescription
 } from 'webgpu-player/demux/hevc/HEVCSPSParser';
 
 import { createBytesFromHex } from '../../helpers/byteArrays';
+
+// A real Dolby Vision Profile 5 SPS: unspecified color (2) at full range
+const DOLBY_VISION_PROFILE_5_FULL_RANGE_UNSPECIFIED_SPS = createBytesFromHex(
+    '420101022000000300900000030000030096a001e020021c4d96566924caf016e0404040800001f480002ee03052292f000044aa20002dc6c4'
+);
 
 const MAIN_SPS = createBytesFromHex(
     '42010101600000030090000003000003001ea020810596566924caf016a020202080000003008000000c04'
@@ -187,7 +193,7 @@ describe('parseHEVCSPS', () => {
                     fullRange: false,
                     matrix: 'bt709',
                     primaries: 'bt709',
-                    transfer: 'bt709'
+                    transfer: 'iec61966-2-1'
                 }
             });
             expect(parseHEVCSPS(rewriteHEVCSPSColorDescriptionToBT709(rewrittenSPS))).toEqual(parseHEVCSPS(rewrittenSPS));
@@ -198,6 +204,29 @@ describe('parseHEVCSPS', () => {
         expect(() => rewriteHEVCSPSColorDescriptionToBT709(
             DOLBY_VISION_PROFILE_5_SPS_WITH_UNSPECIFIED_COLOR
         )).toThrow('no VUI color description');
+    });
+
+    it('rewrites a Dolby Vision base layer\'s declared color, range included, to limited-range BT.709 with the sRGB transfer', () => {
+        const sourceSPS = DOLBY_VISION_PROFILE_5_FULL_RANGE_UNSPECIFIED_SPS.slice();
+        const originalConfiguration = parseHEVCSPS(sourceSPS);
+        expect(originalConfiguration.colorSpace).toEqual({ fullRange: true, matrix: null, primaries: null, transfer: null });
+
+        const rewrittenSPS = rewriteHEVCSPSDolbyVisionColorDescription(sourceSPS);
+        expect(sourceSPS).toEqual(DOLBY_VISION_PROFILE_5_FULL_RANGE_UNSPECIFIED_SPS);
+        expect(rewrittenSPS).not.toBeNull();
+        expect(parseHEVCSPS(rewrittenSPS!)).toEqual({
+            ...originalConfiguration,
+            colorSpace: { fullRange: false, matrix: 'bt709', primaries: 'bt709', transfer: 'iec61966-2-1' }
+        });
+        expect(rewriteHEVCSPSDolbyVisionColorDescription(rewrittenSPS!)).toBeNull();
+        // Any declared color is rewritten, an HDR one too
+        expect(parseHEVCSPS(rewriteHEVCSPSDolbyVisionColorDescription(MAIN10_FULL_RANGE_PQ_SPS)!).colorSpace).toEqual(
+            { fullRange: false, matrix: 'bt709', primaries: 'bt709', transfer: 'iec61966-2-1' }
+        );
+    });
+
+    it('leaves a Dolby Vision SPS without a VUI color description to the configuration', () => {
+        expect(rewriteHEVCSPSDolbyVisionColorDescription(DOLBY_VISION_PROFILE_5_SPS_WITH_UNSPECIFIED_COLOR)).toBeNull();
     });
 
     it('preserves unspecified SPS color for a Dolby Vision Profile 5 stream', () => {
@@ -357,7 +386,7 @@ describe('rewriteHEVCSPSColorDescriptionToBT709', () => {
         fullRange: false,
         matrix: 'bt709',
         primaries: 'bt709',
-        transfer: 'bt709'
+        transfer: 'iec61966-2-1'
     };
 
     it('accepts the BT.2020 transfers of HLG-compatible streams on an HLG route without an SEI', () => {

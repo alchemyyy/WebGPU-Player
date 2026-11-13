@@ -181,7 +181,7 @@ The host maps it to a presenter input mode.
 | Route | Eligibility output | Input mode | Notes |
 | --- | --- | --- | --- |
 | VF-SDR | `video-frame`; `native` | `external-texture`, identity | |
-| VF-PQ, VF-HLG | `video-frame`; `native`; HEVC SPS and VUI, or AV1 sequence header, codecs string, and `av1C`, neutralized to BT.709; transfer `pq` or `hlg` | `external-hdr` | Chrome samples external textures at 8 bits per channel. PQ also applies static mastering metadata. HEVC Main 10 and AV1 Main at 10 bits, each with its own keys |
+| VF-PQ, VF-HLG | `video-frame`; `native`; HEVC SPS and VUI, or AV1 sequence header, codecs string, and `av1C`, neutralized to BT.709 primaries and matrix with the sRGB transfer; transfer `pq` or `hlg` | `external-hdr` | Chrome samples external textures at 8 bits per channel. PQ also applies static mastering metadata. HEVC Main 10 and AV1 Main at 10 bits, each with its own keys |
 | DV base PQ, DV base HLG | As VF-PQ or VF-HLG, with `dolbyVisionProfile` null | `external-hdr` | P7 and P8 only. RPU and EL discarded. Preferred over RAW-DV whenever authorized |
 | Declared base | An ordinary route, with `dolbyVisionProfile` null | As that route | Used only when no RPU route is selected. RPU and EL discarded |
 | VF-DV5 | `video-frame`; `native`; `dolbyVisionProfile` 5 | `external-dolby-vision` | Per-frame Profile 5 RPU, also for a P20 with CCID 0 or none, and for an AV1 P10 that reconstructs as P5 |

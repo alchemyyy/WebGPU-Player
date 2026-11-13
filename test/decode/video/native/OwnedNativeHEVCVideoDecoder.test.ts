@@ -43,7 +43,7 @@ const NEUTRAL_COLOR_SPACE = {
     fullRange: false,
     matrix: 'bt709',
     primaries: 'bt709',
-    transfer: 'bt709'
+    transfer: 'iec61966-2-1'
 };
 
 /** Creates a prefix SEI NAL unit with one alternative transfer characteristics message. */
@@ -343,6 +343,40 @@ describe('OwnedNativeHEVCVideoDecoder', () => {
         decoder.close();
     });
 
+    it('neutralizes an external Dolby Vision base layer\'s in-band SPS whatever color it declares', async () => {
+        const harness = createHarness();
+        const decoder = new OwnedNativeHEVCVideoDecoder(
+            { codec: 'dvh1.05.06' },
+            { kind: 'annex-b' },
+            { onError: vi.fn(), onFrame: vi.fn(), onProgress: vi.fn() },
+            harness.dependencies,
+            { externalDolbyVision: true }
+        );
+        await decoder.init();
+        const picture = createNALUnit(19, [ 1 ]);
+        expect(decoder.decode(createPacket(encodeAnnexBNALUnits([ MAIN10_PQ_SPS, picture ]), 0))).toBe(true);
+        const rewrittenSPS = parseHEVCNALUnits(harness.packets[0].data, { kind: 'annex-b' }).find((unit) => unit.type === 33)!.data;
+        expect(parseHEVCSPS(rewrittenSPS).colorSpace).toEqual({ fullRange: false, matrix: 'bt709', primaries: 'bt709', transfer: 'iec61966-2-1' });
+        decoder.close();
+    });
+
+    it('configures the external Dolby Vision route with the neutral sRGB-transfer color', async () => {
+        const harness = createHarness();
+        const decoder = new OwnedNativeHEVCVideoDecoder(
+            { codec: 'dvh1.05.06' },
+            { kind: 'annex-b' },
+            { onError: vi.fn(), onFrame: vi.fn(), onProgress: vi.fn() },
+            harness.dependencies,
+            { externalDolbyVision: true }
+        );
+        await decoder.init();
+        expect(harness.decoder.configure).toHaveBeenCalledWith({
+            codec: 'dvh1.05.06',
+            colorSpace: { fullRange: false, matrix: 'bt709', primaries: 'bt709', transfer: 'iec61966-2-1' }
+        });
+        decoder.close();
+    });
+
     it('neutralizes decoder and in-band HDR color metadata when requested', async () => {
         const harness = createHarness();
         const decoder = new OwnedNativeHEVCVideoDecoder(
@@ -359,7 +393,7 @@ describe('OwnedNativeHEVCVideoDecoder', () => {
                 fullRange: false,
                 matrix: 'bt709',
                 primaries: 'bt709',
-                transfer: 'bt709'
+                transfer: 'iec61966-2-1'
             }
         }));
 
@@ -375,7 +409,7 @@ describe('OwnedNativeHEVCVideoDecoder', () => {
                 fullRange: false,
                 matrix: 'bt709',
                 primaries: 'bt709',
-                transfer: 'bt709'
+                transfer: 'iec61966-2-1'
             });
         decoder.close();
     });
@@ -402,7 +436,7 @@ describe('OwnedNativeHEVCVideoDecoder', () => {
                 fullRange: false,
                 matrix: 'bt709',
                 primaries: 'bt709',
-                transfer: 'bt709'
+                transfer: 'iec61966-2-1'
             },
             description: expect.any(Uint8Array)
         }));
@@ -416,7 +450,7 @@ describe('OwnedNativeHEVCVideoDecoder', () => {
                 fullRange: false,
                 matrix: 'bt709',
                 primaries: 'bt709',
-                transfer: 'bt709'
+                transfer: 'iec61966-2-1'
             });
         decoder.close();
     });
@@ -448,7 +482,7 @@ describe('OwnedNativeHEVCVideoDecoder', () => {
                 fullRange: false,
                 matrix: 'bt709',
                 primaries: 'bt709',
-                transfer: 'bt709'
+                transfer: 'iec61966-2-1'
             });
         expect(harness.packets[1]).toBe(packetWithoutSPS);
         decoder.close();

@@ -50,8 +50,8 @@ function createConfiguration(description?: Uint8Array): VideoDecoderConfig {
 
 describe('neutralizeAV1CodecStringColor', () => {
     it('rewrites the color fields of a long codecs string and keeps the rest', () => {
-        expect(neutralizeAV1CodecStringColor('av01.0.13M.10.0.112.09.16.09.0')).toBe('av01.0.13M.10.0.112.01.01.01.0');
-        expect(neutralizeAV1CodecStringColor('av01.0.13M.10.0.110.09.18.09.1')).toBe('av01.0.13M.10.0.110.01.01.01.0');
+        expect(neutralizeAV1CodecStringColor('av01.0.13M.10.0.112.09.16.09.0')).toBe('av01.0.13M.10.0.112.01.13.01.0');
+        expect(neutralizeAV1CodecStringColor('av01.0.13M.10.0.110.09.18.09.1')).toBe('av01.0.13M.10.0.110.01.13.01.0');
     });
 
     it('keeps a short codecs string, which already implies limited BT.709', () => {
@@ -65,10 +65,10 @@ describe('neutralizeNativeHDRAV1DecoderConfig', () => {
 
         expect(neutralized).toEqual({
             configuration: {
-                codec: 'av01.0.05M.10.0.110.01.01.01.0',
+                codec: 'av01.0.05M.10.0.110.01.13.01.0',
                 codedHeight: 720,
                 codedWidth: 1_280,
-                colorSpace: { fullRange: false, matrix: 'bt709', primaries: 'bt709', transfer: 'bt709' }
+                colorSpace: { fullRange: false, matrix: 'bt709', primaries: 'bt709', transfer: 'iec61966-2-1' }
             },
             decoderDescriptionValidated: false
         });
@@ -86,7 +86,7 @@ describe('neutralizeNativeHDRAV1DecoderConfig', () => {
             colorPrimaries: 1,
             fullRange: false,
             matrixCoefficients: 1,
-            transferCharacteristics: 1
+            transferCharacteristics: 13
         });
         expect(description).toEqual(concatenate(AV1C_HEADER, decodeHex(PQ_SEQUENCE_HEADER_OBU)));
     });
@@ -125,7 +125,7 @@ describe('NativeHDRAV1TemporalUnitNeutralizer', () => {
             colorPrimaries: 1,
             fullRange: false,
             matrixCoefficients: 1,
-            transferCharacteristics: 1
+            transferCharacteristics: 13
         });
         expect(unit).toEqual(createKeyUnit(sequenceHeaderHex));
     });
@@ -172,7 +172,7 @@ describe('NativeHDRAV1TemporalUnitNeutralizer', () => {
             colorPrimaries: 1,
             fullRange: false,
             matrixCoefficients: 1,
-            transferCharacteristics: 1
+            transferCharacteristics: 13
         });
     });
 });

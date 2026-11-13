@@ -306,7 +306,7 @@ export function createExternalDolbyVisionShaderSignature(
         `vector=${EXTERNAL_DOLBY_VISION_AUTHORIZATION_VECTOR_VERSION}`,
         `uniform=${RENDER_SETTINGS_VERSION}`,
         `schema=${DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH}`,
-        'frame=I420P10:bt709:bt709:bt709:limited',
+        'frame=I420P10:bt709:bt709:iec61966-2-1:limited',
         `input-format=${EXTERNAL_INPUT_PROBE_TARGET_FORMAT}`,
         `input-tolerance=${EXTERNAL_INPUT_SIGNAL_TOLERANCE}`,
         `tolerance=${EXTERNAL_AUTHORIZATION_TOLERANCE}`,
@@ -332,7 +332,7 @@ export function createExternalDolbyVisionAuthorizationFrame(): VideoFrame {
             fullRange: false,
             matrix: 'bt709',
             primaries: 'bt709',
-            transfer: 'bt709'
+            transfer: 'iec61966-2-1'
         },
         displayHeight: sourceFrame.displayHeight,
         displayWidth: sourceFrame.displayWidth,

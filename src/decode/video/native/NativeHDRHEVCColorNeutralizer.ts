@@ -2,6 +2,7 @@ import {
     parseHEVCSPS,
     repairHEVCSPSDefaultDisplayWindow,
     rewriteHEVCSPSColorDescriptionToBT709,
+    rewriteHEVCSPSDolbyVisionColorDescription,
     type HEVCHDRTransfer
 } from '../../../demux/hevc/HEVCSPSParser';
 import {
@@ -145,6 +146,35 @@ function rewriteHEVCDecoderDescriptionSPS(
     };
 }
 
+// Same neutral color as the external HDR route
+const EXTERNAL_DOLBY_VISION_COLOR_SPACE: VideoColorSpaceInit = {
+    fullRange: false,
+    matrix: 'bt709',
+    primaries: 'bt709',
+    transfer: 'iec61966-2-1'
+};
+
+/** Repairs the display window and neutralizes the color of a Dolby Vision base-layer SPS; null when nothing changes. */
+export function neutralizeExternalDolbyVisionHEVCSPS(nalUnit: Uint8Array): Uint8Array | null {
+    const repairedNALUnit = repairHEVCSPSDefaultDisplayWindow(nalUnit);
+    return rewriteHEVCSPSDolbyVisionColorDescription(repairedNALUnit ?? nalUnit) ?? repairedNALUnit;
+}
+
+/**
+ * Neutralizes every `hvcC` SPS in place, since Chrome on macOS converts by the SPS color, not the colorSpace.
+ * The colorSpace still covers an SPS without a color description.
+ */
+export function neutralizeExternalDolbyVisionHEVCDecoderConfig(configuration: VideoDecoderConfig): VideoDecoderConfig {
+    const rewrittenDescription = configuration.description === undefined ?
+        null :
+        rewriteHEVCDecoderDescriptionSPS(configuration.description, neutralizeExternalDolbyVisionHEVCSPS);
+    return {
+        ...configuration,
+        colorSpace: EXTERNAL_DOLBY_VISION_COLOR_SPACE,
+        ...(rewrittenDescription === null || rewrittenDescription.rewrittenSPSCount === 0 ? {} : { description: rewrittenDescription.description })
+    };
+}
+
 /**
  * Returns a decoder configuration whose `hvcC` SPSs lack default_display_window_flag with the flag restored (see `repairHEVCSPSDefaultDisplayWindow`),
  * or the configuration itself when no SPS needs it.
@@ -191,7 +221,7 @@ export function neutralizeNativeHDRHEVCDecoderConfigWithValidation(
                 fullRange: decoderDescriptionValidated ? fullRangeSPS : configuration.colorSpace?.fullRange === true,
                 matrix: 'bt709',
                 primaries: 'bt709',
-                transfer: 'bt709'
+                transfer: 'iec61966-2-1'
             },
             ...(rewrittenDescription === null ? {} : { description: rewrittenDescription.description })
         },

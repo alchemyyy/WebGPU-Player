@@ -196,6 +196,7 @@ type VUIColorDescriptionCodes = {
 };
 
 type VUIColorDescriptionOffsets = {
+    fullRange: number
     matrix: number
     primaries: number
     transfer: number
@@ -410,6 +411,7 @@ function parseVUI(reader: BoundedBitReader): ParsedVUI {
     let signaledFullRange = false;
     if (reader.readFlag('video_signal_type_present_flag')) {
         reader.skipBits(3, 'video_format');
+        const fullRangeOffset = reader.getBitOffset();
         const fullRange = reader.readFlag('video_full_range_flag');
         signaledFullRange = fullRange;
         if (reader.readFlag('colour_description_present_flag')) {
@@ -426,6 +428,7 @@ function parseVUI(reader: BoundedBitReader): ParsedVUI {
                 transfer: transferValue
             };
             colorDescriptionOffsets = {
+                fullRange: fullRangeOffset,
                 matrix: matrixOffset,
                 primaries: primariesOffset,
                 transfer: transferOffset
@@ -888,8 +891,9 @@ function provesHDRTransfer(
 }
 
 /**
- * Rewrites an existing VUI color description to BT.709 primaries, transfer, and matrix without changing coded video syntax.
+ * Rewrites an existing VUI color description to BT.709 primaries and matrix and the sRGB transfer without changing coded video syntax.
  * The range flag stays, so the decoder converts at the stream's own range and the codes the presenter recovers keep their meaning.
+ * The sRGB transfer avoids Chrome on macOS converting from BT.709's.
  * An expected HDR route requires BT.2020 primaries, the BT.2020 non-constant-luminance matrix, and the route's transfer, at either range.
  * The access unit's preferred_transfer_characteristics, from an alternative transfer characteristics SEI, overrides the VUI transfer.
  */
@@ -914,14 +918,41 @@ export function rewriteHEVCSPSColorDescriptionToBT709(
     if (
         codes.matrix === BT709_MATRIX_COEFFICIENTS
         && codes.primaries === BT709_COLOR_PRIMARIES
-        && codes.transfer === BT709_TRANSFER_CHARACTERISTICS
+        && codes.transfer === IEC61966_2_1_TRANSFER_CHARACTERISTICS
     ) {
         return nalUnit.slice();
     }
 
     const rewrittenRBSP = parsedSPS.RBSP.slice();
     writeBits(rewrittenRBSP, offsets.primaries, 8, BT709_COLOR_PRIMARIES);
-    writeBits(rewrittenRBSP, offsets.transfer, 8, BT709_TRANSFER_CHARACTERISTICS);
+    writeBits(rewrittenRBSP, offsets.transfer, 8, IEC61966_2_1_TRANSFER_CHARACTERISTICS);
+    writeBits(rewrittenRBSP, offsets.matrix, 8, BT709_MATRIX_COEFFICIENTS);
+    return createNALUnitFromRBSP(nalUnit, rewrittenRBSP);
+}
+
+/**
+ * Rewrites a Dolby Vision base layer's VUI color to limited BT.709 with the sRGB transfer, whatever it declares; the RPU describes the picture.
+ * Returns null when there is no color description or it is already neutral.
+ */
+export function rewriteHEVCSPSDolbyVisionColorDescription(nalUnit: Uint8Array): Uint8Array | null {
+    const parsedSPS = parseHEVCSPSSyntax(nalUnit);
+    const offsets = parsedSPS.VUI.colorDescriptionOffsets;
+    const codes = parsedSPS.VUI.colorDescriptionCodes;
+    if (!offsets || !codes) {
+        return null;
+    }
+    if (
+        !codes.fullRange
+        && codes.matrix === BT709_MATRIX_COEFFICIENTS
+        && codes.primaries === BT709_COLOR_PRIMARIES
+        && codes.transfer === IEC61966_2_1_TRANSFER_CHARACTERISTICS
+    ) {
+        return null;
+    }
+    const rewrittenRBSP = parsedSPS.RBSP.slice();
+    writeBits(rewrittenRBSP, offsets.fullRange, 1, 0);
+    writeBits(rewrittenRBSP, offsets.primaries, 8, BT709_COLOR_PRIMARIES);
+    writeBits(rewrittenRBSP, offsets.transfer, 8, IEC61966_2_1_TRANSFER_CHARACTERISTICS);
     writeBits(rewrittenRBSP, offsets.matrix, 8, BT709_MATRIX_COEFFICIENTS);
     return createNALUnitFromRBSP(nalUnit, rewrittenRBSP);
 }
