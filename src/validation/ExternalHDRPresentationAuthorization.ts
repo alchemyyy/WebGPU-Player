@@ -354,7 +354,7 @@ export function createExternalHDRShaderSignature(
         `uniform=${RENDER_SETTINGS_VERSION}`,
         `route=${routeKey}`,
         `codec=${vector.decoderCodec}`,
-        'frame=opaque:bt709:bt709:bt709:limited',
+        'frame=opaque:bt709:bt709:iec61966-2-1:limited',
         `tolerance=${EXTERNAL_HDR_AUTHORIZATION_TOLERANCE}`,
         `target=${targetFormat}`,
         shaderCode
@@ -369,9 +369,12 @@ export function createExternalHDRShaderSignature(
 
 function frameMatchesAuthorizationContract(frame: VideoFrame, vector: ExternalHDRAuthorizationVector): boolean {
     const visibleRectangle = frame.visibleRect;
+    // VideoToolbox reports the coded size unpadded
     return frame.format === null
-        && frame.codedWidth === vector.codedWidth
-        && frame.codedHeight === vector.codedHeight
+        && frame.codedWidth >= vector.displayWidth
+        && frame.codedWidth <= vector.codedWidth
+        && frame.codedHeight >= vector.displayHeight
+        && frame.codedHeight <= vector.codedHeight
         && frame.displayWidth === vector.displayWidth
         && frame.displayHeight === vector.displayHeight
         && frame.timestamp === 0
@@ -383,7 +386,7 @@ function frameMatchesAuthorizationContract(frame: VideoFrame, vector: ExternalHD
         && frame.colorSpace.fullRange === false
         && frame.colorSpace.matrix === 'bt709'
         && frame.colorSpace.primaries === 'bt709'
-        && frame.colorSpace.transfer === 'bt709';
+        && frame.colorSpace.transfer === 'iec61966-2-1';
 }
 
 async function flushVideoDecoderUntilAbort(decoder: VideoDecoder, signal?: AbortSignal): Promise<void> {
@@ -420,7 +423,7 @@ function createDecoderConfiguration(vector: ExternalHDRAuthorizationVector): Vid
             fullRange: false,
             matrix: 'bt709',
             primaries: 'bt709',
-            transfer: 'bt709'
+            transfer: 'iec61966-2-1'
         },
         hardwareAcceleration: 'prefer-hardware',
         optimizeForLatency: true

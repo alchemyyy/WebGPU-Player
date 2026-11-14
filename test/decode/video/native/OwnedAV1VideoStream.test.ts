@@ -470,7 +470,7 @@ describe('runOwnedAV1VideoStream', () => {
             expect(findAV1SequenceHeader(decodedPackets[0].data)?.colorConfig).toMatchObject({
                 colorPrimaries: 1,
                 matrixCoefficients: 1,
-                transferCharacteristics: 1
+                transferCharacteristics: 13
             });
             expect(Array.from(decodedPackets[0].data.subarray(PQ_SEQUENCE_HEADER_OBU.length))).toEqual([
                 ...Array.from(createAV1MetadataOBU(METADATA_TYPE_ITUT_T35, FIRST_HDR10_PLUS_MESSAGE)),

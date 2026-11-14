@@ -174,9 +174,10 @@ const MILLISECONDS_PER_SECOND = 1_000;
 const UNKNOWN_PLAN_DIMENSION = 1;
 // The native and identity SDR route: the browser's own conversion, presented as it is, of a stream whose color is unknown until one is configured
 const EXTERNAL_IDENTITY_CHAIN_CONFIGURATION: BuiltinChainConfiguration = { metadata: null, route: 'external-identity' };
-const NEUTRAL_BT709_COLOR_DESCRIPTION = 'bt709:bt709:bt709:limited';
+// sRGB transfer: Chrome on macOS converts from BT.709's
+const NEUTRAL_BT709_COLOR_DESCRIPTION = 'iec61966-2-1:bt709:bt709:limited';
 // Neutralized HEVC keeps its stream's range; the recovery then yields the codes' limited-range equivalents, which the limited metadata presents exactly
-const NEUTRAL_BT709_FULL_RANGE_COLOR_DESCRIPTION = 'bt709:bt709:bt709:full';
+const NEUTRAL_BT709_FULL_RANGE_COLOR_DESCRIPTION = 'iec61966-2-1:bt709:bt709:full';
 // Names a preset pass whose header failed before it declared a name, followed by its preset position
 const UNNAMED_PRESET_PASS_PREFIX = 'pass ';
 // Marks a compile error in engine-generated code, whose line is in the generated module rather than in a pass source

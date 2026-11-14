@@ -749,7 +749,7 @@ function createNeutralBT709VideoFrame(close: MockFunction): VideoFrame {
             fullRange: false,
             matrix: 'bt709',
             primaries: 'bt709',
-            transfer: 'bt709'
+            transfer: 'iec61966-2-1'
         },
         displayHeight: 2_160,
         displayWidth: 3_840
@@ -1602,7 +1602,7 @@ describe('WebGPUPresenter', () => {
         }, 1)).resolves.toBe(true);
 
         // Neutralized HEVC keeps a full-range stream's range, so Chrome converts it at full range
-        const fullRangeFrame = { ...createNeutralBT709VideoFrame(vi.fn()), colorSpace: { fullRange: true, matrix: 'bt709', primaries: 'bt709', transfer: 'bt709' } } as unknown as VideoFrame;
+        const fullRangeFrame = { ...createNeutralBT709VideoFrame(vi.fn()), colorSpace: { fullRange: true, matrix: 'bt709', primaries: 'bt709', transfer: 'iec61966-2-1' } } as unknown as VideoFrame;
         expect(presenter.presentDecodedFrame({
             durationMicroseconds: secondsToMicroseconds(1 / 24),
             frame: fullRangeFrame,
@@ -1622,7 +1622,7 @@ describe('WebGPUPresenter', () => {
         await vi.waitFor(() => expect(fallbackHandler).toHaveBeenCalledWith(
             1,
             'decoded-frame-color-mismatch',
-            'color: pq:bt2020:bt2020-ncl:limited, expected bt709:bt709:bt709:limited or bt709:bt709:bt709:full'
+            'color: pq:bt2020:bt2020-ncl:limited, expected iec61966-2-1:bt709:bt709:limited or iec61966-2-1:bt709:bt709:full'
         ));
     });
 

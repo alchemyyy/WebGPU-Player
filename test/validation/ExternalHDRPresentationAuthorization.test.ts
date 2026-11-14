@@ -464,7 +464,7 @@ describe('External HDR presentation authorization', () => {
                 fullRange: false,
                 matrix: 'bt709',
                 primaries: 'bt709',
-                transfer: 'bt709'
+                transfer: 'iec61966-2-1'
             },
             displayHeight: 1_080,
             displayWidth: 1_920,
@@ -524,7 +524,7 @@ describe('External HDR presentation authorization', () => {
                 fullRange: false,
                 matrix: 'bt709',
                 primaries: 'bt709',
-                transfer: 'bt709'
+                transfer: 'iec61966-2-1'
             },
             hardwareAcceleration: 'prefer-hardware'
         }));
@@ -533,7 +533,7 @@ describe('External HDR presentation authorization', () => {
             fullRange: false,
             matrix: 'bt709',
             primaries: 'bt709',
-            transfer: 'bt709'
+            transfer: 'iec61966-2-1'
         });
         expect(closed).toHaveBeenCalledOnce();
         expect(close).not.toHaveBeenCalled();
@@ -548,7 +548,7 @@ describe('External HDR presentation authorization', () => {
             close: vi.fn(),
             codedHeight: 1_080,
             codedWidth: 1_920,
-            colorSpace: { fullRange: false, matrix: 'bt709', primaries: 'bt709', transfer: 'bt709' },
+            colorSpace: { fullRange: false, matrix: 'bt709', primaries: 'bt709', transfer: 'iec61966-2-1' },
             displayHeight: 1_080,
             displayWidth: 1_920,
             format: null,
@@ -606,7 +606,7 @@ describe('External HDR presentation authorization', () => {
             colorPrimaries: 1,
             fullRange: false,
             matrixCoefficients: 1,
-            transferCharacteristics: 1
+            transferCharacteristics: 13
         });
     });
 
@@ -636,7 +636,7 @@ describe('External HDR presentation authorization', () => {
                     close,
                     codedHeight: 1_088,
                     codedWidth: 1_920,
-                    colorSpace: { fullRange: false, matrix: 'bt709', primaries: 'bt709', transfer: 'bt709' },
+                    colorSpace: { fullRange: false, matrix: 'bt709', primaries: 'bt709', transfer: 'iec61966-2-1' },
                     displayHeight: 1_080,
                     displayWidth: 1_920,
                     format: null,
@@ -654,6 +654,61 @@ describe('External HDR presentation authorization', () => {
 
         await expect(createExternalHDRAuthorizationFrame('av1')).rejects.toThrow('decoder-output-mismatch');
         expect(close).toHaveBeenCalledOnce();
+    });
+
+    it.each([
+        [ 1_080, true ],
+        [ 1_072, false ]
+    ])('takes an HEVC frame coded %i lines high only from its visible height to the vector\'s coded one', async (codedHeight, accepted) => {
+        let decoderInit: VideoDecoderInit | null = null;
+        const close = vi.fn();
+        class FakeEncodedVideoChunk {}
+        class FakeVideoDecoder {
+            public static readonly isConfigSupported = vi.fn(
+                async (config: VideoDecoderConfig): Promise<VideoDecoderSupport> => ({ config, supported: true })
+            );
+
+            public constructor(init: VideoDecoderInit) {
+                decoderInit = init;
+            }
+
+            public close(): void {
+                return undefined;
+            }
+
+            public configure(): void {
+                return undefined;
+            }
+
+            public decode(): void {
+                decoderInit?.output({
+                    close,
+                    codedHeight,
+                    codedWidth: 1_920,
+                    colorSpace: { fullRange: false, matrix: 'bt709', primaries: 'bt709', transfer: 'iec61966-2-1' },
+                    displayHeight: 1_080,
+                    displayWidth: 1_920,
+                    format: null,
+                    timestamp: 0,
+                    visibleRect: { height: 1_080, width: 1_920, x: 0, y: 0 }
+                } as unknown as VideoFrame);
+            }
+
+            public async flush(): Promise<void> {
+                return undefined;
+            }
+        }
+        vi.stubGlobal('EncodedVideoChunk', FakeEncodedVideoChunk);
+        vi.stubGlobal('VideoDecoder', FakeVideoDecoder);
+
+        const result = createExternalHDRAuthorizationFrame('hevc');
+        if (accepted) {
+            await expect(result).resolves.toMatchObject({ codedHeight });
+            expect(close).not.toHaveBeenCalled();
+        } else {
+            await expect(result).rejects.toThrow('decoder-output-mismatch');
+            expect(close).toHaveBeenCalledOnce();
+        }
     });
 
     it('rejects an unsupported decoder configuration before building an executor or opening a decoder', async () => {

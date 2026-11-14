@@ -185,6 +185,8 @@ type ParsedVUI = {
     /** The RBSP bit offset of default_display_window_flag, where the parse stops; null without VUI */
     defaultDisplayWindowFlagOffset: number | null
     fieldSequence: boolean
+    /** The RBSP bit offset of video_full_range_flag; null without a video signal type */
+    fullRangeFlagOffset: number | null
 };
 
 /** The raw H.273 code points of a VUI color description. */
@@ -407,9 +409,11 @@ function parseVUI(reader: BoundedBitReader): ParsedVUI {
     }
     let colorDescriptionCodes: VUIColorDescriptionCodes | null = null;
     let colorDescriptionOffsets: VUIColorDescriptionOffsets | null = null;
+    let fullRangeFlagOffset: number | null = null;
     let signaledFullRange = false;
     if (reader.readFlag('video_signal_type_present_flag')) {
         reader.skipBits(3, 'video_format');
+        fullRangeFlagOffset = reader.getBitOffset();
         const fullRange = reader.readFlag('video_full_range_flag');
         signaledFullRange = fullRange;
         if (reader.readFlag('colour_description_present_flag')) {
@@ -450,7 +454,8 @@ function parseVUI(reader: BoundedBitReader): ParsedVUI {
         // Full range survives an absent or wholly unspecified colour description; limited is the default anyway
         colorSpace: describedColorSpace ?? (signaledFullRange ? createFullRangeOnlyColorSpace() : null),
         defaultDisplayWindowFlagOffset: reader.getBitOffset(),
-        fieldSequence
+        fieldSequence,
+        fullRangeFlagOffset
     };
 }
 
@@ -716,7 +721,8 @@ function readHEVCSPSSyntax(nalUnit: Uint8Array, bounded: boolean): HEVCSPSSyntax
             colorDescriptionOffsets: null,
             colorSpace: null,
             defaultDisplayWindowFlagOffset: null,
-            fieldSequence: false
+            fieldSequence: false,
+            fullRangeFlagOffset: null
         };
     if (bounded && vui.fieldSequence) {
         throw new TypeError('The HEVC SPS describes an interlaced field sequence');
@@ -888,8 +894,9 @@ function provesHDRTransfer(
 }
 
 /**
- * Rewrites an existing VUI color description to BT.709 primaries, transfer, and matrix without changing coded video syntax.
+ * Rewrites an existing VUI color description to BT.709 primaries and matrix and the sRGB transfer without changing coded video syntax.
  * The range flag stays, so the decoder converts at the stream's own range and the codes the presenter recovers keep their meaning.
+ * The sRGB transfer avoids Chrome on macOS converting from BT.709's.
  * An expected HDR route requires BT.2020 primaries, the BT.2020 non-constant-luminance matrix, and the route's transfer, at either range.
  * The access unit's preferred_transfer_characteristics, from an alternative transfer characteristics SEI, overrides the VUI transfer.
  */
@@ -914,14 +921,44 @@ export function rewriteHEVCSPSColorDescriptionToBT709(
     if (
         codes.matrix === BT709_MATRIX_COEFFICIENTS
         && codes.primaries === BT709_COLOR_PRIMARIES
-        && codes.transfer === BT709_TRANSFER_CHARACTERISTICS
+        && codes.transfer === IEC61966_2_1_TRANSFER_CHARACTERISTICS
     ) {
         return nalUnit.slice();
     }
 
     const rewrittenRBSP = parsedSPS.RBSP.slice();
     writeBits(rewrittenRBSP, offsets.primaries, 8, BT709_COLOR_PRIMARIES);
-    writeBits(rewrittenRBSP, offsets.transfer, 8, BT709_TRANSFER_CHARACTERISTICS);
+    writeBits(rewrittenRBSP, offsets.transfer, 8, IEC61966_2_1_TRANSFER_CHARACTERISTICS);
     writeBits(rewrittenRBSP, offsets.matrix, 8, BT709_MATRIX_COEFFICIENTS);
+    return createNALUnitFromRBSP(nalUnit, rewrittenRBSP);
+}
+
+/**
+ * Rewrites a Dolby Vision base layer's VUI to limited range, and any color description to BT.709 with the sRGB transfer, whatever it declares;
+ * the RPU describes the picture.
+ * A full range flag is cleared without a color description too, since Chrome on macOS converts at the range the stream declares.
+ * Returns null when the SPS declares neither full range nor a color description other than the neutral one.
+ */
+export function rewriteHEVCSPSDolbyVisionColorDescription(nalUnit: Uint8Array): Uint8Array | null {
+    const parsedSPS = parseHEVCSPSSyntax(nalUnit);
+    const { colorDescriptionCodes: codes, colorDescriptionOffsets: offsets, colorSpace, fullRangeFlagOffset } = parsedSPS.VUI;
+    const clearsFullRange = fullRangeFlagOffset !== null && colorSpace?.fullRange === true;
+    const colorOffsets = offsets !== null && codes !== null && !(
+        codes.matrix === BT709_MATRIX_COEFFICIENTS
+        && codes.primaries === BT709_COLOR_PRIMARIES
+        && codes.transfer === IEC61966_2_1_TRANSFER_CHARACTERISTICS
+    ) ? offsets : null;
+    if (!clearsFullRange && colorOffsets === null) {
+        return null;
+    }
+    const rewrittenRBSP = parsedSPS.RBSP.slice();
+    if (clearsFullRange) {
+        writeBits(rewrittenRBSP, fullRangeFlagOffset, 1, 0);
+    }
+    if (colorOffsets !== null) {
+        writeBits(rewrittenRBSP, colorOffsets.primaries, 8, BT709_COLOR_PRIMARIES);
+        writeBits(rewrittenRBSP, colorOffsets.transfer, 8, IEC61966_2_1_TRANSFER_CHARACTERISTICS);
+        writeBits(rewrittenRBSP, colorOffsets.matrix, 8, BT709_MATRIX_COEFFICIENTS);
+    }
     return createNALUnitFromRBSP(nalUnit, rewrittenRBSP);
 }

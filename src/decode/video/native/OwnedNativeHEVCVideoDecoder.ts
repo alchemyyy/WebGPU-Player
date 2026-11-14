@@ -10,6 +10,8 @@ import {
 } from '../../../demux/dolby-vision/DolbyVisionHEVCSplitter';
 import { findHEVCPreferredTransferCharacteristics } from '../../../demux/hevc/HEVCSEI';
 import {
+    neutralizeExternalDolbyVisionHEVCDecoderConfig,
+    neutralizeExternalDolbyVisionHEVCSPS,
     neutralizeNativeHDRHEVCDecoderConfigWithValidation,
     repairHEVCDecoderConfigDefaultDisplayWindow
 } from './NativeHDRHEVCColorNeutralizer';
@@ -31,6 +33,8 @@ export type OwnedNativeHEVCVideoDecoderCallbacks = {
 export type OwnedNativeHEVCVideoDecoderDependencies = OwnedNativeVideoDecoderDependencies;
 
 export type OwnedNativeHEVCVideoDecoderOptions = {
+    /** External Dolby Vision route: neutralize the color in the configuration and every SPS */
+    externalDolbyVision?: boolean
     nativeHDRTransfer?: HEVCHDRTransfer
     neutralizeHDRColorMetadata?: boolean
 };
@@ -132,7 +136,9 @@ export default class OwnedNativeHEVCVideoDecoder extends OwnedNativeVideoDecoder
 
     protected override configureDecoder(decoder: NativeVideoDecoderPort): void {
         if (this.options.neutralizeHDRColorMetadata !== true) {
-            decoder.configure(repairHEVCDecoderConfigDefaultDisplayWindow(this.config));
+            decoder.configure(this.options.externalDolbyVision === true ?
+                neutralizeExternalDolbyVisionHEVCDecoderConfig(this.config) :
+                repairHEVCDecoderConfigDefaultDisplayWindow(this.config));
             this.nativeHDRColorDescriptionValidated = false;
             return;
         }
@@ -158,8 +164,11 @@ export default class OwnedNativeHEVCVideoDecoder extends OwnedNativeVideoDecoder
      */
     private rewriteSequenceParameterSets(packetData: Uint8Array): Uint8Array {
         if (this.options.neutralizeHDRColorMetadata !== true) {
+            const transformSPS = this.options.externalDolbyVision === true ?
+                neutralizeExternalDolbyVisionHEVCSPS :
+                repairHEVCSPSDefaultDisplayWindow;
             return hasHEVCSPS(packetData, this.inputFormat) ?
-                rewriteHEVCAccessUnitSPS(packetData, this.inputFormat, repairHEVCSPSDefaultDisplayWindow) ?? packetData :
+                rewriteHEVCAccessUnitSPS(packetData, this.inputFormat, transformSPS) ?? packetData :
                 packetData;
         }
         // Any access unit may carry an SPS, not only a key packet: a sync-sample table that lists only IDR pictures leaves each CRA, with its SPS, a delta packet

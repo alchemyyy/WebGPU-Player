@@ -17,6 +17,7 @@ const BT2020_NCL_MATRIX_COEFFICIENTS = 9;
 const PQ_TRANSFER_CHARACTERISTICS = 16;
 const HLG_TRANSFER_CHARACTERISTICS = 18;
 const BT709_CODE_POINT = 1;
+const IEC61966_2_1_TRANSFER_CHARACTERISTICS = 13;
 // av1C: marker and version, then profile, level, tier, and chroma bytes, then the configOBUs (AV1 ISOBMFF binding, section 2.3)
 const AV1_CODEC_CONFIGURATION_HEADER_BYTE_LENGTH = 4;
 const AV1_CODEC_CONFIGURATION_MARKER_AND_VERSION = 0x81;
@@ -24,14 +25,14 @@ const MAXIMUM_AV1_CODEC_CONFIGURATION_BYTE_LENGTH = 1024 * 1024;
 // av01.P.LLT.DD.M.CCC.cp.tc.mc.F, whose last three fields are the color code points and the range
 const AV1_LONG_CODEC_STRING_FIELD_COUNT = 10;
 const AV1_CODEC_STRING_COLOR_PRIMARIES_FIELD = 6;
-const AV1_NEUTRAL_CODEC_STRING_COLOR_FIELDS: readonly string[] = [ '01', '01', '01', '0' ];
+const AV1_NEUTRAL_CODEC_STRING_COLOR_FIELDS: readonly string[] = [ '01', '13', '01', '0' ];
 
-/** The limited-range BT.709 color the native external route decodes as, so Chrome converts without tone-mapping. */
+/** Limited BT.709 with the sRGB transfer: Chrome converts it without tone-mapping, and on macOS without a transfer conversion. */
 const NEUTRAL_BT709_COLOR_DESCRIPTION: AV1ColorDescription = Object.freeze({
     colorPrimaries: BT709_CODE_POINT,
     fullRange: false,
     matrixCoefficients: BT709_CODE_POINT,
-    transferCharacteristics: BT709_CODE_POINT
+    transferCharacteristics: IEC61966_2_1_TRANSFER_CHARACTERISTICS
 });
 
 export type NeutralizedNativeHDRAV1DecoderConfig = {
@@ -157,7 +158,7 @@ export function neutralizeNativeHDRAV1DecoderConfig(
                 fullRange: false,
                 matrix: 'bt709',
                 primaries: 'bt709',
-                transfer: 'bt709'
+                transfer: 'iec61966-2-1'
             },
             ...(rewrittenDescription === null ? {} : { description: rewrittenDescription.description })
         },
