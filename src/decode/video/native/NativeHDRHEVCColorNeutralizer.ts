@@ -162,7 +162,7 @@ export function neutralizeExternalDolbyVisionHEVCSPS(nalUnit: Uint8Array): Uint8
 
 /**
  * Neutralizes every `hvcC` SPS in place, since Chrome on macOS converts by the SPS color, not the colorSpace.
- * The colorSpace still covers an SPS without a color description.
+ * The colorSpace still covers an SPS without a video signal type.
  */
 export function neutralizeExternalDolbyVisionHEVCDecoderConfig(configuration: VideoDecoderConfig): VideoDecoderConfig {
     const rewrittenDescription = configuration.description === undefined ?

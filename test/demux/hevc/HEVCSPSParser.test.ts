@@ -14,6 +14,10 @@ import { createBytesFromHex } from '../../helpers/byteArrays';
 const DOLBY_VISION_PROFILE_5_FULL_RANGE_UNSPECIFIED_SPS = createBytesFromHex(
     '420101022000000300900000030000030096a001e020021c4d96566924caf016e0404040800001f480002ee03052292f000044aa20002dc6c4'
 );
+// The same SPS with its colour_description_present_flag cleared: full range and no color description
+const DOLBY_VISION_PROFILE_5_FULL_RANGE_ONLY_SPS = createBytesFromHex(
+    '420101022000000300900000030000030096a001e020021c4d96566924caf016c0800001f480002ee03052292f000044aa20002dc6c4'
+);
 
 const MAIN_SPS = createBytesFromHex(
     '42010101600000030090000003000003001ea020810596566924caf016a020202080000003008000000c04'
@@ -225,7 +229,17 @@ describe('parseHEVCSPS', () => {
         );
     });
 
-    it('leaves a Dolby Vision SPS without a VUI color description to the configuration', () => {
+    it('clears a Dolby Vision base layer\'s full range flag that comes without a color description', () => {
+        const originalConfiguration = parseHEVCSPS(DOLBY_VISION_PROFILE_5_FULL_RANGE_ONLY_SPS);
+        expect(originalConfiguration.colorSpace).toEqual({ fullRange: true, matrix: null, primaries: null, transfer: null });
+
+        const rewrittenSPS = rewriteHEVCSPSDolbyVisionColorDescription(DOLBY_VISION_PROFILE_5_FULL_RANGE_ONLY_SPS);
+        expect(rewrittenSPS).not.toBeNull();
+        expect(parseHEVCSPS(rewrittenSPS!)).toEqual({ ...originalConfiguration, colorSpace: null });
+        expect(rewriteHEVCSPSDolbyVisionColorDescription(rewrittenSPS!)).toBeNull();
+    });
+
+    it('leaves a Dolby Vision SPS without a video signal type to the configuration', () => {
         expect(rewriteHEVCSPSDolbyVisionColorDescription(DOLBY_VISION_PROFILE_5_SPS_WITH_UNSPECIFIED_COLOR)).toBeNull();
     });
 

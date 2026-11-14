@@ -1,7 +1,7 @@
 /** The single-frame black HEVC access units the native output probes decode: Main at 1080p, and Main 10 at 4K. */
 export type HEVCExactCapabilityVector = 'main-1080p' | 'main10-4k';
 
-// Regeneration recipe in PowerShell, using FFmpeg 9.0.1 and x265 4.3+1-e9b8812:
+// Regeneration recipe in PowerShell, using FFmpeg 2026-03-01-git-862338fe31-full_build-www.gyan.dev and its x265 4.1+225-1b48507eb:
 // $common = 'high-tier=0:keyint=30:min-keyint=1:scenecut=0:bframes=0:repeat-headers=1:annexb=1:info=0:pools=1:frame-threads=1:wpp=0'
 // ffmpeg -f lavfi -i "color=c=black:s=1920x1080:r=1" -frames:v 1 -pix_fmt yuv420p -c:v libx265 -profile:v main -preset ultrafast -x265-params "level-idc=4.0:$common" -f hevc -y hevc-main-1080p.hevc
 // ffmpeg -f lavfi -i "color=c=black:s=3840x2160:r=1" -frames:v 1 -pix_fmt yuv420p10le -c:v libx265 -profile:v main10 -preset ultrafast -x265-params "level-idc=5.1:$common" -f hevc -y hevc-main10-4k.hevc

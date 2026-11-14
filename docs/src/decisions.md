@@ -71,9 +71,9 @@ Commit hashes refer to the Jellyfin Web fork's `webgpu-player` branch, where the
 - Raw format probes first ask whether the browser has the pixel format (11-05).
   `canHoldVideoFrameFormat` builds a 2x2 VideoFrame of the format, and a `TypeError` means the browser has no such format, as every shipping Safari lacks the 10-bit and 12-bit formats.
   The raw HDR, range-extension, AV1 raw format, and H.264 raw format probes then read `unsupported` with `output-copy-unsupported` without downloading their vector or decoding.
-- The HEVC exact vectors are encodes VideoToolbox decodes (11-11).
+- The HEVC exact vectors are the recipe's output from the pinned toolchain, which VideoToolbox decodes (11-11).
   Chrome on macOS and FFmpeg's VideoToolbox hwaccel rejected the old `main-1080p` and `main10-4k` access units, so `nativeHDRHEVC` read `unsupported` on Apple Silicon.
-  The same recipe re-encoded with x265 4.3+1-e9b8812 decodes on both, and its 4K frame matches `HEVC_MAIN10_BLACK_DECODED_FRAME_FINGERPRINT`.
+  Those bytes were not what the recipe produces: the recipe run with FFmpeg `2026-03-01-git-862338fe31-full_build-www.gyan.dev` and its x265 4.1+225-1b48507eb reproduces the committed vectors byte for byte, decodes on both, and its 4K frame matches `HEVC_MAIN10_BLACK_DECODED_FRAME_FINGERPRINT`.
 - A negotiation's probe steps run in parallel within derived limits, and the background's one at a time (11-05).
   The heavy queue ran one probe at a time, so a cold page waited for the sum of its decodes.
   `CapabilityProbeManager` admits every browser call as a step with a cost from the codec specs; a negotiation's steps run side by side while the running decoders and bytes stay within limits, and a step larger than the limits runs alone.
@@ -424,7 +424,7 @@ These were settled on stock Chrome on Windows, with a Chromium 153 source audit.
 - Neutralized frames carry the sRGB transfer, not BT.709's (11-11).
   Chrome on macOS converts an external texture tagged with the BT.709 transfer to the sRGB curve on import, so on an M3 the authorization readback was up to 34.4/255 off and no native HEVC HDR key was authorized; Chrome on Windows passes the codes through for either tag.
   With transfer 13, `iec61966-2-1`, the readback is within 2.1/255; primaries, matrix, and range are unchanged, so the route keys keep their names.
-  Chrome on macOS converts by the color the stream declares, not the `VideoFrame`'s, so the external Dolby Vision route rewrites each base-layer SPS color description in place to the neutral one at limited range.
+  Chrome on macOS converts by the color the stream declares, not the `VideoFrame`'s, so the external Dolby Vision route rewrites each base-layer SPS in place: any color description to the neutral one, and a full range flag to limited, with or without a color description.
   The RPU describes the picture, and a Profile 5 SPS often declares unspecified color at full range.
 - Startup is bounded by progress, not by a fixed timer (10-07).
   A 72 Mbps 4K TrueHD source under six concurrent players produced no audio within a fixed 20 s bound and fell back to a server transcode that also stalled; the stage that stalled was not recorded.

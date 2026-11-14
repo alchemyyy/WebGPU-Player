@@ -354,7 +354,7 @@ export function createExternalHDRShaderSignature(
         `uniform=${RENDER_SETTINGS_VERSION}`,
         `route=${routeKey}`,
         `codec=${vector.decoderCodec}`,
-        'frame=opaque:bt709:bt709:bt709:limited',
+        'frame=opaque:bt709:bt709:iec61966-2-1:limited',
         `tolerance=${EXTERNAL_HDR_AUTHORIZATION_TOLERANCE}`,
         `target=${targetFormat}`,
         shaderCode
