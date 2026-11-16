@@ -91,8 +91,8 @@ const VECTOR_SAMPLES = [ ...EXTERNAL_HDR_AUTHORIZATION_VECTOR_SAMPLES, ...EXTERN
 const CHROMIUM_HARDWARE_CODE_SCALE = 65_280 / 65_535;
 const HEVC_PROBE = 'external-hdr-authorization:hevc';
 const AV1_PROBE = 'external-hdr-authorization:av1';
-const HEVC_CHECK_LABEL = 'check hvc1.2.4.L120.B0 1920x1088 prefer-hardware';
-const HEVC_DECODE_LABEL = 'decode hvc1.2.4.L120.B0 1920x1088 prefer-hardware';
+const HEVC_CHECK_LABEL = 'check hvc1.2.4.L120.B0 1920x1080 prefer-hardware';
+const HEVC_DECODE_LABEL = 'decode hvc1.2.4.L120.B0 1920x1080 prefer-hardware';
 const AV1_CHECK_LABEL = 'check av01.0.08M.10 1920x1080 prefer-hardware';
 const AV1_DECODE_LABEL = 'decode av01.0.08M.10 1920x1080 prefer-hardware';
 // A 10-bit 4:2:0 frame holds 2-byte samples, 1.5 per pixel; a decode holds its codec's references and the frame it outputs
@@ -470,6 +470,35 @@ describe('External HDR presentation authorization', () => {
         expect(registry.getAuthorizationFailure(harness.device, TARGET_FORMAT, 'av1', createSDRColorMetadata())).toBe(SDR_ROUTE_UNSUPPORTED_FAILURE);
     });
 
+    it.each([
+        [ 'iec61966-2-1', true, false ],
+        [ 'bt709', true, true ],
+        [ 'bt709', false, false ]
+    ] as const)('accepts BT.709 playback only after testing that tag (%s, pixels match: %s)', async (transfer, pixelsMatch, accepted) => {
+        const observations = createExpectedObservations(PQ_ROUTE_KEY);
+        const harness = createDeviceHarness(pixelsMatch ? observations : mutateFirstObservation(observations));
+        const close = vi.fn();
+        const runner = createRunner(async (): Promise<VideoFrame> => ({
+            ...createFrame(close),
+            colorSpace: { transfer }
+        } as unknown as VideoFrame));
+        const registry = new ExternalHDRPresentationAuthorizationRegistry(runner);
+        const metadata = createPQColorMetadata();
+
+        expect(registry.getAuthorizationFailure(harness.device, TARGET_FORMAT, 'hevc', metadata, 'bt709')).not.toBeNull();
+        const decision = await registry.authorize(harness.device, TARGET_FORMAT, PQ_ROUTE_KEY);
+
+        expect(decision.status).toBe(pixelsMatch ? 'authorized' : 'rejected');
+        expect(decision.decodedFrameTransfer).toBe(pixelsMatch ? transfer : null);
+        expect(registry.getAuthorizationFailure(harness.device, TARGET_FORMAT, 'hevc', metadata, 'bt709') === null).toBe(accepted);
+        expect(registry.getAuthorizationFailure(harness.device, TARGET_FORMAT, 'hevc', createHLGColorMetadata(), 'bt709')).not.toBeNull();
+        expect(registry.getAuthorizationFailure(harness.device, TARGET_FORMAT, 'av1', metadata, 'bt709')).not.toBeNull();
+        if (!pixelsMatch) {
+            expect(decision.failureReason).toBe('pixel-mismatch');
+        }
+        expect(close).toHaveBeenCalledOnce();
+    });
+
     it('rejects a bounded pixel mismatch and still closes the frame', async () => {
         const harness = createDeviceHarness(mutateFirstObservation(createExpectedObservations(PQ_ROUTE_KEY)));
         const close = vi.fn();
@@ -611,7 +640,7 @@ describe('External HDR presentation authorization', () => {
         expect(signature).not.toBe(createExternalHDRShaderSignature('bgra8unorm', PQ_ROUTE_KEY, 'shader', 'other probe'));
     });
 
-    it('creates only an opaque, neutralized hardware decoder frame', async () => {
+    it.each([ 'iec61966-2-1', 'bt709' ])('configures the visible HEVC size and preserves opaque %s output', async (transfer) => {
         const close = vi.fn();
         const configured = vi.fn();
         const closed = vi.fn();
@@ -624,7 +653,7 @@ describe('External HDR presentation authorization', () => {
                 fullRange: false,
                 matrix: 'bt709',
                 primaries: 'bt709',
-                transfer: 'iec61966-2-1'
+                transfer
             },
             displayHeight: 1_080,
             displayWidth: 1_920,
@@ -678,7 +707,7 @@ describe('External HDR presentation authorization', () => {
         expect(frame).toBe(outputFrame);
         expect(configured).toHaveBeenCalledWith(expect.objectContaining({
             codec: 'hvc1.2.4.L120.B0',
-            codedHeight: 1_088,
+            codedHeight: 1_080,
             codedWidth: 1_920,
             colorSpace: {
                 fullRange: false,
@@ -817,9 +846,14 @@ describe('External HDR presentation authorization', () => {
     });
 
     it.each([
-        [ 1_080, true ],
-        [ 1_072, false ]
-    ])('takes an HEVC frame coded %i lines high only from its visible height to the vector\'s coded one', async (codedHeight, accepted) => {
+        [ 1_080, true, 1_080, 'iec61966-2-1' ],
+        [ 1_072, false, 1_080, 'iec61966-2-1' ],
+        [ 1_080, false, 1_088, 'bt709' ],
+        [ 1_088, true, 1_080, 'bt709' ],
+        [ 1_088, false, 1_088, 'bt709' ],
+        [ 1_088, false, 1_080, 'smpte2084' ],
+        [ 1_088, false, 1_089, 'bt709' ]
+    ])('checks HEVC output coded %i lines high (accepted: %s, visible: %i, transfer: %s)', async (codedHeight, accepted, displayHeight, transfer) => {
         let decoderInit: VideoDecoderInit | null = null;
         const close = vi.fn();
         class FakeEncodedVideoChunk {}
@@ -845,12 +879,12 @@ describe('External HDR presentation authorization', () => {
                     close,
                     codedHeight,
                     codedWidth: 1_920,
-                    colorSpace: { fullRange: false, matrix: 'bt709', primaries: 'bt709', transfer: 'iec61966-2-1' },
-                    displayHeight: 1_080,
+                    colorSpace: { fullRange: false, matrix: 'bt709', primaries: 'bt709', transfer },
+                    displayHeight,
                     displayWidth: 1_920,
                     format: null,
                     timestamp: 0,
-                    visibleRect: { height: 1_080, width: 1_920, x: 0, y: 0 }
+                    visibleRect: { height: displayHeight, width: 1_920, x: 0, y: 0 }
                 } as unknown as VideoFrame);
             }
 
@@ -883,7 +917,7 @@ describe('External HDR presentation authorization', () => {
         });
         expect(isConfigSupported).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
             codec: 'hvc1.2.4.L120.B0',
-            codedHeight: 1_088,
+            codedHeight: 1_080,
             codedWidth: 1_920,
             hardwareAcceleration: 'prefer-hardware'
         }));

@@ -168,6 +168,23 @@ It is in `sandbox/src/ui/panels/DecoderPackagePanel.ts`, over `sandbox/src/sessi
   It lists each file with its order controls, a plan state per pass, which names the pass when the file holds several, and an input per parameter, which applies when committed to every pass of the file that declares it.
 - Files dropped anywhere but the shader panel and the decoder package panel are ignored, so a stray drop never navigates away from the sandbox.
 
+### Diagnose native HEVC HDR rejection
+
+1. Read Playback info's authorization and failure sections before changing the route override.
+   `hdr-codec-unsupported` is an eligibility rejection; it does not identify which native decode or presentation check failed.
+   Raw HDR or Dolby Vision authorization proves those shaders, not native HEVC decoding.
+2. For `decoder-output-mismatch`, inspect the frame at the rejection in `src/validation/ExternalHDRPresentationAuthorization.ts` using browser DevTools.
+   Compare `codedWidth`, `codedHeight`, `visibleRect`, `displayWidth`, `displayHeight`, and `colorSpace` with the vector.
+   The HEVC authorization configures 1920x1080 hints and requires that visible rectangle; a coded height of 1088 is permitted, but a visible height of 1088 is not.
+3. For `decoded-frame-color-mismatch`, use DevTools to compare the playback frame's transfer tag with the successful authorization decision's `decodedFrameTransfer`.
+   Limited BT.709-tagged HEVC output needs pixel-reference evidence for that tag; an authorized sRGB-tagged test does not cover it.
+   A `pixel-mismatch` rejects the native HDR route regardless of an acceptable metadata tag.
+4. Retry with Native and `VideoFrame`, then compare with GPU if an HEVC package is available.
+   A working GPU frame-pool route establishes a separate decode path; it does not establish native decoder correctness.
+   Keep the native route's pixel check enabled when testing a configuration change.
+
+See [HEVC external HDR authorization](codec-vectors.md#hevc-external-hdr-authorization-vector) for the test contract and [Decisions](decisions.md#video-decode-and-dolby-vision) for the Edge configuration experiment.
+
 ## How it is built
 
 | Path | Holds |

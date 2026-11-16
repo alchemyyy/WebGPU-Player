@@ -189,6 +189,8 @@ export type ExternalHDRRouteAuthorizationDecision = {
     authorizedRouteKeys: readonly ExternalHDRAuthorizationRouteKey[]
     /** The levels fitted to the decoded vector, which the route applies to every frame of its codec on the device; null when rejected */
     calibration: ExternalFrameCalibration | null
+    /** The tested frame's transfer tag; a rejection carries no permission to accept that tag. */
+    decodedFrameTransfer: VideoColorSpace['transfer']
     device: GPUDevice
     /** The failing value of a rejection, such as `14/255 > 3/255 at (3, 7)`; null when authorized */
     failureDetail: string | null
@@ -435,6 +437,7 @@ export function createExternalHDRShaderSignature(
 function frameMatchesAuthorizationContract(frame: VideoFrame, vector: ExternalHDRAuthorizationVector): boolean {
     const visibleRectangle = frame.visibleRect;
     // VideoToolbox reports the coded size unpadded
+    // HEVC's BT.709 tag is provisional until its rendered pixels pass validation.
     return frame.format === null
         && frame.codedWidth >= vector.displayWidth
         && frame.codedWidth <= vector.codedWidth
@@ -451,7 +454,8 @@ function frameMatchesAuthorizationContract(frame: VideoFrame, vector: ExternalHD
         && frame.colorSpace.fullRange === false
         && frame.colorSpace.matrix === 'bt709'
         && frame.colorSpace.primaries === 'bt709'
-        && frame.colorSpace.transfer === 'iec61966-2-1';
+        && (frame.colorSpace.transfer === 'iec61966-2-1'
+            || (vector === EXTERNAL_HDR_AUTHORIZATION_VECTORS.hevc && frame.colorSpace.transfer === 'bt709'));
 }
 
 async function flushVideoDecoderUntilAbort(decoder: VideoDecoder, signal?: AbortSignal): Promise<void> {
@@ -482,8 +486,10 @@ async function flushVideoDecoderUntilAbort(decoder: VideoDecoder, signal?: Abort
 function createDecoderConfiguration(vector: ExternalHDRAuthorizationVector): VideoDecoderConfig {
     return {
         codec: vector.decoderCodec,
-        codedHeight: vector.codedHeight,
-        codedWidth: vector.codedWidth,
+        // Edge uses these hints as its visible rectangle, so provide the
+        // picture size. The bitstream still defines the padded coded raster.
+        codedHeight: vector.displayHeight,
+        codedWidth: vector.displayWidth,
         colorSpace: {
             fullRange: false,
             matrix: 'bt709',
@@ -647,6 +653,7 @@ function createRejectedDecision(
     return {
         authorizedRouteKeys: [],
         calibration: null,
+        decodedFrameTransfer: null,
         device: probe.device,
         failureDetail,
         failureReason,
@@ -895,6 +902,7 @@ async function renderRoute(
         return {
             authorizedRouteKeys: [ probe.routeKey ],
             calibration: frameCalibration.calibration,
+            decodedFrameTransfer: frame.colorSpace?.transfer ?? null,
             device,
             failureDetail: null,
             failureReason: null,
@@ -1003,9 +1011,18 @@ export class ExternalHDRPresentationAuthorizationRunner {
             rejectRoutes(routes, 'decoder-api-unavailable', 'VideoDecoder undefined');
             return;
         }
-        const configuration = createDecoderConfiguration(EXTERNAL_HDR_AUTHORIZATION_VECTORS[codec]);
+        const vector = EXTERNAL_HDR_AUTHORIZATION_VECTORS[codec];
+        const configuration = createDecoderConfiguration(vector);
         const checkStep: VideoCapabilityProbeStep = describeVideoConfigCheck(configuration);
-        const decodeStep: VideoCapabilityProbeStep = describeVideoDecode(configuration, DECODED_FRAME_FORMAT);
+        const decodeStep: VideoCapabilityProbeStep = {
+            ...describeVideoDecode(configuration, DECODED_FRAME_FORMAT),
+            // Budget the allocated raster, independently of the visible-size hints.
+            cost: describeVideoDecode({
+                ...configuration,
+                codedHeight: vector.codedHeight,
+                codedWidth: vector.codedWidth
+            }, DECODED_FRAME_FORMAT).cost
+        };
         const deadline = new GPUAuthorizationDeadline(device);
         const executors: PresentationExecutor[] = [];
         // The decode step's answer, and its call once the manager starts it, which renders with the executors until it settles
@@ -1329,7 +1346,8 @@ export class ExternalHDRPresentationAuthorizationRegistry {
         device: GPUDevice,
         targetFormat: GPUTextureFormat,
         codec: ExternalHDRVideoCodec,
-        metadata: InputColorMetadata
+        metadata: InputColorMetadata,
+        decodedFrameTransfer?: VideoColorSpace['transfer']
     ): string | null {
         const routeKey = getExternalHDRAuthorizationRouteKey(codec, metadata);
         if (!routeKey) {
@@ -1343,12 +1361,16 @@ export class ExternalHDRPresentationAuthorizationRegistry {
         ) {
             return `decision-mismatch: ${routeKey}`;
         }
-        return describeAuthorizationDecision(
+        const failure = describeAuthorizationDecision(
             routeKey,
             probe !== undefined,
             decision,
             (): string => this.getReferenceSignature(device, targetFormat, routeKey)
         );
+        if (failure === null && decodedFrameTransfer === 'bt709' && decision?.decodedFrameTransfer !== 'bt709') {
+            return `untested-frame-transfer: bt709, tested ${decision?.decodedFrameTransfer ?? 'unknown'}: ${routeKey}`;
+        }
+        return failure;
     }
 
     /**
