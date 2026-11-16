@@ -170,7 +170,7 @@ Commit hashes refer to the Jellyfin Web fork's `webgpu-player` branch, where the
 
 ## Video decode and Dolby Vision
 
-These were settled on stock Chrome on Windows, with a Chromium 153 source audit.
+Unless an entry names another environment, these were settled on stock Chrome on Windows, with a Chromium 153 source audit.
 
 - Hardware decode output is opaque.
   WebCodecs HEVC Main 10 hardware frames are P010 surfaces with `VideoFrame.format === null`, so `copyTo()` and `allocationSize()` cannot expose planes.
@@ -421,6 +421,17 @@ These were settled on stock Chrome on Windows, with a Chromium 153 source audit.
 - The external HDR authorization takes a frame's coded size from its visible size to the vector's (11-11).
   VideoToolbox reports the 1080-row HEVC vector's coded height as 1080, not the padded 1088, so on macOS every HEVC frame failed as `decoder-output-mismatch`.
   The native SDR output probe already accepts that range.
+- HEVC external HDR authorization supplies visible-size decoder hints and tests Edge's BT.709 transfer tag (11-17).
+  On Edge 157 for Windows, the same 1920x1088 bitstream with an eight-row conformance crop returns a visible 1920x1088 frame when configured with 1920x1088, the correct visible 1920x1080 frame when configured with 1920x1080, and a visible 1280x720 frame when dimensions are omitted.
+  The authorization configures the vector's visible size on every browser, keeps its padded raster for decode memory accounting, and requires the exact visible rectangle on output; it does not accept visible padding or wrap the decoded frame.
+  Edge reports limited BT.709 transfer in all six combinations of these size hints and an explicit sRGB color override being present or absent, despite the bitstream's sRGB VUI.
+  The experiment separates the visible-rectangle behavior from the transfer behavior; it does not identify the layer inside Edge that changes or replaces the transfer tag, or prove from metadata alone that pixels were color-converted.
+  [Media Foundation defines both sRGB and BT.709 transfers](https://learn.microsoft.com/en-us/windows/win32/api/mfobjects/ne-mfobjects-mfvideotransferfunction), while the [WebCodecs color-override discussion](https://github.com/w3c/webcodecs/issues/940) records implementation differences; lack of a Windows sRGB identifier is not the explanation.
+  The HEVC BT.709 tag proceeds to the existing rendered pixel-reference check; it does not authorize a route by itself or override the returned color metadata.
+  The authorization decision records the decoded frame's transfer tag.
+  The external HDR presenter accepts limited BT.709-tagged HEVC frames only when that same tag passed the route's pixel-reference check on the current device, target format, and shader; an sRGB-tagged test does not authorize BT.709-tagged playback.
+  AV1 and external Dolby Vision retain their existing color contracts.
+  The [vector contract](codec-vectors.md#hevc-external-hdr-authorization-vector) records the configuration, geometry, and pixel tolerance required before this evidence authorizes playback.
 - Neutralized frames carry the sRGB transfer, not BT.709's (11-11).
   Chrome on macOS converts an external texture tagged with the BT.709 transfer to the sRGB curve on import, so on an M3 the authorization readback was up to 34.4/255 off and no native HEVC HDR key was authorized; Chrome on Windows passes the codes through for either tag.
   With transfer 13, `iec61966-2-1`, the readback is within 2.1/255; primaries, matrix, and range are unchanged, so the route keys keep their names.

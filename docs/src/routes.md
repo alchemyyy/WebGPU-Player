@@ -64,11 +64,14 @@ Without a container mask, the host's `audioMetadataLayout` (Jellyfin's count and
   Results are cached per `GPUDevice`, canvas format, and shader signature, and dropped on device loss.
   A `timeout` or `device-lost` decision stays visible but is not kept: the next authorize call probes the route again (`isRetriedAuthorizationDecision`), since a deadline that counted time behind other runners is no verdict.
   Every runner, and the canvas readback, pushes and pops its validation error scope in the same task, around its submit (`captureValidationErrors`, `submitAuthorizationFrames`), and awaits the popped result later, because the runners at device creation share the device's one scope stack and a late pop could take another runner's scope.
-- External HDR authorization opens a hardware decoder (HEVC `hvc1.2.4.L120.B0` at 1920x1088, AV1 `av01.0.08M.10` at 1920x1080, `prefer-hardware`), so its `isConfigSupported` check and its decode run as recorded steps of the page's probe session, under the probes `external-hdr-authorization:hevc` and `external-hdr-authorization:av1`, with labels such as `check hvc1.2.4.L120.B0 1920x1088 prefer-hardware`.
+- External HDR authorization opens a hardware decoder (HEVC `hvc1.2.4.L120.B0`, AV1 `av01.0.08M.10`, both configured with 1920x1080 visible-size hints and `prefer-hardware`), so its `isConfigSupported` check and its decode run as recorded steps of the page's probe session, under the probes `external-hdr-authorization:hevc` and `external-hdr-authorization:av1`, with labels such as `check hvc1.2.4.L120.B0 1920x1080 prefer-hardware`.
   A crash in them is quarantined like a capability probe step's, and a blocked or defective step rejects the route with the reason `stopped-page` or `browser-defect`.
   The decode step's call decodes, imports, renders, and reads back within the manager's step timeout (`CapabilityProbeManager.timeoutMilliseconds`), and returns decisions, never the frame.
   The routes of one codec and target format asked for in the same task, such as the HEVC PQ and HLG keys, share one check and one decode, and a device runs a codec's batches one after another, so it never holds two of that codec's decoders.
   A deadline that passes during the check opens no decoder.
+  The HEVC vector's coded raster is 1920x1088, which its decode memory budget still covers; configuring its visible size makes Edge expose the intended crop, and output must have the exact 1920x1080 visible rectangle.
+  HEVC accepts a limited BT.709 transfer tag, as Edge can report despite the sRGB bitstream and configuration, only subject to the rendered pixel-reference check.
+  The decision records the tested transfer; playback accepts a BT.709-tagged HEVC frame only when that tag passed the same route's check on the current device, target format, and shader.
 - External Dolby Vision authorization returns `video-frame-creation-failed` before compiling anything when `canHoldVideoFrameFormat('I420P10')` is false, as on shipping Safari or without `VideoFrame`.
   The other authorizations open no decoder, so they are not recorded.
 - `selectCustomDecodeProbes(item)` picks the probes an item needs.

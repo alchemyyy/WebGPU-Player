@@ -12,6 +12,7 @@ const rawHDRAuthorizationMockState = vi.hoisted(() => ({
 const externalHDRAuthorizationMockState = vi.hoisted(() => ({
     authorizeCalls: [] as GPUDevice[],
     authorized: true,
+    decodedFrameTransfer: 'iec61966-2-1' as VideoColorSpace['transfer'],
     failure: 'pixel-mismatch: external-hevc-main10-bt709-limited:pq-v1 14/255 > 10/255 at (3, 7)',
     prewarmCalls: [] as Array<{ device: GPUDevice, targetFormat: GPUTextureFormat }>
 }));
@@ -113,9 +114,13 @@ vi.mock('webgpu-player/validation/ExternalHDRPresentationAuthorization', () => (
 
         isAuthorized = vi.fn((): boolean => externalHDRAuthorizationMockState.authorized);
 
-        getAuthorizationFailure = vi.fn((): string | null => (
-            externalHDRAuthorizationMockState.authorized ? null : externalHDRAuthorizationMockState.failure
-        ));
+        getAuthorizationFailure = vi.fn((_device: GPUDevice, _targetFormat: GPUTextureFormat, _codec: string, _metadata: unknown, transfer?: VideoColorSpace['transfer']): string | null => {
+            if (!externalHDRAuthorizationMockState.authorized) {
+                return externalHDRAuthorizationMockState.failure;
+            }
+            return transfer === 'bt709' && externalHDRAuthorizationMockState.decodedFrameTransfer !== 'bt709' ?
+                'untested-frame-transfer: bt709' : null;
+        });
 
         getTelemetry = vi.fn((_device: GPUDevice | null, targetFormat: GPUTextureFormat | null) => ({
             authorizedRouteKeys: externalHDRAuthorizationMockState.authorized ? [
@@ -1112,6 +1117,7 @@ describe('WebGPUPresenter', () => {
         rawHDRAuthorizationMockState.prewarmCalls = [];
         externalHDRAuthorizationMockState.authorizeCalls = [];
         externalHDRAuthorizationMockState.authorized = true;
+        externalHDRAuthorizationMockState.decodedFrameTransfer = 'iec61966-2-1';
         externalHDRAuthorizationMockState.prewarmCalls = [];
         dolbyVisionAuthorizationMockState.authorizeCalls = [];
         dolbyVisionAuthorizationMockState.authorizeRouteNames = [];
@@ -1530,8 +1536,14 @@ describe('WebGPUPresenter', () => {
         await vi.waitFor(() => expect(submissionCompleted).toHaveBeenCalledWith(false));
     });
 
-    it('presents neutralized native Main10 frames through the authorized HDR shader', async () => {
+    it.each([
+        [ 'hevc', 'iec61966-2-1', 'iec61966-2-1', true ],
+        [ 'hevc', 'bt709', 'bt709', true ],
+        [ 'hevc', 'bt709', 'iec61966-2-1', false ],
+        [ 'av1', 'bt709', 'bt709', false ]
+    ] as const)('checks %s frames tagged %s against tested %s output (accepted: %s)', async (codec, transfer, testedTransfer, accepted) => {
         webSettingsMockState.hdrToneMappingEnabled = true;
+        externalHDRAuthorizationMockState.decodedFrameTransfer = testedTransfer;
         const gpuHarness = createGPUHarness();
         const contextHarness = createCanvasContextHarness();
         const surfaceHarness = createSurfaceHarness();
@@ -1541,7 +1553,11 @@ describe('WebGPUPresenter', () => {
         const presenter = new WebGPUPresenter(fallbackHandler);
         const metadata = createPQColorMetadata();
         const closeFrame = vi.fn();
-        const frame = createNeutralBT709VideoFrame(closeFrame);
+        const neutralFrame = createNeutralBT709VideoFrame(closeFrame);
+        const frame = {
+            ...neutralFrame,
+            colorSpace: { ...neutralFrame.colorSpace, transfer }
+        } as unknown as VideoFrame;
 
         presenter.startSession(1);
         presenter.setDecodedFramePushMode(true, 1);
@@ -1550,7 +1566,7 @@ describe('WebGPUPresenter', () => {
             surfaceHarness.surface.container.querySelector('.webgpuPlayerCanvas')
         ).toBeInstanceOf(HTMLCanvasElement));
         await expect(presenter.configureColorPipeline({
-            codec: 'hevc',
+            codec,
             inputMode: 'external-hdr',
             metadata,
             settings: createHDRToSDRRenderSettings({
@@ -1563,7 +1579,15 @@ describe('WebGPUPresenter', () => {
             frame,
             mediaTimeMicroseconds: secondsToMicroseconds(2),
             outputMode: 'video-frame'
-        }, 1)).toBe(true);
+        }, 1)).toBe(accepted);
+        if (!accepted) {
+            await vi.waitFor(() => expect(fallbackHandler).toHaveBeenCalledWith(
+                1, 'decoded-frame-color-mismatch', expect.any(String)
+            ));
+            expect(gpuHarness.devices[0].importExternalTexture).not.toHaveBeenCalled();
+            expect(closeFrame).toHaveBeenCalledOnce();
+            return;
+        }
         expect(gpuHarness.devices[0].importExternalTexture).toHaveBeenCalledWith({
             colorSpace: 'srgb',
             source: frame

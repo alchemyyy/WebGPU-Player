@@ -1021,10 +1021,16 @@ function getDecodedFrameColorFailure(frame: VideoFrame, metadata: InputColorMeta
 }
 
 /**
- * Returns how a decoded frame differs from the neutralized BT.709 limited-range description, or with `fullRangeAllowed` from either range's, or null when it matches.
+ * Checks the neutralized sRGB description and optional range/transfer variants.
+ * A caller allowing BT.709 must also check that tag's pixel-reference evidence.
  */
-function getNeutralBT709FrameColorFailure(frame: VideoFrame, fullRangeAllowed = false): string | null {
+function getNeutralBT709FrameColorFailure(frame: VideoFrame, fullRangeAllowed = false, bt709TransferAllowed = false): string | null {
     const actualColor = describeVideoFrameColor(frame);
+    // HEVC authorization tests this Edge output through the pixel-reference
+    // check. Keep playback consistent with that contract, without retagging it.
+    if (bt709TransferAllowed && actualColor === 'bt709:bt709:bt709:limited') {
+        return null;
+    }
     if (actualColor === NEUTRAL_BT709_COLOR_DESCRIPTION || (fullRangeAllowed && actualColor === NEUTRAL_BT709_FULL_RANGE_COLOR_DESCRIPTION)) {
         return null;
     }
@@ -3088,23 +3094,23 @@ export default class WebGPUPresenter {
         return this.rawHDRAuthorization.getAuthorizationFailure(device, targetFormat, metadata, format);
     }
 
-    private getExternalHDRAuthorizationFailure(codec: ExternalHDRVideoCodec, metadata: InputColorMetadata): string | null {
+    private getExternalHDRAuthorizationFailure(codec: ExternalHDRVideoCodec, metadata: InputColorMetadata, decodedFrameTransfer?: VideoColorSpace['transfer']): string | null {
         const device = this.device;
         const targetFormat = this.canvasFormat;
         if (!device || !targetFormat) {
             return 'device: unavailable';
         }
-        return this.externalHDRAuthorization.getAuthorizationFailure(device, targetFormat, codec, metadata);
+        return this.externalHDRAuthorization.getAuthorizationFailure(device, targetFormat, codec, metadata, decodedFrameTransfer);
     }
 
     /** Returns why the active external HDR route is not authorized for its codec and the metadata, including a mode that tone maps nothing. */
-    private getActiveExternalHDRAuthorizationFailure(metadata: InputColorMetadata): string | null {
+    private getActiveExternalHDRAuthorizationFailure(metadata: InputColorMetadata, decodedFrameTransfer?: VideoColorSpace['transfer']): string | null {
         if (this.settings.mode !== 'hdr-to-sdr') {
             return `mode: ${this.settings.mode}, expected hdr-to-sdr`;
         }
         return this.activeExternalHDRCodec === null ?
             'codec: none configured' :
-            this.getExternalHDRAuthorizationFailure(this.activeExternalHDRCodec, metadata);
+            this.getExternalHDRAuthorizationFailure(this.activeExternalHDRCodec, metadata, decodedFrameTransfer);
     }
 
     private getRawDolbyVisionAuthorizationFailure(
@@ -3880,8 +3886,8 @@ export default class WebGPUPresenter {
             case 'external-hdr': {
                 const metadata = this.activeInputColorMetadata;
                 const frameFailure = metadata ?
-                    getNeutralBT709FrameColorFailure(frame, true)
-                        ?? prefixFailure('authorization', this.getActiveExternalHDRAuthorizationFailure(metadata)) :
+                    getNeutralBT709FrameColorFailure(frame, true, this.activeExternalHDRCodec === 'hevc')
+                        ?? prefixFailure('authorization', this.getActiveExternalHDRAuthorizationFailure(metadata, frame.colorSpace.transfer)) :
                     'metadata: none configured';
                 if (frameFailure !== null) {
                     this.fallback(generation, 'decoded-frame-color-mismatch', frameFailure);

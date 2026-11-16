@@ -75,6 +75,29 @@ The generators work in one of three modes:
   The AV1 Dolby Vision generator runs the checks listed in [AV1 Dolby Vision vectors](#av1-dolby-vision-vectors), the HDR10+ AV1 generator those in [HDR10+ AV1 vectors](#hdr10-av1-vectors), and the HDR10+ VP9 generator those in [HDR10+ VP9 vectors](#hdr10-vp9-vectors).
   The WMA decoder generator installs its media as the encoder-dependent generators do and rewrites its known answers from the committed media.
 
+## HEVC external HDR authorization vector
+
+`src/capability/vectors/ExternalHDRAuthorizationVector.ts` holds a Main 10 Annex B keyframe and eight known YUV samples.
+Its coded raster is 1920x1088, with a conformance window removing eight bottom rows for a 1920x1080 visible picture.
+`ExternalHDRPresentationAuthorization.ts` rewrites the vector's color description to limited BT.709 primaries and matrix with sRGB transfer, using the production HEVC color rewriter.
+The rewritten SPS carries transfer code 13, and the decoder configuration requests the same color description.
+
+Configure `codedWidth` and `codedHeight` with the vector's visible dimensions, 1920x1080.
+These configuration hints do not change the bitstream's coded raster or its conformance window.
+Edge on Windows can use the hints as the returned visible rectangle, so supplying 1088 rows exposes padding, and omitting the hints can expose Chromium's default 1280x720 rectangle.
+The decode step's memory budget still covers the 1920x1088 allocation and the decoder's reference frames.
+
+The frame must be opaque (`format === null`), have a coded size between the visible size and the vector's coded raster, and report exactly the 1920x1080 visible and display size, with a visible origin of (0, 0).
+Its primaries and matrix must be BT.709 and its range limited.
+The transfer may be sRGB or, for HEVC, BT.709; either output must then pass the production shader's GPU readback against all eight reference samples, with a maximum channel error of 10/255.
+Metadata acceptance alone never authorizes the route.
+The successful decision records `decodedFrameTransfer`, and a BT.709-tagged playback frame requires BT.709-tagged evidence for its route on the same device, target format, and shader.
+
+`test/capability/vectors/ExternalHDRAuthorizationVector.test.ts` checks the original vector's syntax, digest, and sample positions.
+`test/validation/ExternalHDRPresentationAuthorization.test.ts` covers visible-size configuration, exact crop validation, padded memory accounting, transfer evidence, and pixel mismatches.
+`test/presentation/WebGPUPresenter.test.ts` covers acceptance of proven BT.709-tagged HEVC output and rejection of an untested tag or that tag on AV1.
+See [Eligibility and routes](routes.md#probes-and-caching) and the [Edge investigation](decisions.md#video-decode-and-dolby-vision) for the runtime policy and its evidence.
+
 ## HEVC range-extension vectors
 
 These Annex B files are deterministic WebCodecs capability probes.
