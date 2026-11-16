@@ -1,5 +1,6 @@
 // Encodes frames from a presentation plan: it owns the plan's GPU resources, takes each frame's source, and records the passes in plan order.
 // The Presentation section of docs/src/architecture.md describes the design it implements.
+import { IDENTITY_EXTERNAL_FRAME_CALIBRATION, type ExternalFrameCalibration } from '../../color/ExternalFrameCalibration';
 import { DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH } from '../../demux/dolby-vision/DolbyVisionRPUParser';
 import {
     RAW_VIDEO_DOLBY_VISION_ENHANCEMENT_FRAME_FORMAT,
@@ -21,6 +22,7 @@ import {
 } from '../WebGPUConstants';
 import {
     ENHANCEMENT_UNIFORM_BYTE_LENGTH,
+    EXTERNAL_FRAME_CALIBRATION_UNIFORM_BYTE_LENGTH,
     FRAME_POOL_LAYOUT_BYTE_LENGTH,
     FRAME_POOL_VISIBLE_RECTANGLE_BYTE_OFFSET,
     getEngineBindingLayout,
@@ -93,6 +95,7 @@ const PARAMETERS_LABEL = 'Presentation parameters';
 const RENDER_SETTINGS_LABEL = 'Presentation render settings';
 const DOLBY_VISION_RPU_LABEL = 'Presentation Dolby Vision RPU';
 const ENHANCEMENT_UNIFORM_LABEL = 'Presentation Dolby Vision enhancement uniforms';
+const EXTERNAL_FRAME_CALIBRATION_LABEL = 'Presentation external frame calibration';
 const SAMPLER_LABEL = 'Presentation linear sampler';
 const PASS_SAMPLER_LABEL = 'Presentation texture block sampler';
 const BASE_PLANES_LABEL = 'Raw video';
@@ -696,6 +699,7 @@ export class PresentationExecutor {
     private readonly dolbyVisionRPUBuffer: GPUBuffer | null;
     private readonly enhancementBuffer: GPUBuffer | null;
     private readonly enhancementView: DataView<ArrayBuffer> = new DataView(new ArrayBuffer(ENHANCEMENT_UNIFORM_BYTE_LENGTH));
+    private readonly externalFrameCalibrationBuffer: GPUBuffer | null;
     // Frame pool bind groups per layout uniform, so a pool that names each slot with its own layout buffer never creates them per frame
     private readonly framePoolBindGroups = new Map<GPUBuffer, readonly (readonly GPUBindGroup[])[]>();
     // The visible rectangle last written into each layout uniform, so a frame whose rectangle its slot's uniform already holds writes nothing
@@ -805,6 +809,14 @@ export class PresentationExecutor {
                 DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH,
                 GPUBufferUsage.COPY_DST | GPUBufferUsage.STORAGE
             );
+            this.externalFrameCalibrationBuffer = this.createOptionalBuffer(
+                engineResources.has('external-frame-calibration'),
+                EXTERNAL_FRAME_CALIBRATION_LABEL,
+                EXTERNAL_FRAME_CALIBRATION_UNIFORM_BYTE_LENGTH,
+                uniformUsage
+            );
+            // Until its route writes the levels its codec's frames need, a plan recovers the codes as they are
+            this.writeExternalFrameCalibration(IDENTITY_EXTERNAL_FRAME_CALIBRATION);
             this.sampler = engineResources.has('sampler-linear') ?
                 device.createSampler({ label: SAMPLER_LABEL, magFilter: 'linear', minFilter: 'linear' }) :
                 null;
@@ -890,6 +902,20 @@ export class PresentationExecutor {
         requireByteLength(data, DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH, 'Dolby Vision RPU data');
         if (this.dolbyVisionRPUBuffer) {
             this.device.queue.writeBuffer(this.dolbyVisionRPUBuffer, 0, data);
+        }
+    }
+
+    /** Writes the levels the external signals apply to the codes they recover; it does nothing when no pass binds them. */
+    writeExternalFrameCalibration(calibration: ExternalFrameCalibration): void {
+        this.requireUsable();
+        if (this.externalFrameCalibrationBuffer) {
+            // The gains, then the offsets, each padded to a vec4f
+            this.device.queue.writeBuffer(this.externalFrameCalibrationBuffer, 0, new Float32Array([
+                ...calibration.gain,
+                0,
+                ...calibration.offset,
+                0
+            ]).buffer);
         }
     }
 
@@ -1273,6 +1299,8 @@ export class PresentationExecutor {
                 return this.dolbyVisionRPUBuffer && { buffer: this.dolbyVisionRPUBuffer };
             case 'enhancement-uniform':
                 return this.enhancementBuffer && { buffer: this.enhancementBuffer };
+            case 'external-frame-calibration':
+                return this.externalFrameCalibrationBuffer && { buffer: this.externalFrameCalibrationBuffer };
             case 'render-settings':
                 return this.renderSettingsBuffer && { buffer: this.renderSettingsBuffer };
             case 'sampler-linear':

@@ -13,12 +13,22 @@ import {
     processEncodedYUV,
     type ColorTriplet
 } from '../color/ColorPipeline';
+import {
+    applyExternalFrameCalibration,
+    fitExternalFrameCalibration,
+    isUnclippedExternalFrameRGB,
+    recoverLimitedRangeBT709Codes,
+    type ExternalFrameCalibration,
+    type ExternalFrameCalibrationSample
+} from '../color/ExternalFrameCalibration';
 import { rewriteHEVCAccessUnitColorDescriptionToBT709 } from '../demux/dolby-vision/DolbyVisionHEVCSplitter';
 import { rewriteAV1TemporalUnitColorToBT709 } from '../decode/video/native/NativeHDRAV1ColorNeutralizer';
 import { waitForGPUCompletion } from '../GPUCompletion';
 import { createBuiltinChain } from '../presentation/passes/builtin/BuiltinChains';
+import { createExternalIdentitySignal } from '../presentation/passes/builtin/BuiltinSignals';
 import type { BuiltinChain, BuiltinChainConfiguration } from '../presentation/passes/PassTypes';
 import type { PresentationExecutor } from '../presentation/passes/PresentationExecutor';
+import { INTERMEDIATE_TEXTURE_FORMAT } from '../presentation/WebGPUConstants';
 import {
     createExternalAV1HDRAuthorizationTemporalUnit,
     EXTERNAL_AV1_HDR_AUTHORIZATION_CODEC,
@@ -66,8 +76,20 @@ import {
     type RawHDRVectorObservation
 } from './RawHDRPresentationAuthorization';
 
-const EXTERNAL_HDR_AUTHORIZATION_TOLERANCE = 10 / READBACK_CODE_SCALE;
 const MAXIMUM_10_BIT_CODE = 1_023;
+// The output compares with a CPU reference from the codes the route recovered, so it differs only by shader arithmetic and the target's quantization
+const EXTERNAL_HDR_AUTHORIZATION_TOLERANCE = 3 / READBACK_CODE_SCALE;
+// The recovered codes, levels applied, compare with the vector's own in 10-bit code steps, which the browser's 8-bit texture moves by up to 2
+const EXTERNAL_HDR_INPUT_TOLERANCE = 4 / MAXIMUM_10_BIT_CODE;
+// A float target keeps the browser's 8-bit RGB exact through the readback
+const CALIBRATION_PROBE_TARGET_FORMAT: GPUTextureFormat = INTERMEDIATE_TEXTURE_FORMAT;
+// The calibration probe reads the browser's RGB of the decoded vector through the identity route's signal, planned like a route's chain
+const CALIBRATION_PROBE_CHAIN: BuiltinChain = {
+    colorFunctions: [],
+    linearLight: null,
+    signal: createExternalIdentitySignal(null),
+    sourceIsDisplay: true
+};
 const PROBE_KEY_SEPARATOR = '\u0000';
 // The probe each codec's steps are journaled under, so a page that stops in one names this authorization; the plugin's crash report takes names of up to 64 characters
 const EXTERNAL_HDR_AUTHORIZATION_PROBE_NAMES: Readonly<Record<ExternalHDRVideoCodec, string>> = {
@@ -145,6 +167,7 @@ const EXTERNAL_HDR_AUTHORIZATION_VECTORS: Readonly<Record<ExternalHDRVideoCodec,
 
 export type ExternalHDRAuthorizationFailureReason =
     | 'browser-defect'
+    | 'calibration-failed'
     | 'decode-failed'
     | 'decoder-api-unavailable'
     | 'decoder-config-unsupported'
@@ -153,6 +176,7 @@ export type ExternalHDRAuthorizationFailureReason =
     | 'frame-import-failed'
     | 'gpu-api-unavailable'
     | 'gpu-validation-failed'
+    | 'input-mismatch'
     | 'pixel-mismatch'
     | 'readback-failed'
     | 'route-unsupported'
@@ -163,13 +187,17 @@ export type ExternalHDRAuthorizationFailureReason =
 
 export type ExternalHDRRouteAuthorizationDecision = {
     authorizedRouteKeys: readonly ExternalHDRAuthorizationRouteKey[]
+    /** The levels fitted to the decoded vector, which the route applies to every frame of its codec on the device; null when rejected */
+    calibration: ExternalFrameCalibration | null
     device: GPUDevice
-    /** The failing value of a rejection, such as `14/255 > 10/255 at (3, 7)`; null when authorized */
+    /** The failing value of a rejection, such as `14/255 > 3/255 at (3, 7)`; null when authorized */
     failureDetail: string | null
     failureReason: ExternalHDRAuthorizationFailureReason | null
     /** The version of the route's codec vector */
     vectorVersion: number
     maximumChannelError: number | null
+    /** The largest error of the recovered codes, levels applied, against the vector's, normalized by 1023; null before levels were fitted */
+    maximumInputChannelError: number | null
     renderSettingsVersion: typeof RENDER_SETTINGS_VERSION
     routeKey: ExternalHDRAuthorizationRouteKey
     sampleCount: number
@@ -180,12 +208,17 @@ export type ExternalHDRRouteAuthorizationDecision = {
 
 export type ExternalHDRAuthorizationTelemetry = {
     authorizedRouteKeys: readonly ExternalHDRAuthorizationRouteKey[]
+    calibrations: Readonly<Partial<Record<ExternalHDRAuthorizationRouteKey, ExternalFrameCalibration>>>
     failureDetails: Readonly<Partial<Record<ExternalHDRAuthorizationRouteKey, string>>>
     failureReasons: Readonly<Partial<Record<
         ExternalHDRAuthorizationRouteKey,
         ExternalHDRAuthorizationFailureReason
     >>>
     maximumChannelErrors: Readonly<Partial<Record<
+        ExternalHDRAuthorizationRouteKey,
+        number
+    >>>
+    maximumInputChannelErrors: Readonly<Partial<Record<
         ExternalHDRAuthorizationRouteKey,
         number
     >>>
@@ -232,6 +265,21 @@ type BatchRoute = {
 
 type RenderableRoute = BatchRoute & { executor: PresentationExecutor };
 
+/** The levels fitted to a decoded vector frame, with each sample's codes as a route recovers them, levels applied. */
+type FrameCalibration = {
+    calibration: ExternalFrameCalibration
+    maximumInputChannelError: number
+    recoveredCodes: readonly ColorTriplet[]
+};
+
+/** Why a decoded vector frame gave no levels, which rejects every route of its batch. */
+type FrameCalibrationRejection = {
+    failureDetail: string
+    failureReason: ExternalHDRAuthorizationFailureReason
+    maximumInputChannelError: number | null
+    sampleCount: number
+};
+
 /** The device, target, route, and reference shader one probe renders, which every decision of the probe carries. */
 type RouteProbeIdentity = {
     device: GPUDevice
@@ -242,12 +290,14 @@ type RouteProbeIdentity = {
 
 type TelemetryAccumulator = {
     authorizedRouteKeys: ExternalHDRAuthorizationRouteKey[]
+    calibrations: Partial<Record<ExternalHDRAuthorizationRouteKey, ExternalFrameCalibration>>
     failureDetails: Partial<Record<ExternalHDRAuthorizationRouteKey, string>>
     failureReasons: Partial<Record<
         ExternalHDRAuthorizationRouteKey,
         ExternalHDRAuthorizationFailureReason
     >>
     maximumChannelErrors: Partial<Record<ExternalHDRAuthorizationRouteKey, number>>
+    maximumInputChannelErrors: Partial<Record<ExternalHDRAuthorizationRouteKey, number>>
     pendingRouteKeys: ExternalHDRAuthorizationRouteKey[]
     rejectedRouteKeys: ExternalHDRAuthorizationRouteKey[]
     sampleCounts: Partial<Record<ExternalHDRAuthorizationRouteKey, number>>
@@ -337,15 +387,27 @@ function createExternalHDRReferencePlan(
     });
 }
 
+/** Plans the probe that reads the browser's RGB of a codec's decoded vector into a float target, from which the route's levels are fitted. */
+function createCalibrationProbePlan(device: GPUDevice, codec: ExternalHDRVideoCodec): AuthorizationReferencePlan {
+    const vector = EXTERNAL_HDR_AUTHORIZATION_VECTORS[codec];
+    return createAuthorizationReferencePlan(device, (): BuiltinChain => CALIBRATION_PROBE_CHAIN, {
+        format: CALIBRATION_PROBE_TARGET_FORMAT,
+        hdrSource: false,
+        height: vector.displayHeight,
+        width: vector.displayWidth
+    });
+}
+
 function createProbeKey(targetFormat: GPUTextureFormat, routeKey: ExternalHDRAuthorizationRouteKey): string {
     return `${targetFormat}${PROBE_KEY_SEPARATOR}${routeKey}`;
 }
 
-/** Creates a stable identity for the exact native frame and the route's reference chain. */
+/** Creates a stable identity for the exact native frame, the route's reference chain, and the calibration probe its levels are fitted from. */
 export function createExternalHDRShaderSignature(
     targetFormat: GPUTextureFormat,
     routeKey: ExternalHDRAuthorizationRouteKey,
-    shaderCode: string
+    shaderCode: string,
+    calibrationProbeShaderCode: string
 ): string {
     const vector = getRouteVector(routeKey);
     const signatureInput = [
@@ -355,9 +417,12 @@ export function createExternalHDRShaderSignature(
         `route=${routeKey}`,
         `codec=${vector.decoderCodec}`,
         'frame=opaque:bt709:bt709:iec61966-2-1:limited',
+        `input-format=${CALIBRATION_PROBE_TARGET_FORMAT}`,
+        `input-tolerance=${EXTERNAL_HDR_INPUT_TOLERANCE}`,
         `tolerance=${EXTERNAL_HDR_AUTHORIZATION_TOLERANCE}`,
         `target=${targetFormat}`,
-        shaderCode
+        shaderCode,
+        calibrationProbeShaderCode
     ].join('\u0000');
     let hash = 0x811C_9DC5;
     for (let characterIndex = 0; characterIndex < signatureInput.length; characterIndex += 1) {
@@ -514,17 +579,21 @@ export async function createExternalHDRAuthorizationFrame(codec: ExternalHDRVide
     }
 }
 
-/** Computes CPU-reference samples from the vector's exact decoded YUV codes. */
+/** Computes CPU-reference samples from YUV codes at the vector's samples: its exact decoded codes, or the codes a route recovered from the browser. */
 export function createExpectedExternalHDRAuthorizationObservations(
     routeKey: ExternalHDRAuthorizationRouteKey,
-    settings: HDRToSDRRenderSettings
+    settings: HDRToSDRRenderSettings,
+    sampleCodes: readonly ColorTriplet[] = getRouteVector(routeKey).samples.map(
+        (sample: ExternalHDRAuthorizationVectorSample): ColorTriplet => sample.rawYUVCode
+    )
 ): readonly RawHDRVectorObservation[] {
     const metadata = createMetadata(routeKey);
-    return getRouteVector(routeKey).samples.map(sample => {
+    return getRouteVector(routeKey).samples.map((sample: ExternalHDRAuthorizationVectorSample, sampleIndex: number): RawHDRVectorObservation => {
+        const codes = sampleCodes[sampleIndex];
         const encodedYUV: ColorTriplet = [
-            sample.rawYUVCode[0] / MAXIMUM_10_BIT_CODE,
-            sample.rawYUVCode[1] / MAXIMUM_10_BIT_CODE,
-            sample.rawYUVCode[2] / MAXIMUM_10_BIT_CODE
+            codes[0] / MAXIMUM_10_BIT_CODE,
+            codes[1] / MAXIMUM_10_BIT_CODE,
+            codes[2] / MAXIMUM_10_BIT_CODE
         ];
         const referenceRGB = processEncodedYUV(encodedYUV, metadata, settings);
         const dither = calculateRawHDRAuthorizationOutputDither(sample.sampleX, sample.sampleY);
@@ -572,15 +641,18 @@ function createRejectedDecision(
     failureReason: ExternalHDRAuthorizationFailureReason,
     failureDetail: string,
     sampleCount = 0,
-    maximumChannelError: number | null = null
+    maximumChannelError: number | null = null,
+    maximumInputChannelError: number | null = null
 ): ExternalHDRRouteAuthorizationDecision {
     return {
         authorizedRouteKeys: [],
+        calibration: null,
         device: probe.device,
         failureDetail,
         failureReason,
         vectorVersion: getRouteVector(probe.routeKey).version,
         maximumChannelError,
+        maximumInputChannelError,
         renderSettingsVersion: RENDER_SETTINGS_VERSION,
         routeKey: probe.routeKey,
         sampleCount,
@@ -590,6 +662,71 @@ function createRejectedDecision(
     };
 }
 
+function createCalibrationRejectedDecision(probe: RouteProbeIdentity, rejection: FrameCalibrationRejection): ExternalHDRRouteAuthorizationDecision {
+    return createRejectedDecision(
+        probe,
+        rejection.failureReason,
+        rejection.failureDetail,
+        rejection.sampleCount,
+        null,
+        rejection.maximumInputChannelError
+    );
+}
+
+function isFrameCalibration(result: FrameCalibration | FrameCalibrationRejection): result is FrameCalibration {
+    return 'calibration' in result;
+}
+
+// A sample's 10-bit codes as an observation, normalized as a float readback holds them, so codes compare in 10-bit code steps
+function createCodeObservation(codes: ColorTriplet, sample: ExternalHDRAuthorizationVectorSample): RawHDRVectorObservation {
+    return {
+        linearRGB: [ codes[0] / MAXIMUM_10_BIT_CODE, codes[1] / MAXIMUM_10_BIT_CODE, codes[2] / MAXIMUM_10_BIT_CODE ],
+        sampleX: sample.sampleX,
+        sampleY: sample.sampleY
+    };
+}
+
+/**
+ * Fits the levels that recover the vector's codes from the browser's RGB at its samples, then checks the recovered codes of every sample the
+ * browser did not clip against the vector's; a clipped channel says nothing of the levels, and the output check covers its sample as recovered.
+ */
+function evaluateFrameCalibration(
+    samples: readonly ExternalHDRAuthorizationVectorSample[],
+    encodedRGB: readonly ColorTriplet[]
+): FrameCalibration | FrameCalibrationRejection {
+    const calibrationSamples = samples.map((sample: ExternalHDRAuthorizationVectorSample, sampleIndex: number): ExternalFrameCalibrationSample => ({
+        encodedRGB: encodedRGB[sampleIndex],
+        rawYUVCode: sample.rawYUVCode
+    }));
+    const fit = fitExternalFrameCalibration(calibrationSamples);
+    if (fit.calibration === null) {
+        return { failureDetail: fit.failure, failureReason: 'calibration-failed', maximumInputChannelError: null, sampleCount: samples.length };
+    }
+    const calibration = fit.calibration;
+    const recoveredCodes = calibrationSamples.map((sample: ExternalFrameCalibrationSample): ColorTriplet => applyExternalFrameCalibration(
+        recoverLimitedRangeBT709Codes(sample.encodedRGB),
+        calibration
+    ));
+    const unclippedIndices = calibrationSamples.flatMap((sample: ExternalFrameCalibrationSample, sampleIndex: number): number[] => (
+        isUnclippedExternalFrameRGB(sample.encodedRGB) ? [ sampleIndex ] : []
+    ));
+    const comparison = evaluateRawHDRVectorObservations(
+        unclippedIndices.map((sampleIndex: number): RawHDRVectorObservation => createCodeObservation(samples[sampleIndex].rawYUVCode, samples[sampleIndex])),
+        unclippedIndices.map((sampleIndex: number): RawHDRVectorObservation => createCodeObservation(recoveredCodes[sampleIndex], samples[sampleIndex])),
+        EXTERNAL_HDR_INPUT_TOLERANCE,
+        MAXIMUM_10_BIT_CODE
+    );
+    if (comparison.failureDetail !== null) {
+        return {
+            failureDetail: comparison.failureDetail,
+            failureReason: 'input-mismatch',
+            maximumInputChannelError: comparison.maximumChannelError,
+            sampleCount: samples.length
+        };
+    }
+    return { calibration, maximumInputChannelError: comparison.maximumChannelError, recoveredCodes };
+}
+
 /** What a step answers instead of its call's value: the timeout result, or the block that kept it from running. */
 type StepRefusal = CapabilityProbeBlock | typeof CAPABILITY_PROBE_TIMEOUT;
 
@@ -597,11 +734,87 @@ function isStepRefusal(outcome: unknown): outcome is StepRefusal {
     return outcome === CAPABILITY_PROBE_TIMEOUT || outcome instanceof CapabilityProbeBlock;
 }
 
-/** Renders one route from the decoded frame into a target of its own and compares its readback with the CPU reference, within the decode step's deadline. */
+/**
+ * Renders the browser's RGB of the decoded vector into a float target of its own, and fits the levels the codec's routes recover its codes with,
+ * within the decode step's deadline.
+ */
+async function calibrateFrame(
+    device: GPUDevice,
+    executor: PresentationExecutor,
+    codec: ExternalHDRVideoCodec,
+    frame: VideoFrame,
+    targetUsage: GPUTextureUsageFlags,
+    deadline: GPUAuthorizationDeadline
+): Promise<FrameCalibration | FrameCalibrationRejection> {
+    const samples = EXTERNAL_HDR_AUTHORIZATION_VECTORS[codec].samples;
+    const reject = (failureReason: ExternalHDRAuthorizationFailureReason, failureDetail: string): FrameCalibrationRejection => ({
+        failureDetail: `calibration probe ${failureDetail}`,
+        failureReason,
+        maximumInputChannelError: null,
+        sampleCount: 0
+    });
+    let targetTexture: GPUTexture | null = null;
+    let pixelReader: GPUCanvasPixelReader | null = null;
+    let step: AuthorizationStep = 'render';
+    try {
+        targetTexture = device.createTexture({
+            dimension: '2d',
+            format: CALIBRATION_PROBE_TARGET_FORMAT,
+            label: 'WebGPU external HDR authorization calibration probe',
+            size: {
+                depthOrArrayLayers: 1,
+                height: frame.displayHeight,
+                width: frame.displayWidth
+            },
+            usage: targetUsage
+        });
+        // The probe imports the frame while it encodes, as a route's executor does
+        step = 'import';
+        const validationResult = submitAuthorizationFrames(device, [ {
+            executor,
+            label: 'WebGPU external HDR authorization calibration probe commands',
+            source: { kind: 'external', source: frame },
+            targetTexture
+        } ]);
+        step = 'render';
+        await deadline.wait(waitForGPUCompletion(device, device.queue.onSubmittedWorkDone()));
+        const validationError = await deadline.wait(validationResult);
+        if (validationError) {
+            return reject('gpu-validation-failed', validationError.message);
+        }
+
+        step = 'readback';
+        const activePixelReader = new GPUCanvasPixelReader({
+            device,
+            format: CALIBRATION_PROBE_TARGET_FORMAT,
+            maximumReadbacks: samples.length
+        });
+        pixelReader = activePixelReader;
+        const readback = await deadline.wait(
+            activePixelReader.readPixels(samples, targetTexture),
+            (): void => activePixelReader.destroy()
+        );
+        if (readback.failure || !readback.linearRGB) {
+            return reject('readback-failed', describeReadbackFailure(readback.failure));
+        }
+        return evaluateFrameCalibration(samples, readback.linearRGB);
+    } catch (error) {
+        return reject(classifyFailure(error, step), describeAuthorizationError(step, error));
+    } finally {
+        pixelReader?.destroy();
+        targetTexture?.destroy();
+    }
+}
+
+/**
+ * Renders one route from the decoded frame, through the levels fitted to it, into a target of its own, and compares its readback with the CPU
+ * reference from the codes the route recovered, within the decode step's deadline.
+ */
 async function renderRoute(
     device: GPUDevice,
     route: RenderableRoute,
     frame: VideoFrame,
+    frameCalibration: FrameCalibration,
     deadline: GPUAuthorizationDeadline
 ): Promise<ExternalHDRRouteAuthorizationDecision> {
     const { probe } = route;
@@ -620,6 +833,7 @@ async function renderRoute(
             },
             usage: route.targetUsage
         });
+        route.executor.writeExternalFrameCalibration(frameCalibration.calibration);
 
         // The executor imports the frame while it encodes, so an encode failure is an import failure; the scope is popped before
         // this returns, so no other authorization's pop takes it, and a pop whose result never comes is never popped again
@@ -658,7 +872,11 @@ async function renderRoute(
             sampleX: sample.sampleX,
             sampleY: sample.sampleY
         }));
-        const expectedObservations = createExpectedExternalHDRAuthorizationObservations(probe.routeKey, route.settings);
+        const expectedObservations = createExpectedExternalHDRAuthorizationObservations(
+            probe.routeKey,
+            route.settings,
+            frameCalibration.recoveredCodes
+        );
         const comparison = evaluateRawHDRVectorObservations(
             expectedObservations,
             actualObservations,
@@ -670,16 +888,19 @@ async function renderRoute(
                 'pixel-mismatch',
                 comparison.failureDetail,
                 actualObservations.length,
-                comparison.maximumChannelError
+                comparison.maximumChannelError,
+                frameCalibration.maximumInputChannelError
             );
         }
         return {
             authorizedRouteKeys: [ probe.routeKey ],
+            calibration: frameCalibration.calibration,
             device,
             failureDetail: null,
             failureReason: null,
             vectorVersion: getRouteVector(probe.routeKey).version,
             maximumChannelError: comparison.maximumChannelError,
+            maximumInputChannelError: frameCalibration.maximumInputChannelError,
             renderSettingsVersion: RENDER_SETTINGS_VERSION,
             routeKey: probe.routeKey,
             sampleCount: actualObservations.length,
@@ -715,16 +936,18 @@ export class ExternalHDRPresentationAuthorizationRunner {
     ): Promise<ExternalHDRRouteAuthorizationDecision[]> {
         const decisions: ExternalHDRRouteAuthorizationDecision[] = [];
         const routes: BatchRoute[] = [];
+        const calibrationProbe = createCalibrationProbePlan(device, codec);
         for (const [ index, routeKey ] of routeKeys.entries()) {
-            const route = this.prepareRoute(device, targetFormat, codec, routeKey, index);
+            const route = this.prepareRoute(device, targetFormat, codec, routeKey, index, calibrationProbe);
             if ('status' in route) {
                 decisions[index] = route;
             } else {
                 routes.push(route);
             }
         }
-        if (routes.length > 0) {
-            await this.renderRoutes(device, codec, routes, decisions);
+        // Every route renders only once the probe is planned, so its plan exists here
+        if (routes.length > 0 && calibrationProbe.plan) {
+            await this.renderRoutes(device, codec, routes, calibrationProbe.plan, decisions);
         }
         return decisions;
     }
@@ -735,14 +958,15 @@ export class ExternalHDRPresentationAuthorizationRunner {
         targetFormat: GPUTextureFormat,
         codec: ExternalHDRVideoCodec,
         routeKey: ExternalHDRAuthorizationRouteKey,
-        index: number
+        index: number,
+        calibrationProbe: AuthorizationReferencePlan
     ): BatchRoute | ExternalHDRRouteAuthorizationDecision {
         const settings = createSettings(createMetadata(routeKey));
         const reference = createExternalHDRReferencePlan(device, targetFormat, routeKey);
         const probe: RouteProbeIdentity = {
             device,
             routeKey,
-            shaderSignature: createExternalHDRShaderSignature(targetFormat, routeKey, reference.shaderCode),
+            shaderSignature: createExternalHDRShaderSignature(targetFormat, routeKey, reference.shaderCode, calibrationProbe.shaderCode),
             targetFormat
         };
         if (!EXTERNAL_HDR_AUTHORIZATION_ROUTE_KEYS.includes(routeKey) || getRouteVideoCodec(routeKey) !== codec) {
@@ -755,17 +979,19 @@ export class ExternalHDRPresentationAuthorizationRunner {
         if (targetUsage.usage === null) {
             return createRejectedDecision(probe, 'gpu-api-unavailable', targetUsage.failure);
         }
-        if (!reference.plan) {
-            return createRejectedDecision(probe, 'unexpected-error', reference.failure ?? routeKey);
+        if (!reference.plan || !calibrationProbe.plan) {
+            return createRejectedDecision(probe, 'unexpected-error', reference.failure ?? calibrationProbe.failure ?? routeKey);
         }
         return { index, plan: reference.plan, probe, settings, targetUsage: targetUsage.usage };
     }
 
-    // Checks the codec's configuration, builds the routes' executors, and decodes the vector once for all of them, filling in their decisions
+    // Checks the codec's configuration, builds the routes' executors and the calibration probe's, and decodes the vector once for all of them,
+    // filling in their decisions
     private async renderRoutes(
         device: GPUDevice,
         codec: ExternalHDRVideoCodec,
         routes: readonly BatchRoute[],
+        calibrationProbePlan: NonNullable<AuthorizationReferencePlan['plan']>,
         decisions: ExternalHDRRouteAuthorizationDecision[]
     ): Promise<void> {
         const rejectRoutes = (rejected: readonly BatchRoute[], reason: ExternalHDRAuthorizationFailureReason, detail: string): void => {
@@ -811,12 +1037,21 @@ export class ExternalHDRPresentationAuthorizationRunner {
             if (renderable.length === 0) {
                 return;
             }
+            const calibrationProbeExecutor = await createAuthorizationExecutor(device, calibrationProbePlan, deadline);
+            executors.push(calibrationProbeExecutor);
 
             step = 'frame';
             // eslint-disable-next-line compat/compat -- WebGPU custom decode targets modern Chromium
             const decodeAbortController = new AbortController();
             const outcome = queue.runTimed(() => {
-                const call = this.decodeAndRender(device, codec, renderable, decodeAbortController.signal, session.manager.timeoutMilliseconds);
+                const call = this.decodeAndRender(
+                    device,
+                    codec,
+                    renderable,
+                    calibrationProbeExecutor,
+                    decodeAbortController.signal,
+                    session.manager.timeoutMilliseconds
+                );
                 decode.call = call;
                 void call.finally((): void => {
                     decode.callSettled = true;
@@ -877,13 +1112,14 @@ export class ExternalHDRPresentationAuthorizationRunner {
         return created.filter((route: RenderableRoute | null): route is RenderableRoute => route !== null);
     }
 
-    // The decode step's call: decodes the vector once and renders every route from the frame within the step's own timeout. It returns plain
-    // decisions, never the frame, since the manager drops a value that comes after the step timed out, and with it the duty to close the frame,
-    // and it stops all probing once a call outlives that timeout by as long again
+    // The decode step's call: decodes the vector once, fits its levels from the calibration probe, and renders every route from the frame within
+    // the step's own timeout. It returns plain decisions, never the frame, since the manager drops a value that comes after the step timed out, and
+    // with it the duty to close the frame, and it stops all probing once a call outlives that timeout by as long again
     private async decodeAndRender(
         device: GPUDevice,
         codec: ExternalHDRVideoCodec,
         routes: readonly RenderableRoute[],
+        calibrationProbeExecutor: PresentationExecutor,
         signal: AbortSignal,
         stepTimeoutMilliseconds: number
     ): Promise<ExternalHDRRouteAuthorizationDecision[]> {
@@ -905,12 +1141,24 @@ export class ExternalHDRPresentationAuthorizationRunner {
                 }
             }, (): void => undefined);
             frame = await deadline.wait(framePromise, abortFrame);
-            const decisions: ExternalHDRRouteAuthorizationDecision[] = [];
-            for (const route of routes) {
+            const requireActiveDecode = (): void => {
                 if (signal.aborted) {
                     throw new DOMException('External HDR authorization decode was aborted', 'AbortError');
                 }
-                decisions.push(await renderRoute(device, route, frame, deadline));
+            };
+            requireActiveDecode();
+            // Every route of the codec recovers the frame's codes through the same levels
+            const frameCalibration = await calibrateFrame(device, calibrationProbeExecutor, codec, frame, routes[0].targetUsage, deadline);
+            if (!isFrameCalibration(frameCalibration)) {
+                return routes.map((route: RenderableRoute): ExternalHDRRouteAuthorizationDecision => createCalibrationRejectedDecision(
+                    route.probe,
+                    frameCalibration
+                ));
+            }
+            const decisions: ExternalHDRRouteAuthorizationDecision[] = [];
+            for (const route of routes) {
+                requireActiveDecode();
+                decisions.push(await renderRoute(device, route, frame, frameCalibration, deadline));
             }
             return decisions;
         } catch (error) {
@@ -935,9 +1183,15 @@ function recordDecisionTelemetry(
     if (decision.maximumChannelError !== null) {
         accumulator.maximumChannelErrors[routeKey] = decision.maximumChannelError;
     }
+    if (decision.maximumInputChannelError !== null) {
+        accumulator.maximumInputChannelErrors[routeKey] = decision.maximumInputChannelError;
+    }
     accumulator.sampleCounts[routeKey] = decision.sampleCount;
     if (decision.status === 'authorized') {
         accumulator.authorizedRouteKeys.push(routeKey);
+        if (decision.calibration) {
+            accumulator.calibrations[routeKey] = decision.calibration;
+        }
         return;
     }
     accumulator.rejectedRouteKeys.push(routeKey);
@@ -1097,6 +1351,23 @@ export class ExternalHDRPresentationAuthorizationRegistry {
         );
     }
 
+    /**
+     * Returns the levels this device, target format, and codec's authorized route for the metadata recovers the codec's frames with, or null
+     * while that route is not authorized.
+     */
+    public getFrameCalibration(
+        device: GPUDevice,
+        targetFormat: GPUTextureFormat,
+        codec: ExternalHDRVideoCodec,
+        metadata: InputColorMetadata
+    ): ExternalFrameCalibration | null {
+        const routeKey = getExternalHDRAuthorizationRouteKey(codec, metadata);
+        if (!routeKey || this.getAuthorizationFailure(device, targetFormat, codec, metadata) !== null) {
+            return null;
+        }
+        return this.getCachedProbe(device, targetFormat, routeKey)?.decision?.calibration ?? null;
+    }
+
     /** Returns bounded diagnostics without exposing retained decoder or GPU objects. */
     public getTelemetry(
         device: GPUDevice | null,
@@ -1104,9 +1375,11 @@ export class ExternalHDRPresentationAuthorizationRegistry {
     ): ExternalHDRAuthorizationTelemetry {
         const accumulator: TelemetryAccumulator = {
             authorizedRouteKeys: [],
+            calibrations: {},
             failureDetails: {},
             failureReasons: {},
             maximumChannelErrors: {},
+            maximumInputChannelErrors: {},
             pendingRouteKeys: [],
             rejectedRouteKeys: [],
             sampleCounts: {}
@@ -1153,7 +1426,8 @@ export class ExternalHDRPresentationAuthorizationRegistry {
         const signature = createExternalHDRShaderSignature(
             targetFormat,
             routeKey,
-            createExternalHDRReferencePlan(device, targetFormat, routeKey).shaderCode
+            createExternalHDRReferencePlan(device, targetFormat, routeKey).shaderCode,
+            createCalibrationProbePlan(device, getRouteVideoCodec(routeKey)).shaderCode
         );
         referenceSignatures.set(signatureKey, signature);
         return signature;

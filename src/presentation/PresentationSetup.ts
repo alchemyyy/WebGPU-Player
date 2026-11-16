@@ -394,36 +394,44 @@ function waitForNativeAV1HDRAuthorization(
         Promise.resolve();
 }
 
-/** Returns whether an AV1 stream's RPU route can take the external Dolby Vision route: a single-layer reconstruction from 10-bit I420. */
-function isNativeAV1DolbyVisionTarget(options: unknown, target: DolbyVisionReconstructionTarget | null): boolean {
-    return target !== null
-        && (target.profile === DOLBY_VISION_PROFILE_5 || target.profile === DOLBY_VISION_PROFILE_8)
-        && target.rawFrameFormat === DEFAULT_DOLBY_VISION_RAW_FRAME_FORMAT
-        && getExternalHDRPresentationCodec(options) === 'av1';
+/**
+ * Returns the codec whose hardware frames a stream's external Dolby Vision route would reconstruct from, a single-layer reconstruction from
+ * 10-bit I420: HEVC for Profile 5, AV1 for Profile 5 or 8; null when the stream has no such route.
+ */
+function getNativeDolbyVisionDecodeCodec(options: unknown, target: DolbyVisionReconstructionTarget | null): ExternalHDRVideoCodec | null {
+    if (target?.rawFrameFormat !== DEFAULT_DOLBY_VISION_RAW_FRAME_FORMAT) {
+        return null;
+    }
+    if (getExternalHDRPresentationCodec(options) === 'av1') {
+        return target.profile === DOLBY_VISION_PROFILE_5 || target.profile === DOLBY_VISION_PROFILE_8 ? 'av1' : null;
+    }
+    return target.profile === DOLBY_VISION_PROFILE_5 ? 'hevc' : null;
 }
 
 /**
- * The external Dolby Vision route of AV1 needs the AV1 decoder's own external evidence, which its PQ key gives, and Profile 8 its own key; both authorize on first use.
+ * The external Dolby Vision route needs its codec's PQ key, whose vector proves the decoder's frames import and fits the levels it recovers them
+ * with, and AV1's Profile 8 its own key; the AV1 keys authorize on first use, and the HEVC keys start when a route asks for them.
  * A settled probe resolves at once.
  */
-function waitForNativeAV1DolbyVisionAuthorization(
+function waitForNativeDolbyVisionAuthorization(
     presenter: WebGPUPresenter,
     options: unknown,
     target: DolbyVisionReconstructionTarget | null
 ): Promise<void> {
-    if (!target || !isNativeAV1DolbyVisionTarget(options, target)) {
+    const codec = getNativeDolbyVisionDecodeCodec(options, target);
+    if (codec === null) {
         return Promise.resolve();
     }
     return Promise.all([
-        presenter.waitForExternalHDRRouteAuthorization('av1', DOLBY_VISION_HDR10_BASE_COLOR_METADATA),
-        target.profile === DOLBY_VISION_PROFILE_8 ? presenter.waitForExternalDolbyVisionProfile8Authorization() : Promise.resolve()
+        presenter.waitForExternalHDRRouteAuthorization(codec, DOLBY_VISION_HDR10_BASE_COLOR_METADATA),
+        target?.profile === DOLBY_VISION_PROFILE_8 ? presenter.waitForExternalDolbyVisionProfile8Authorization() : Promise.resolve()
     ]).then((): void => undefined);
 }
 
 /** Returns whether an AV1 Profile 10 stream that reconstructs as Profile 8 has its external Profile 8 key; no other stream takes it. */
 function isNativeAV1DolbyVisionProfile8Authorized(presenter: WebGPUPresenter, options: unknown, target: DolbyVisionReconstructionTarget | null): boolean {
     return target?.profile === DOLBY_VISION_PROFILE_8
-        && isNativeAV1DolbyVisionTarget(options, target)
+        && getNativeDolbyVisionDecodeCodec(options, target) === 'av1'
         && presenter.isExternalDolbyVisionProfile8PresentationAuthorized();
 }
 
@@ -478,11 +486,11 @@ export async function getCustomPresentationEligibilityOptions(
     // A single-layer RPU route is selected before the declared base it shares a raw capability with, so once that route is authorized no raw HDR key can change the selection
     const singleLayerReconstructionAuthorized =
         getRawDolbyVisionRouteFlags(presenter, input.dolbyVisionDescriptor, reconstructionTarget).allowDolbyVision === true;
-    const nativeAV1DolbyVisionRequested = isNativeAV1DolbyVisionTarget(options, reconstructionTarget);
+    const nativeDolbyVisionDecodeRequested = getNativeDolbyVisionDecodeCodec(options, reconstructionTarget) !== null;
     await Promise.all([
         waitForRawOnlyHDRAuthorization(presenter, options, rawHDRRequested && !singleLayerReconstructionAuthorized),
         waitForNativeAV1HDRAuthorization(presenter, options, rawHDRRequested ? metadata : null),
-        waitForNativeAV1DolbyVisionAuthorization(presenter, options, reconstructionTarget),
+        waitForNativeDolbyVisionAuthorization(presenter, options, reconstructionTarget),
         waitForDolbyVisionReconstructionAuthorization(presenter, reconstructionTarget)
     ]);
     if (!request.isCurrent()) {
@@ -492,8 +500,8 @@ export async function getCustomPresentationEligibilityOptions(
         presenter,
         rawHDRRequested,
         dolbyVisionRequested,
-        // The external Dolby Vision route of AV1 needs the AV1 decoder's external evidence
-        dolbyVisionBaseRequested || nativeAV1DolbyVisionRequested,
+        // The external Dolby Vision routes need their decoder's external evidence and levels
+        dolbyVisionBaseRequested || nativeDolbyVisionDecodeRequested,
         reconstructionTarget
     );
     return {
@@ -567,6 +575,7 @@ function configureDolbyVisionColorPipeline(
     if (externalProfile !== null && videoOutputMode === 'video-frame' && rawVideoFrameFormat === null) {
         return presenter.configureColorPipeline({
             ...request.createHDRRenderConfiguration(DOLBY_VISION_INPUT_PEAK_NITS),
+            codec: getExternalHDRPresentationCodec(request.options),
             inputMode: 'external-dolby-vision',
             profile: externalProfile
         }, generation);

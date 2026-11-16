@@ -1591,6 +1591,30 @@ describe('PresentationExecutor', () => {
         expect(() => boundExecutor.writeDolbyVisionRPU(renderSettings)).toThrow(RangeError);
     });
 
+    it('starts a plan that binds external frame levels at identity, and writes a route\'s levels over them', async () => {
+        const harness = createDeviceHarness();
+        const plan = createPlan({
+            passes: [
+                createRenderPass('Output', {
+                    bindings: [
+                        { binding: 0, kind: 'engine', resource: 'external-texture' },
+                        { binding: 1, kind: 'engine', resource: 'external-frame-calibration' }
+                    ]
+                })
+            ]
+        });
+        const readLevels = (): number[][] => getBufferWrites(harness, 'Presentation external frame calibration').map(
+            write => Array.from(new Float32Array(write.bytes))
+        );
+
+        const executor = await PresentationExecutor.create(harness.device, plan);
+        // Until a route writes its codec's levels, the plan recovers the codes as they are
+        expect(readLevels()).toEqual([ [ 1, 1, 1, 0, 0, 0, 0, 0 ] ]);
+
+        executor.writeExternalFrameCalibration({ gain: [ 1.5, 1.25, 0.75 ], offset: [ -2, 0.5, 4 ] });
+        expect(readLevels().at(-1)).toEqual([ 1.5, 1.25, 0.75, 0, -2, 0.5, 4, 0 ]);
+    });
+
     it('destroys its textures and buffers and refuses to encode afterwards', async () => {
         const harness = createDeviceHarness();
         const plan = createPlan({

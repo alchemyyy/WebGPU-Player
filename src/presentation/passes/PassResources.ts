@@ -13,6 +13,9 @@ export const UNIFORM_SLOT_BYTE_LENGTH = UNIFORM_BUFFER_OFFSET_ALIGNMENT;
 /** The bytes of the Dolby Vision enhancement uniform. */
 export const ENHANCEMENT_UNIFORM_BYTE_LENGTH = 16;
 
+/** The bytes of the external frame calibration uniform: the luma, Cb, and Cr gains, then their offsets, each padded to a vec4f. */
+export const EXTERNAL_FRAME_CALIBRATION_UNIFORM_BYTE_LENGTH = 32;
+
 /** The bytes of the frame pool layout uniform: the slot's layout, then the visible rectangle of the frame that presents it. */
 export const FRAME_POOL_LAYOUT_BYTE_LENGTH = 80;
 
@@ -27,6 +30,7 @@ const DOLBY_VISION_RPU_WORD_COUNT = DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH / BYTES_
 type EngineStruct =
     | 'DolbyVisionEnhancementUniforms'
     | 'DolbyVisionRPUData'
+    | 'ExternalFrameCalibrationUniforms'
     | 'FramePoolLayoutUniforms'
     | 'RenderSettingsUniforms';
 
@@ -39,6 +43,10 @@ const ENGINE_STRUCTS: Readonly<Record<EngineStruct, string>> = {
 }`,
     DolbyVisionRPUData: `struct DolbyVisionRPUData {
     words: array<u32, ${DOLBY_VISION_RPU_WORD_COUNT}>,
+}`,
+    ExternalFrameCalibrationUniforms: `struct ExternalFrameCalibrationUniforms {
+    gain: vec4f,
+    offset: vec4f,
 }`,
     FramePoolLayoutUniforms: `struct FramePoolPlane {
     byteOffset: u32,
@@ -121,6 +129,11 @@ const ENGINE_BINDINGS: Readonly<Record<EngineBindingResource, EngineBindingDecla
         layout: { buffer: { type: 'uniform' } },
         structs: [ 'DolbyVisionEnhancementUniforms' ]
     },
+    'external-frame-calibration': {
+        declaration: 'var<uniform> externalFrameCalibration: ExternalFrameCalibrationUniforms;',
+        layout: { buffer: { type: 'uniform' } },
+        structs: [ 'ExternalFrameCalibrationUniforms' ]
+    },
     'external-texture': {
         declaration: 'var videoTexture: texture_external;',
         layout: { externalTexture: {} },
@@ -171,6 +184,7 @@ const ENGINE_BINDINGS: Readonly<Record<EngineBindingResource, EngineBindingDecla
 const ENGINE_RESOURCE_BINDINGS: Readonly<Record<EngineResource, readonly EngineBindingResource[]>> = {
     'dolby-vision-enhancement': [ 'enhancement-luma', 'enhancement-chroma-u', 'enhancement-chroma-v', 'enhancement-uniform' ],
     'dolby-vision-rpu': [ 'dolby-vision-rpu' ],
+    'external-frame-calibration': [ 'external-frame-calibration' ],
     'external-texture': [ 'external-texture' ],
     'frame-pool': [ 'frame-pool', 'frame-pool-layout' ],
     'planes-nv12': [ 'plane-luma', 'plane-chroma' ],

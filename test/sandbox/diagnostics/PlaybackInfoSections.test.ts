@@ -551,7 +551,9 @@ describe('describePlaybackInfo', () => {
                     externalDolbyVision: createExternalDolbyVisionAuthorization({ maximumInputChannelError: CHANNEL_ERROR, status: 'authorized' }),
                     externalHDR: createExternalHDRAuthorization({
                         authorizedRouteKeys: [ EXTERNAL_HDR_ROUTE_KEY ],
+                        calibrations: { [EXTERNAL_HDR_ROUTE_KEY]: { gain: [ 1.0039, 1.0047, 0.99707 ], offset: [ -0.02, -1.5, 3.3 ] } },
                         maximumChannelErrors: { [EXTERNAL_HDR_ROUTE_KEY]: CHANNEL_ERROR },
+                        maximumInputChannelErrors: { [EXTERNAL_HDR_ROUTE_KEY]: CHANNEL_ERROR },
                         sampleCounts: { [EXTERNAL_HDR_ROUTE_KEY]: SAMPLE_COUNT },
                         status: 'authorized',
                         targetFormat: TARGET_FORMAT
@@ -572,7 +574,12 @@ describe('describePlaybackInfo', () => {
             { label: 'Raw HDR', tone: 'failure', value: `rejected, 0 authorized, 0 pending, 1 rejected, ${TARGET_FORMAT}` },
             { label: '', tone: 'failure', value: `rejected ${RAW_HDR_ROUTE_KEY}: pixel-mismatch: ${PIXEL_MISMATCH_DETAIL}` },
             { label: 'External HDR', tone: 'success', value: `authorized, ${TARGET_FORMAT}` },
-            { label: '', tone: 'success', value: `authorized ${EXTERNAL_HDR_ROUTE_KEY}, ${SAMPLE_COUNT} samples, max error ${CHANNEL_ERROR_TEXT}` },
+            {
+                label: '',
+                tone: 'success',
+                value: `authorized ${EXTERNAL_HDR_ROUTE_KEY}, ${SAMPLE_COUNT} samples, max error ${CHANNEL_ERROR_TEXT}, max input error ${CHANNEL_ERROR_TEXT}`
+            },
+            { label: '', tone: 'success', value: 'levels Y 1.0039x -0.02, Cb 1.0047x -1.50, Cr 0.9971x +3.30' },
             { label: 'Dolby Vision', tone: 'failure', value: `rejected, ${state.telemetry.authorization.dolbyVision?.routeKey}` },
             { label: '', tone: 'failure', value: 'timeout' },
             { label: 'External Dolby Vision', tone: 'success', value: `authorized, ${state.telemetry.authorization.externalDolbyVision?.routeKey}, max input error ${CHANNEL_ERROR_TEXT}` }

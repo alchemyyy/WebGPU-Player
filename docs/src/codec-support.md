@@ -66,7 +66,7 @@ The engine reads the Dolby Vision configuration and the color fields; it ignores
 
 | Variant | Eligible | Route, then fallback | Evidence |
 | --- | --- | --- | --- |
-| P5, any CCID or none | Yes | VF-DV5, then RAW-DV P5 | VF: `nativeDolbyVisionHEVC` and `dovi-p5`. RAW: `rawHDRVideo.hevc` and `dovi-rpu` |
+| P5, any CCID or none | Yes | VF-DV5, then RAW-DV P5 | VF: `nativeDolbyVisionHEVC`, `ext-pq`, whose levels the route recovers the decoder's frames with, and `dovi-p5`. RAW: `rawHDRVideo.hevc` and `dovi-rpu` |
 | P7, CCID 1 or 6, MEL or FEL, with or without the EL | Yes | DV base PQ, then RAW-DV7, then the declared PQ base through RAW | Base: `nativeHDRHEVC`, `ext-pq`, and exact BT.2020 PQ base metadata. RAW-DV7: `rawHDRVideo.hevc` and `dovi-p7-base`; no decoder decodes the EL |
 | P7, any other CCID or none | Yes | RAW-DV7 only; the CCID declares no base | As RAW-DV7 above |
 | P8, CCID 1 or 6, with or without an EL flag | Yes | DV base PQ, then RAW-DV P8, then the declared PQ base through RAW | Base: as for P7. RAW-DV: `rawHDRVideo.hevc` and `dovi-rpu` |
@@ -98,6 +98,7 @@ Only an RPU route loads the RPU parser; any other route removes the RPU OBUs wit
 | P10 at 8 bits, or outside the Main profile | Yes | RAW-DV in the variant's exact format, as P10 at 10 bits; then a declared base through its ordinary routes, native VF-SDR for 8-bit Main | `av1RawFormats[variant]` and `<format>:dovi-rpu-v1`, which authorizes on first use |
 
 The external routes present 8-bit-quantized frames, as every external route does, so their reconstruction differs from RAW-DV by a few code values, more where the RPU's mapping is steep.
+Every external route recovers its frames' codes through the levels its codec's PQ key fitted on the device, which take off the difference between Chrome's conversion and the recovery's (see [Decisions](decisions.md)).
 
 The engine maps the MP4 `dav1` sample entry of a 10.0 stream to AV1 itself (see [Decisions](decisions.md#video-decode-and-dolby-vision)).
 

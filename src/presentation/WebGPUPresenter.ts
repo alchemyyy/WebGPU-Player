@@ -22,8 +22,10 @@ import {
 } from './RenderSettings';
 import {
     assertValidInputColorMetadata,
+    createPQColorMetadata,
     type InputColorMetadata
 } from '../color/ColorMetadata';
+import type { ExternalFrameCalibration } from '../color/ExternalFrameCalibration';
 import {
     isDolbyVisionDualLayerProfile,
     type DolbyVisionReconstructionProfile
@@ -186,6 +188,8 @@ const ENGINE_COMPILE_DETAIL_PREFIX = 'engine ';
 // frames limits itself by
 const BLACK_BAR_READBACK_COUNT = 3;
 const BLACK_BAR_READBACK_LABEL = 'Presentation black bar readback';
+// The external Dolby Vision routes recover their codec's frames through the levels its external HDR PQ key fitted, whose vector proves those frames import
+const EXTERNAL_DOLBY_VISION_CALIBRATION_METADATA: InputColorMetadata = Object.freeze(createPQColorMetadata());
 
 function waitForWebGPUResourceOperation<Value>(
     promise: Promise<Value>
@@ -381,6 +385,8 @@ export type RawDolbyVisionColorPipelineConfiguration = {
 };
 
 export type ExternalDolbyVisionColorPipelineConfiguration = {
+    /** The codec whose neutralized hardware frames the route reconstructs from, whose external HDR authorization fits their levels */
+    codec: ExternalHDRVideoCodec
     inputMode: 'external-dolby-vision'
     /** The single-layer reconstruction: Profile 5, or Profile 8 over a compatible base */
     profile: ExternalDolbyVisionProfile
@@ -531,8 +537,10 @@ type PreparedColorPipeline = {
     dolbyVisionProfile: DolbyVisionReconstructionProfile | null
     inputMode: PresentationInputMode
     inputColorMetadata: InputColorMetadata | null
-    /** The codec of an external HDR route's frames */
+    /** The codec of an external route's frames */
     externalHDRCodec?: ExternalHDRVideoCodec
+    /** The levels an external route recovers its codec's frames with */
+    externalFrameCalibration?: ExternalFrameCalibration
     rawFrameFormat: SupportedRawVideoFrameFormat | null
     settings: RenderSettings
 };
@@ -1469,6 +1477,8 @@ export default class WebGPUPresenter {
     private activeDolbyVisionFELReconstruction = false;
     private activeInputColorMetadata: InputColorMetadata | null = null;
     private activeExternalHDRCodec: ExternalHDRVideoCodec | null = null;
+    // The levels the active external route recovers its codec's frames with, which every executor of the route takes
+    private externalFrameCalibration: ExternalFrameCalibration | null = null;
     private activeInputMode: PresentationInputMode = 'external-texture';
     private activeRawFrameFormat: SupportedRawVideoFrameFormat | null = null;
     private cachedPresentationLayout: CachedPresentationLayout | null = null;
@@ -2118,6 +2128,10 @@ export default class WebGPUPresenter {
             this.renderSettingsData = null;
         }
         this.dynamicHDRSettingsActive = false;
+        this.externalFrameCalibration = preparedPipeline.externalFrameCalibration ?? null;
+        if (this.externalFrameCalibration) {
+            this.executor?.writeExternalFrameCalibration(this.externalFrameCalibration);
+        }
 
         this.activeDolbyVisionProfile = preparedPipeline.dolbyVisionProfile;
         this.activeDolbyVisionFELReconstruction = preparedPipeline.dolbyVisionFELReconstruction;
@@ -2744,6 +2758,10 @@ export default class WebGPUPresenter {
             );
             return null;
         }
+        if (configuration.codec !== 'av1' && configuration.codec !== 'hevc') {
+            this.failColorConfiguration(pendingConfiguration, 'hdr-color-configuration-invalid', `codec: ${String(configuration.codec)}, expected av1 or hevc`);
+            return null;
+        }
 
         if (!await this.awaitHDRConfigurationPrerequisites(pendingConfiguration)) {
             return null;
@@ -2751,6 +2769,14 @@ export default class WebGPUPresenter {
         const authorizationFailure = this.getExternalDolbyVisionAuthorizationFailure(configuration.profile);
         if (authorizationFailure !== null) {
             this.failColorConfiguration(pendingConfiguration, 'hdr-authorization-unavailable', authorizationFailure);
+            return null;
+        }
+        const externalFrameCalibration = this.requireExternalFrameCalibration(
+            configuration.codec,
+            EXTERNAL_DOLBY_VISION_CALIBRATION_METADATA,
+            pendingConfiguration
+        );
+        if (!externalFrameCalibration) {
             return null;
         }
 
@@ -2770,6 +2796,8 @@ export default class WebGPUPresenter {
             dolbyVisionFELReconstruction: false,
             dolbyVisionProfile: configuration.profile,
             inputMode: 'external-dolby-vision',
+            externalFrameCalibration,
+            externalHDRCodec: configuration.codec,
             inputColorMetadata: null,
             rawFrameFormat: null,
             settings: cloneRenderSettings(configuration.settings)
@@ -2812,9 +2840,8 @@ export default class WebGPUPresenter {
         if (!await this.awaitHDRConfigurationPrerequisites(pendingConfiguration)) {
             return null;
         }
-        const authorizationFailure = this.getExternalHDRAuthorizationFailure(configuration.codec, configuration.metadata);
-        if (authorizationFailure !== null) {
-            this.failColorConfiguration(pendingConfiguration, 'hdr-authorization-unavailable', authorizationFailure);
+        const externalFrameCalibration = this.requireExternalFrameCalibration(configuration.codec, configuration.metadata, pendingConfiguration);
+        if (!externalFrameCalibration) {
             return null;
         }
 
@@ -2835,11 +2862,34 @@ export default class WebGPUPresenter {
             dolbyVisionFELReconstruction: false,
             dolbyVisionProfile: null,
             inputMode: 'external-hdr',
+            externalFrameCalibration,
             externalHDRCodec: configuration.codec,
             inputColorMetadata: { ...configuration.metadata },
             rawFrameFormat: null,
             settings: cloneRenderSettings(configuration.settings)
         };
+    }
+
+    /**
+     * Returns the levels the codec's authorized external HDR route for the metadata fitted to the codec's frames on this device, or null after
+     * failing the configuration with why that route is not authorized.
+     */
+    private requireExternalFrameCalibration(
+        codec: ExternalHDRVideoCodec,
+        metadata: InputColorMetadata,
+        pendingConfiguration: PendingColorConfiguration
+    ): ExternalFrameCalibration | null {
+        const device = this.device;
+        const targetFormat = this.canvasFormat;
+        const calibration = device && targetFormat ? this.externalHDRAuthorization.getFrameCalibration(device, targetFormat, codec, metadata) : null;
+        if (!calibration) {
+            this.failColorConfiguration(
+                pendingConfiguration,
+                'hdr-authorization-unavailable',
+                this.getExternalHDRAuthorizationFailure(codec, metadata) ?? `calibration: none for ${codec}`
+            );
+        }
+        return calibration;
     }
 
     /** Prepares the GPU decode route's chain: the frame pool signal and the raw route's color track, without a presentation authorization. */
@@ -3220,15 +3270,24 @@ export default class WebGPUPresenter {
         return this.getExternalDolbyVisionAuthorizationRegistry(profile).getAuthorizationFailure(device, targetFormat);
     }
 
-    /** Returns why the active external Dolby Vision route is not authorized for its profile, including a mode that tone maps nothing. */
+    /**
+     * Returns why the active external Dolby Vision route is not authorized for its profile, or its codec's frames for the levels they recover
+     * with, including a mode that tone maps nothing.
+     */
     private getActiveExternalDolbyVisionAuthorizationFailure(): string | null {
         const profile = this.activeDolbyVisionProfile;
         if (profile !== 5 && profile !== 8) {
             return `profile: ${profile}, expected 5 or 8`;
         }
-        return this.settings.mode === 'hdr-to-sdr' ?
-            this.getExternalDolbyVisionAuthorizationFailure(profile) :
-            `mode: ${this.settings.mode}, expected hdr-to-sdr`;
+        if (this.settings.mode !== 'hdr-to-sdr') {
+            return `mode: ${this.settings.mode}, expected hdr-to-sdr`;
+        }
+        const codec = this.activeExternalHDRCodec;
+        if (codec === null) {
+            return 'codec: none configured';
+        }
+        return this.getExternalDolbyVisionAuthorizationFailure(profile)
+            ?? this.getExternalHDRAuthorizationFailure(codec, EXTERNAL_DOLBY_VISION_CALIBRATION_METADATA);
     }
 
     private suspendForColorConfiguration(): void {
@@ -3517,7 +3576,8 @@ export default class WebGPUPresenter {
     }
 
     /**
-     * Swaps in a new executor: it takes over the render settings and its preset's parameter values, the old one is destroyed, and an attached canvas is configured for its output.
+     * Swaps in a new executor: it takes over the render settings, the external route's levels, and its preset's parameter values, the old one is
+     * destroyed, and an attached canvas is configured for its output.
      * A canvas that cannot take the new output falls the session back.
      */
     private installExecutor(build: BuiltExecutor, revision: number): void {
@@ -3531,6 +3591,9 @@ export default class WebGPUPresenter {
         this.submissionValidated = false;
         if (this.renderSettingsData) {
             executor.writeRenderSettings(this.renderSettingsData);
+        }
+        if (this.externalFrameCalibration) {
+            executor.writeExternalFrameCalibration(this.externalFrameCalibration);
         }
         applyParameterValues(executor, build.plan, build.presetPasses);
         previousExecutor?.destroy();
@@ -5135,7 +5198,7 @@ export default class WebGPUPresenter {
             'superseded';
     }
 
-    /** Probes the active external HDR route on the replacement device; returns why it is not authorized, or null. */
+    /** Probes the active external HDR route on the replacement device, and takes the levels fitted on it; returns why it is not authorized, or null. */
     private async reauthorizeExternalHDRPresentation(generation: number): Promise<string | null> {
         const device = this.device;
         const targetFormat = this.canvasFormat;
@@ -5152,8 +5215,49 @@ export default class WebGPUPresenter {
             await this.externalHDRAuthorization.authorize(device, targetFormat, routeKey);
         }
         return this.isReauthorizationCurrent(generation, device) ?
-            this.externalHDRAuthorization.getAuthorizationFailure(device, targetFormat, codec, metadata) :
+            this.takeExternalFrameCalibration(device, targetFormat, codec, metadata) :
             'superseded';
+    }
+
+    /**
+     * Probes the active external Dolby Vision route and its codec's external HDR key on the replacement device, and takes the levels that key
+     * fitted; returns why either is not authorized, or null.
+     */
+    private async reauthorizeExternalDolbyVisionPresentation(
+        generation: number,
+        device: GPUDevice,
+        targetFormat: GPUTextureFormat,
+        profile: ExternalDolbyVisionProfile
+    ): Promise<string | null> {
+        const codec = this.activeExternalHDRCodec;
+        const calibrationRouteKey = codec === null ? null : getExternalHDRAuthorizationRouteKey(codec, EXTERNAL_DOLBY_VISION_CALIBRATION_METADATA);
+        if (codec === null || calibrationRouteKey === null) {
+            return 'route: incomplete';
+        }
+        const registry = this.getExternalDolbyVisionAuthorizationRegistry(profile);
+        await Promise.all([
+            registry.authorize(device, targetFormat),
+            this.externalHDRAuthorization.authorize(device, targetFormat, calibrationRouteKey)
+        ]);
+        if (!this.isReauthorizationCurrent(generation, device)) {
+            return 'superseded';
+        }
+        return registry.getAuthorizationFailure(device, targetFormat)
+            ?? this.takeExternalFrameCalibration(device, targetFormat, codec, EXTERNAL_DOLBY_VISION_CALIBRATION_METADATA);
+    }
+
+    /** Takes the levels the codec's external HDR route for the metadata fitted on the device, which the next executor writes; returns why that route is not authorized, or null. */
+    private takeExternalFrameCalibration(
+        device: GPUDevice,
+        targetFormat: GPUTextureFormat,
+        codec: ExternalHDRVideoCodec,
+        metadata: InputColorMetadata
+    ): string | null {
+        const failure = this.externalHDRAuthorization.getAuthorizationFailure(device, targetFormat, codec, metadata);
+        if (failure === null) {
+            this.externalFrameCalibration = this.externalHDRAuthorization.getFrameCalibration(device, targetFormat, codec, metadata);
+        }
+        return failure;
     }
 
     /** Probes the active Dolby Vision route, and its FEL route while FEL reconstructs, on the replacement device; returns why it is not authorized, or null. */
@@ -5168,11 +5272,7 @@ export default class WebGPUPresenter {
         }
         const activeProfile = this.activeDolbyVisionProfile;
         if (this.activeInputMode === 'external-dolby-vision' && (activeProfile === 5 || activeProfile === 8)) {
-            const registry = this.getExternalDolbyVisionAuthorizationRegistry(activeProfile);
-            await registry.authorize(device, targetFormat);
-            return this.isReauthorizationCurrent(generation, device) ?
-                registry.getAuthorizationFailure(device, targetFormat) :
-                'superseded';
+            return this.reauthorizeExternalDolbyVisionPresentation(generation, device, targetFormat, activeProfile);
         }
         const rawFrameFormat = this.activeRawFrameFormat;
         if (!rawFrameFormat || !isRawDolbyVisionVideoFrameFormat(rawFrameFormat) || activeProfile === null) {

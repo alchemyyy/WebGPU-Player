@@ -28,6 +28,7 @@ import type { SupportedRawVideoFrameFormat } from 'webgpu-player/decode/video/Ra
 const ENGINE_RESOURCES: readonly EngineResource[] = [
     'dolby-vision-enhancement',
     'dolby-vision-rpu',
+    'external-frame-calibration',
     'external-texture',
     'frame-pool',
     'planes-nv12',
@@ -204,6 +205,7 @@ describe('built-in engine binding names', () => {
             'enhancementChromaUTexture',
             'enhancementChromaVTexture',
             'enhancementLumaTexture',
+            'externalFrameCalibration',
             'framePool',
             'framePoolLayout',
             'lumaTexture',

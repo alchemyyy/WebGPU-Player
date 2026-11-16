@@ -53,7 +53,12 @@ const SDR_BASE_LAYER_PRESENTATION = 'return presentSDRBaseLayer(rawBaseSignal);'
 const HDR10_BASE_LAYER_PRESENTATION = 'encodedBT2020PQ = convertRawYUVToEncodedRGB(normalizeRawYUV(rawBaseSignal));';
 
 const EXTERNAL_RESOURCES: readonly EngineResource[] = [ 'sampler-linear', 'external-texture' ];
-const EXTERNAL_DOLBY_VISION_RESOURCES: readonly EngineResource[] = [ 'sampler-linear', 'external-texture', 'dolby-vision-rpu' ];
+const EXTERNAL_DOLBY_VISION_RESOURCES: readonly EngineResource[] = [
+    'sampler-linear',
+    'external-texture',
+    'external-frame-calibration',
+    'dolby-vision-rpu'
+];
 const RAW_DOLBY_VISION_RESOURCES: readonly EngineResource[] = [ 'planes-yuv', 'dolby-vision-rpu' ];
 const RAW_DOLBY_VISION_FEL_RESOURCES: readonly EngineResource[] = [ 'planes-yuv', 'dolby-vision-rpu', 'dolby-vision-enhancement' ];
 

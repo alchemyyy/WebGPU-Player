@@ -67,6 +67,7 @@ The optional user passes a host may offer are pass projects in `wgpup/`, outside
 - `ColorMetadata.ts`: the input color schema, validation, and SDR, PQ, and HLG factories.
 - `ColorPipeline.ts`: the CPU reference of range, matrix, transfer, gamut, tone mapping, and display controls, and the luminance, YUV matrix, gamut, and IPT tables for BT.709, BT.2020, and BT.601 that the built-in color functions share.
 - `DolbyVisionColorTransform.ts`: RPU reshaping (polynomial and MMR, chosen per segment), the FEL NLQ residual, and reconstruction to BT.2020 PQ, as a CPU reference and as WGSL.
+- `ExternalFrameCalibration.ts`: the levels that correct the codes the external routes recover from Chrome's texture of a hardware frame, their fit to an authorization vector, and the CPU reference of the recovery.
 
 ## capability/
 
@@ -333,7 +334,7 @@ AC-3 and E-AC-3 through a hidden `<audio>` and MSE.
 The authorization vectors are in `capability/vectors/`.
 
 - `RawHDRPresentationAuthorization.ts`: raw route keys, readback of the route's default plan, and the per-device registry.
-- `ExternalHDRPresentationAuthorization.ts`: external PQ and HLG route keys per codec, HEVC Main 10 and AV1 Main 10, each checked with its own neutralized vector, its check and decode recorded as probe session steps and batched per codec and target format.
+- `ExternalHDRPresentationAuthorization.ts`: external PQ and HLG route keys per codec, HEVC Main 10 and AV1 Main 10, each checked with its own neutralized vector, its check and decode recorded as probe session steps and batched per codec and target format, and the levels each decision fits to its codec's frames through a calibration probe.
 - `DolbyVisionPresentationAuthorization.ts`, `ExternalDolbyVisionPresentationAuthorization.ts`: raw Dolby Vision keys (per raw format: single-layer, the P4 and P7 bases, and the P4 and P7 FEL) and the external P5 and P8 keys, one registry each, checked with synthetic RPU vectors.
 - `GPUAuthorizationDeadline.ts`: the shared 5 s timeout, cancelled on device loss.
 - `GPUCanvasReadback.ts`: bounded GPU canvas pixel readback (5 s).

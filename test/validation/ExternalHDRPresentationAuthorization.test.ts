@@ -18,6 +18,11 @@ import {
 import { createHLGColorMetadata, createPQColorMetadata, createSDRColorMetadata } from 'webgpu-player/color/ColorMetadata';
 import type { ColorTriplet } from 'webgpu-player/color/ColorPipeline';
 import {
+    applyExternalFrameCalibration,
+    fitExternalFrameCalibration,
+    recoverLimitedRangeBT709Codes
+} from 'webgpu-player/color/ExternalFrameCalibration';
+import {
     EXTERNAL_AV1_HDR_AUTHORIZATION_DISPLAY_HEIGHT,
     EXTERNAL_AV1_HDR_AUTHORIZATION_DISPLAY_WIDTH,
     EXTERNAL_AV1_HDR_AUTHORIZATION_VECTOR_SAMPLES,
@@ -25,7 +30,8 @@ import {
 } from 'webgpu-player/capability/vectors/ExternalAV1HDRAuthorizationVector';
 import {
     EXTERNAL_HDR_AUTHORIZATION_DISPLAY_HEIGHT,
-    EXTERNAL_HDR_AUTHORIZATION_DISPLAY_WIDTH
+    EXTERNAL_HDR_AUTHORIZATION_DISPLAY_WIDTH,
+    EXTERNAL_HDR_AUTHORIZATION_VECTOR_SAMPLES
 } from 'webgpu-player/capability/vectors/ExternalHDRAuthorizationVector';
 import { findAV1SequenceHeader } from 'webgpu-player/demux/av1/AV1SequenceHeaderParser';
 import { createBuiltinChain } from 'webgpu-player/presentation/passes/builtin/BuiltinChains';
@@ -73,11 +79,16 @@ const UNREADABLE_TARGET_FORMAT: GPUTextureFormat = 'rgba16float';
 const AUTHORIZATION_TIMEOUT_MILLISECONDS = 5_000;
 const VECTOR_SAMPLE_COUNT = 8;
 const RENDER_VERTEX_COUNT = 6;
-// The authorization joins a reference plan's pass modules with this separator before signing them
-const PLAN_SHADER_CODE_SEPARATOR = '\u0000';
 // The color space the executor imports frames in
 const EXTERNAL_TEXTURE_COLOR_SPACE: PredefinedColorSpace = 'srgb';
 const RENDER_SETTINGS_LABEL = 'Presentation render settings';
+const EXTERNAL_FRAME_CALIBRATION_LABEL = 'Presentation external frame calibration';
+const CALIBRATION_PROBE_LABEL = 'WebGPU external HDR authorization calibration probe';
+const CALIBRATION_PROBE_FORMAT: GPUTextureFormat = 'rgba16float';
+// Both codecs' vectors, whose samples lie apart, so one map holds the browser's RGB of either
+const VECTOR_SAMPLES = [ ...EXTERNAL_HDR_AUTHORIZATION_VECTOR_SAMPLES, ...EXTERNAL_AV1_HDR_AUTHORIZATION_VECTOR_SAMPLES ];
+// Chromium reads a hardware frame's 10-bit samples as 16-bit and converts them with BT.709's 8-bit levels, which scales every code it recovers by this
+const CHROMIUM_HARDWARE_CODE_SCALE = 65_280 / 65_535;
 const HEVC_PROBE = 'external-hdr-authorization:hevc';
 const AV1_PROBE = 'external-hdr-authorization:av1';
 const HEVC_CHECK_LABEL = 'check hvc1.2.4.L120.B0 1920x1088 prefer-hardware';
@@ -89,8 +100,8 @@ const I420P10_BYTES_PER_PIXEL = 3;
 const HEVC_DECODE_COST = { bytes: 1_920 * 1_088 * I420P10_BYTES_PER_PIXEL * (HEVC_MAXIMUM_REFERENCE_FRAMES + 1), decoders: 1 };
 const AV1_DECODE_COST = { bytes: 1_920 * 1_080 * I420P10_BYTES_PER_PIXEL * (AV1_MAXIMUM_REFERENCE_FRAMES + 1), decoders: 1 };
 const SIMULATED_IMPORT_FAILURE = 'simulated import failure';
-// A rejection names its worst error and the 10/255 bound in 8-bit steps, and the sample where it is
-const PIXEL_MISMATCH_DETAIL_PATTERN = /^\d+(\.\d)?\/255 > 10\/255 at \(\d+, \d+\)$/;
+// A rejection names its worst error and the 3/255 bound in 8-bit steps, and the sample where it is
+const PIXEL_MISMATCH_DETAIL_PATTERN = /^\d+(\.\d)?\/255 > 3\/255 at \(\d+, \d+\)$/;
 const SDR_ROUTE_UNSUPPORTED_FAILURE = 'route-unsupported: 8-bit bt709:bt709:limited:sdr';
 
 let restoreWebGPUGlobals: () => void = (): void => undefined;
@@ -101,8 +112,22 @@ function createSettings() {
     });
 }
 
-function createExpectedObservations(routeKey: ExternalHDRAuthorizationRouteKey): readonly RawHDRVectorObservation[] {
-    return createExpectedExternalHDRAuthorizationObservations(routeKey, createSettings());
+/**
+ * Returns what the GPU renders at a route's vector samples: the codes the route recovers from the browser's RGB through the levels fitted to it,
+ * which differ from the vector's only where the browser clipped a channel, or converted at other levels.
+ */
+function createExpectedObservations(routeKey: ExternalHDRAuthorizationRouteKey, conversion: BrowserConversion = 'exact'): readonly RawHDRVectorObservation[] {
+    const samples = routeKey === AV1_PQ_ROUTE_KEY || routeKey === AV1_HLG_ROUTE_KEY ? EXTERNAL_AV1_HDR_AUTHORIZATION_VECTOR_SAMPLES : EXTERNAL_HDR_AUTHORIZATION_VECTOR_SAMPLES;
+    const browserSamples = samples.map(sample => ({ encodedRGB: convertToBrowserRGB(sample.rawYUVCode, conversion), rawYUVCode: sample.rawYUVCode }));
+    const fit = fitExternalFrameCalibration(browserSamples);
+    if (!fit.calibration) {
+        throw new Error(fit.failure);
+    }
+    const calibration = fit.calibration;
+    return createExpectedExternalHDRAuthorizationObservations(routeKey, createSettings(), browserSamples.map(sample => applyExternalFrameCalibration(
+        recoverLimitedRangeBT709Codes(sample.encodedRGB),
+        calibration
+    )));
 }
 
 function createFrame(close: MockFunction, displayWidth = EXTERNAL_HDR_AUTHORIZATION_DISPLAY_WIDTH, displayHeight = EXTERNAL_HDR_AUTHORIZATION_DISPLAY_HEIGHT): VideoFrame {
@@ -113,15 +138,51 @@ function createFrame(close: MockFunction, displayWidth = EXTERNAL_HDR_AUTHORIZAT
     } as unknown as VideoFrame;
 }
 
-/** Creates a device whose readbacks of the authorization target return the observations. */
-function createDeviceHarness(observations: readonly RawHDRVectorObservation[]): WebGPUDeviceHarness {
+/**
+ * How the browser converts a neutralized frame into its texture: at the BT.709 limited-range 10-bit levels the recovery inverts, or as Chromium
+ * converts a hardware frame, reading its samples as 16-bit and converting them with BT.709's 8-bit levels into an 8-bit texture. Both clip.
+ */
+type BrowserConversion = 'exact' | 'hardware';
+
+function convertToBrowserRGB(codes: ColorTriplet, conversion: BrowserConversion): ColorTriplet {
+    const [ luma, chromaBlue, chromaRed ] = conversion === 'exact' ?
+        [ (codes[0] - 64) / 876, (codes[1] - 512) / 896, (codes[2] - 512) / 896 ] :
+        [
+            (((codes[0] * 64) / 65_535) - (16 / 255)) * (255 / 219),
+            (((codes[1] * 64) / 65_535) - (128 / 255)) * (255 / 224),
+            (((codes[2] * 64) / 65_535) - (128 / 255)) * (255 / 224)
+        ];
+    const toTexture = (channel: number): number => {
+        const clipped = Math.min(Math.max(channel, 0), 1);
+        return conversion === 'exact' ? clipped : Math.round(clipped * 255) / 255;
+    };
+    return [
+        toTexture(luma + (1.5748 * chromaRed)),
+        toTexture(luma - (0.187324 * chromaBlue) - (0.468124 * chromaRed)),
+        toTexture(luma + (1.8556 * chromaBlue))
+    ];
+}
+
+/** Creates a device whose readbacks of the calibration probe return the browser's RGB of the vector, and of the authorization target the observations. */
+function createDeviceHarness(observations: readonly RawHDRVectorObservation[], conversion: BrowserConversion = 'exact'): WebGPUDeviceHarness {
     const observationMap = new Map<string, ColorTriplet>();
     for (const observation of observations) {
         observationMap.set(`${observation.sampleX}:${observation.sampleY}`, observation.linearRGB);
     }
+    const browserRGBMap = new Map<string, ColorTriplet>(VECTOR_SAMPLES.map(sample => [
+        `${sample.sampleX}:${sample.sampleY}`,
+        convertToBrowserRGB(sample.rawYUVCode, conversion)
+    ]));
     return createWebGPUDeviceHarness({
-        readPixel: (texel: ReadbackTexel): ColorTriplet | undefined => observationMap.get(`${texel.sampleX}:${texel.sampleY}`)
+        readPixel: (texel: ReadbackTexel): ColorTriplet | undefined => (texel.texture.label === CALIBRATION_PROBE_LABEL ? browserRGBMap : observationMap)
+            .get(`${texel.sampleX}:${texel.sampleY}`)
     });
+}
+
+/** Returns the levels last written into the external frame calibration uniform, gains then offsets, each padded to four. */
+function getLastCalibrationWrite(harness: WebGPUDeviceHarness): number[] | undefined {
+    const write = getBufferWrites(harness, EXTERNAL_FRAME_CALIBRATION_LABEL).at(-1);
+    return write === undefined ? undefined : Array.from(new Float32Array(write.bytes.buffer, write.bytes.byteOffset, write.bytes.byteLength / 4));
 }
 
 function mutateFirstObservation(observations: readonly RawHDRVectorObservation[]): readonly RawHDRVectorObservation[] {
@@ -218,26 +279,33 @@ describe('External HDR presentation authorization', () => {
 
             const decision = await validateRoute(runner, harness.device, routeKey);
 
-            // The signature covers exactly the modules the executor compiled
+            // The route's executor compiles first, then the calibration probe's; the signature covers exactly the modules each compiled
+            const [ routeShaderCode, calibrationProbeShaderCode ] = getShaderCodes(harness);
             expect(decision).toMatchObject({
                 authorizedRouteKeys: [ routeKey ],
                 failureReason: null,
                 routeKey,
                 sampleCount: VECTOR_SAMPLE_COUNT,
-                shaderSignature: createExternalHDRShaderSignature(
-                    TARGET_FORMAT,
-                    routeKey,
-                    getShaderCodes(harness).join(PLAN_SHADER_CODE_SEPARATOR)
-                ),
+                shaderSignature: createExternalHDRShaderSignature(TARGET_FORMAT, routeKey, routeShaderCode, calibrationProbeShaderCode),
                 status: 'authorized'
             });
+            // A browser that converts at the levels the recovery inverts needs none of its own
+            const calibration = decision.calibration;
+            if (!calibration) {
+                throw new Error('An authorized route carries its levels');
+            }
+            for (const component of [ 0, 1, 2 ]) {
+                expect(calibration.gain[component]).toBeCloseTo(1, 2);
+                expect(Math.abs(calibration.offset[component])).toBeLessThan(0.5);
+            }
             expect(createBuiltinChain).toHaveBeenCalledWith({
                 hdrOutput: false,
                 metadata,
                 route: 'external-hdr',
                 settings: createSettings()
             });
-            expect(vi.mocked(planPresentation).mock.calls[0][0]).toMatchObject({
+            const planRequests = vi.mocked(planPresentation).mock.calls.map(call => call[0]);
+            expect(planRequests.find(planRequest => planRequest.output.format === TARGET_FORMAT)).toMatchObject({
                 facts: {
                     frameRate: null,
                     hdrOutput: false,
@@ -250,20 +318,110 @@ describe('External HDR presentation authorization', () => {
                 output: { colorSpace: 'srgb', format: TARGET_FORMAT, toneMapping: 'standard' },
                 passes: []
             });
+            // The calibration probe reads the browser's RGB of the frame 1:1 into a float target
+            expect(planRequests.find(planRequest => planRequest.output.format === CALIBRATION_PROBE_FORMAT)).toMatchObject({
+                facts: {
+                    hdrSource: false,
+                    outputHeight: EXTERNAL_HDR_AUTHORIZATION_DISPLAY_HEIGHT,
+                    outputWidth: EXTERNAL_HDR_AUTHORIZATION_DISPLAY_WIDTH
+                },
+                passes: []
+            });
             const renderSettingsWrites = getBufferWrites(harness, RENDER_SETTINGS_LABEL);
             expect(renderSettingsWrites).toHaveLength(1);
             expect(renderSettingsWrites[0].bytes.byteLength).toBe(RENDER_SETTINGS_UNIFORM_BYTE_LENGTH);
-            expect(harness.importExternalTexture).toHaveBeenCalledExactlyOnceWith({ colorSpace: EXTERNAL_TEXTURE_COLOR_SPACE, source: frame });
-            // One pass draws the frame 1:1 into the whole target
-            expect(harness.renderPasses).toHaveLength(1);
-            expect(harness.renderPasses[0]).toMatchObject({
-                drawVertexCounts: [ RENDER_VERTEX_COUNT ],
-                viewport: [ 0, 0, EXTERNAL_HDR_AUTHORIZATION_DISPLAY_WIDTH, EXTERNAL_HDR_AUTHORIZATION_DISPLAY_HEIGHT, 0, 1 ]
-            });
+            // The route renders through the levels the probe fitted
+            expect(getLastCalibrationWrite(harness)).toEqual(Array.from(new Float32Array([ ...calibration.gain, 0, ...calibration.offset, 0 ])));
+            // The probe imports the frame, then the route does
+            expect(harness.importExternalTexture.mock.calls).toEqual([
+                [ { colorSpace: EXTERNAL_TEXTURE_COLOR_SPACE, source: frame } ],
+                [ { colorSpace: EXTERNAL_TEXTURE_COLOR_SPACE, source: frame } ]
+            ]);
+            // One pass each draws the frame 1:1 into the whole target
+            expect(harness.renderPasses).toHaveLength(2);
+            for (const renderPass of harness.renderPasses) {
+                expect(renderPass).toMatchObject({
+                    drawVertexCounts: [ RENDER_VERTEX_COUNT ],
+                    viewport: [ 0, 0, EXTERNAL_HDR_AUTHORIZATION_DISPLAY_WIDTH, EXTERNAL_HDR_AUTHORIZATION_DISPLAY_HEIGHT, 0, 1 ]
+                });
+            }
             expect(close).toHaveBeenCalledOnce();
             expectEveryResourceDestroyed(harness);
         }
     );
+
+    it('fits the levels Chromium converts a hardware frame with, and authorizes the route that recovers neutral grays through them', async () => {
+        const browserSamples = EXTERNAL_HDR_AUTHORIZATION_VECTOR_SAMPLES.map(sample => ({
+            encodedRGB: convertToBrowserRGB(sample.rawYUVCode, 'hardware'),
+            rawYUVCode: sample.rawYUVCode
+        }));
+        const harness = createDeviceHarness(createExpectedObservations(PQ_ROUTE_KEY, 'hardware'), 'hardware');
+        const runner = createRunner(async (): Promise<VideoFrame> => createFrame(vi.fn()));
+
+        const decision = await validateRoute(runner, harness.device, PQ_ROUTE_KEY);
+
+        expect(decision.status).toBe('authorized');
+        const calibration = decision.calibration;
+        if (!calibration) {
+            throw new Error('An authorized route carries its levels');
+        }
+        expect(decision.maximumInputChannelError).toBeLessThanOrEqual(4 / 1_023);
+        expect(getLastCalibrationWrite(harness)).toEqual(Array.from(new Float32Array([ ...calibration.gain, 0, ...calibration.offset, 0 ])));
+        // At the recovery's own levels a neutral gray's chroma reads about 2 codes low, a green cast; through the levels it reads neutral
+        const neutralSamples = browserSamples.filter(sample => sample.rawYUVCode[0] > 64 && sample.rawYUVCode[1] === 512 && sample.rawYUVCode[2] === 512);
+        const getMeanChromaError = (readCodes: (encodedRGB: ColorTriplet) => ColorTriplet, component: 1 | 2): number => neutralSamples.reduce(
+            (sum, sample) => sum + readCodes(sample.encodedRGB)[component] - 512,
+            0
+        ) / neutralSamples.length;
+        const readCorrected = (encodedRGB: ColorTriplet): ColorTriplet => applyExternalFrameCalibration(recoverLimitedRangeBT709Codes(encodedRGB), calibration);
+        for (const component of [ 1, 2 ] as const) {
+            expect(getMeanChromaError(recoverLimitedRangeBT709Codes, component)).toBeLessThan(-1.5);
+            expect(Math.abs(getMeanChromaError(readCorrected, component))).toBeLessThan(0.5);
+        }
+        expect(calibration.gain[0]).toBeCloseTo(1 / CHROMIUM_HARDWARE_CODE_SCALE, 2);
+    });
+
+    it('rejects a browser whose conversion no levels explain, before any route renders', async () => {
+        // Every sample reads as one gray, so no levels recover the vector's codes from it
+        const routeObservations = createExpectedObservations(PQ_ROUTE_KEY);
+        const harness = createWebGPUDeviceHarness({
+            readPixel: (texel: ReadbackTexel): ColorTriplet | undefined => (texel.texture.label === CALIBRATION_PROBE_LABEL ?
+                [ 0.5, 0.5, 0.5 ] :
+                routeObservations.find(observation => observation.sampleX === texel.sampleX && observation.sampleY === texel.sampleY)?.linearRGB)
+        });
+        const close = vi.fn();
+        const runner = createRunner(async (): Promise<VideoFrame> => createFrame(close));
+
+        const decision = await validateRoute(runner, harness.device, PQ_ROUTE_KEY);
+
+        expect(decision).toMatchObject({ calibration: null, failureReason: 'calibration-failed', status: 'rejected' });
+        expect(decision.failureDetail).toMatch(/^luma: gain NaN/);
+        // Only the probe rendered
+        expect(harness.renderPasses).toHaveLength(1);
+        expect(close).toHaveBeenCalledOnce();
+        expectEveryResourceDestroyed(harness);
+    });
+
+    it('rejects a browser that moves one color apart from the levels of the others, as an input mismatch', async () => {
+        const [ movedSample ] = EXTERNAL_HDR_AUTHORIZATION_VECTOR_SAMPLES.filter(sample => sample.rawYUVCode[1] !== 512);
+        const harness = createWebGPUDeviceHarness({
+            readPixel: (texel: ReadbackTexel): ColorTriplet | undefined => {
+                const sample = VECTOR_SAMPLES.find(candidate => candidate.sampleX === texel.sampleX && candidate.sampleY === texel.sampleY);
+                if (texel.texture.label !== CALIBRATION_PROBE_LABEL || !sample) {
+                    return undefined;
+                }
+                const encodedRGB = convertToBrowserRGB(sample.rawYUVCode, 'exact');
+                return sample === movedSample ? [ encodedRGB[0], encodedRGB[1], encodedRGB[2] + 0.05 ] : encodedRGB;
+            }
+        });
+        const runner = createRunner(async (): Promise<VideoFrame> => createFrame(vi.fn()));
+
+        const decision = await validateRoute(runner, harness.device, PQ_ROUTE_KEY);
+
+        expect(decision).toMatchObject({ calibration: null, failureReason: 'input-mismatch', status: 'rejected' });
+        expect(decision.failureDetail).toMatch(/^\d+(\.\d)?\/1023 > 4\/1023 at \(\d+, \d+\)$/);
+        expect(harness.renderPasses).toHaveLength(1);
+    });
 
     it.each([
         [ AV1_PQ_ROUTE_KEY, createPQColorMetadata() ],
@@ -336,7 +494,8 @@ describe('External HDR presentation authorization', () => {
         const runner = createRunner(async (): Promise<VideoFrame> => createFrame(close));
 
         await expect(validateRoute(runner, harness.device, PQ_ROUTE_KEY)).resolves.toMatchObject({
-            failureDetail: `import: ${SIMULATED_IMPORT_FAILURE}`,
+            // The calibration probe imports the frame first, so its import fails before any route renders
+            failureDetail: `calibration probe import: ${SIMULATED_IMPORT_FAILURE}`,
             failureReason: 'frame-import-failed',
             status: 'rejected'
         });
@@ -443,12 +602,13 @@ describe('External HDR presentation authorization', () => {
         expect(PresentationExecutor.create).not.toHaveBeenCalled();
     });
 
-    it('includes route, shader, and target in the stable signature', () => {
-        const signature = createExternalHDRShaderSignature('bgra8unorm', PQ_ROUTE_KEY, 'shader');
-        expect(signature).toBe(createExternalHDRShaderSignature('bgra8unorm', PQ_ROUTE_KEY, 'shader'));
-        expect(signature).not.toBe(createExternalHDRShaderSignature('rgba8unorm', PQ_ROUTE_KEY, 'shader'));
-        expect(signature).not.toBe(createExternalHDRShaderSignature('bgra8unorm', HLG_ROUTE_KEY, 'shader'));
-        expect(signature).not.toBe(createExternalHDRShaderSignature('bgra8unorm', PQ_ROUTE_KEY, 'other shader'));
+    it('includes route, shader, calibration probe, and target in the stable signature', () => {
+        const signature = createExternalHDRShaderSignature('bgra8unorm', PQ_ROUTE_KEY, 'shader', 'probe');
+        expect(signature).toBe(createExternalHDRShaderSignature('bgra8unorm', PQ_ROUTE_KEY, 'shader', 'probe'));
+        expect(signature).not.toBe(createExternalHDRShaderSignature('rgba8unorm', PQ_ROUTE_KEY, 'shader', 'probe'));
+        expect(signature).not.toBe(createExternalHDRShaderSignature('bgra8unorm', HLG_ROUTE_KEY, 'shader', 'probe'));
+        expect(signature).not.toBe(createExternalHDRShaderSignature('bgra8unorm', PQ_ROUTE_KEY, 'other shader', 'probe'));
+        expect(signature).not.toBe(createExternalHDRShaderSignature('bgra8unorm', PQ_ROUTE_KEY, 'shader', 'other probe'));
     });
 
     it('creates only an opaque, neutralized hardware decoder frame', async () => {
@@ -846,7 +1006,8 @@ describe('External HDR presentation authorization', () => {
         expect(inFlightDuringCheck).toEqual([ [ checkLabel ] ]);
         // The import and render of the frame run inside the decode step, so a page that stops in them names it
         expect(inFlightDuringDecode).toEqual([ [ decodeLabel ] ]);
-        expect(inFlightDuringImport).toEqual([ [ decodeLabel ] ]);
+        // The probe imports the frame, then the route does
+        expect(inFlightDuringImport).toEqual([ [ decodeLabel ], [ decodeLabel ] ]);
         expect(recording.inFlight()).toEqual([]);
         // The check settles before any executor is built
         expect(isConfigSupported.mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(PresentationExecutor.create).mock.invocationCallOrder[0]);
@@ -889,10 +1050,19 @@ describe('External HDR presentation authorization', () => {
     it('decodes the HEVC vector once for prewarmed PQ and HLG, and closes the frame once', async () => {
         const pqObservations = createExpectedObservations(PQ_ROUTE_KEY);
         const hlgObservations = createExpectedObservations(HLG_ROUTE_KEY);
-        // The routes render one after the other from the one frame, PQ first, each in one render pass
+        const browserRGB = new Map(EXTERNAL_HDR_AUTHORIZATION_VECTOR_SAMPLES.map(sample => [
+            `${sample.sampleX}:${sample.sampleY}`,
+            convertToBrowserRGB(sample.rawYUVCode, 'exact')
+        ]));
+        // The calibration probe renders first, then the routes one after the other from the one frame, PQ first, each in one render pass
         const harness = createWebGPUDeviceHarness({
-            readPixel: (texel: ReadbackTexel): ColorTriplet | undefined => (texel.renderPassCount === 1 ? pqObservations : hlgObservations)
-                .find(observation => observation.sampleX === texel.sampleX && observation.sampleY === texel.sampleY)?.linearRGB
+            readPixel: (texel: ReadbackTexel): ColorTriplet | undefined => {
+                if (texel.texture.label === CALIBRATION_PROBE_LABEL) {
+                    return browserRGB.get(`${texel.sampleX}:${texel.sampleY}`);
+                }
+                const observations = texel.renderPassCount === 2 ? pqObservations : hlgObservations;
+                return observations.find(observation => observation.sampleX === texel.sampleX && observation.sampleY === texel.sampleY)?.linearRGB;
+            }
         });
         const close = vi.fn();
         const createFrameFactory = vi.fn(async (): Promise<VideoFrame> => createFrame(close));
@@ -903,7 +1073,7 @@ describe('External HDR presentation authorization', () => {
 
         expect(isConfigSupported).toHaveBeenCalledOnce();
         expect(createFrameFactory).toHaveBeenCalledOnce();
-        expect(harness.importExternalTexture).toHaveBeenCalledTimes(2);
+        expect(harness.importExternalTexture).toHaveBeenCalledTimes(3);
         expect(close).toHaveBeenCalledOnce();
         expect(registry.getTelemetry(harness.device, TARGET_FORMAT).authorizedRouteKeys).toEqual([ PQ_ROUTE_KEY, HLG_ROUTE_KEY ]);
         await vi.waitFor(() => expectEveryResourceDestroyed(harness));

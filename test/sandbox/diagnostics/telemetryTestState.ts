@@ -239,9 +239,11 @@ export function createRawHDRAuthorization(overrides: Partial<RawHDRAuthorization
 export function createExternalHDRAuthorization(overrides: Partial<ExternalHDRAuthorizationTelemetry> = {}): ExternalHDRAuthorizationTelemetry {
     return {
         authorizedRouteKeys: [],
+        calibrations: {},
         failureDetails: {},
         failureReasons: {},
         maximumChannelErrors: {},
+        maximumInputChannelErrors: {},
         pendingRouteKeys: [],
         rejectedRouteKeys: [],
         renderSettingsVersion: RENDER_SETTINGS_VERSION,

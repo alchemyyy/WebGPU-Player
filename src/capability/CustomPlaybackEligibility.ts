@@ -119,8 +119,9 @@ import {
 } from '../decode/video/gpu/GPUVideoDecoderCatalog';
 
 const DIRECT_PLAY_METHOD = 'DIRECTPLAY';
-// The AV1 external key whose vector proves the AV1 decoder's frames import exactly, which the external Dolby Vision route of AV1 also relies on
+// The external keys whose vectors prove each decoder's frames import exactly and fit the levels its external Dolby Vision route recovers them with
 const NATIVE_AV1_DOLBY_VISION_DECODE_ROUTE_KEY: ExternalHDRAuthorizationRouteKey = 'external-av1-main10-bt709-limited:pq-v1';
+const NATIVE_HEVC_DOLBY_VISION_DECODE_ROUTE_KEY: ExternalHDRAuthorizationRouteKey = 'external-hevc-main10-bt709-limited:pq-v1';
 const VIDEO_CODEC_ALIASES: Readonly<Record<string, CustomVideoCodec>> = {
     AVC: 'h264',
     AVC1: 'h264',
@@ -1752,7 +1753,8 @@ function selectGPUDolbyVisionVideoOutput(
 
 /**
  * Selects AV1 Profile 10's RPU reconstruction from the hardware decoder's frames, neutralized to limited BT.709, through the external route of the profile it reconstructs as.
- * The AV1 PQ external key proves the AV1 decoder's frames import exactly; the Profile 5 or 8 key proves the reconstruction.
+ * The AV1 PQ external key proves the AV1 decoder's frames import exactly and fits the levels they are recovered with; the Profile 5 or 8 key proves
+ * the reconstruction.
  */
 function selectNativeAV1DolbyVisionOutput(
     descriptor: DolbyVisionPresentationDescriptor,
@@ -1792,7 +1794,7 @@ function selectNativeAV1DolbyVisionOutput(
 
 /**
  * Selects a Dolby Vision route in this order:
- * - native Profile 5 of HEVC;
+ * - native Profile 5 of HEVC, whose frames the HEVC PQ external key proves and fits the levels of;
  * - native Profile 5 or 8 reconstruction of AV1;
  * - the native compatible base of Profile 7 or 8;
  * - RPU reconstruction from raw planes;
@@ -1815,6 +1817,7 @@ function selectDolbyVisionVideoOutput(
         descriptor.reconstructionProfile === 5
         && descriptor.baseLayerBitDepth === 10
         && eligibilityOptions.allowNativeDolbyVision === true
+        && (eligibilityOptions.authorizedExternalHDRRouteKeys ?? []).includes(NATIVE_HEVC_DOLBY_VISION_DECODE_ROUTE_KEY)
         && supportsNativeDolbyVisionProfile5(capabilities, videoCodec, videoStream)
     ) {
         const nativeCapability = capabilities.nativeDolbyVisionHEVC;

@@ -34,9 +34,12 @@ const SIGNAL_NAME_PREFIX = 'builtin.signal';
 const INTERLACED_CHROMA_NAME_SUFFIX = '.interlaced-chroma';
 
 const EXTERNAL_RESOURCES: readonly EngineResource[] = Object.freeze([ 'sampler-linear', 'external-texture' ]);
+// The external HDR and Dolby Vision signals recover codes from the browser's texture, so they bind the levels their codec's frames need
+const EXTERNAL_HDR_RESOURCES: readonly EngineResource[] = Object.freeze([ 'sampler-linear', 'external-texture', 'external-frame-calibration' ]);
 const EXTERNAL_DOLBY_VISION_RESOURCES: readonly EngineResource[] = Object.freeze([
     'sampler-linear',
     'external-texture',
+    'external-frame-calibration',
     'dolby-vision-rpu'
 ]);
 const NV12_RESOURCES: readonly EngineResource[] = Object.freeze([ 'planes-nv12' ]);
@@ -154,16 +157,19 @@ fn ${SIGNAL_PLANE_ENTRY_POINTS.imageSize}() -> vec2f {
     return vec2f(textureDimensions(videoTexture));
 }`;
 
+// The codes of BT.709's 10-bit limited-range levels, then the levels the external HDR authorization fits to its codec's frames on the device,
+// which take off the difference between those and the levels the browser converted with (see ExternalFrameCalibration.ts)
 const BT709_LIMITED_YUV_RECOVERY_WGSL = /* wgsl */ `
 fn recoverLimitedRangeBT709YUV(encodedBT709RGB: vec3f) -> vec3f {
     let normalizedLuma = dot(encodedBT709RGB, vec3f(0.2126, 0.7152, 0.0722));
     let normalizedChromaBlue = (encodedBT709RGB.b - normalizedLuma) / 1.8556;
     let normalizedChromaRed = (encodedBT709RGB.r - normalizedLuma) / 1.5748;
-    return vec3f(
+    let recoveredYUV = vec3f(
         (normalizedLuma * 876.0) + 64.0,
         (normalizedChromaBlue * 896.0) + 512.0,
         (normalizedChromaRed * 896.0) + 512.0
     );
+    return (recoveredYUV * externalFrameCalibration.gain.xyz) + externalFrameCalibration.offset.xyz;
 }`;
 
 const DOLBY_VISION_BASE_SIGNAL_RECOVERY_WGSL = /* wgsl */ `
@@ -842,7 +848,7 @@ fn ${SIGNAL_ENTRY_POINT}(coordinate: vec2f) -> vec4f {
         entryPoint: SIGNAL_ENTRY_POINT,
         name: `${SIGNAL_NAME_PREFIX}.external-hdr`,
         planes: createExternalHDRPlanes(metadata, chromaSubsampling, chromaLocation),
-        resources: EXTERNAL_RESOURCES,
+        resources: EXTERNAL_HDR_RESOURCES,
         sourceKind: 'external'
     };
 }

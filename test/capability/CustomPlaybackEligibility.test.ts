@@ -2397,6 +2397,7 @@ describe('CustomPlaybackEligibility', () => {
                 runtimeAvailability: AVAILABLE_RUNTIME
             }
         )).toEqual({ eligible: false, reason: 'hdr-presentation-unavailable' });
+        // The native Profile 5 route recovers the HEVC decoder's frames through the levels the HEVC PQ key fits, so it needs that key too
         expect(getCustomPlaybackEligibility(
             dolbyVisionOptions,
             createCapabilities(),
@@ -2404,6 +2405,17 @@ describe('CustomPlaybackEligibility', () => {
                 allowDolbyVision: false,
                 allowNativeDolbyVision: true,
                 allowRawHDR: false,
+                runtimeAvailability: AVAILABLE_RUNTIME
+            }
+        )).toEqual({ eligible: false, reason: 'hdr-presentation-unavailable' });
+        expect(getCustomPlaybackEligibility(
+            dolbyVisionOptions,
+            createCapabilities(),
+            {
+                allowDolbyVision: false,
+                allowNativeDolbyVision: true,
+                allowRawHDR: false,
+                authorizedExternalHDRRouteKeys: [ 'external-hevc-main10-bt709-limited:pq-v1' ],
                 runtimeAvailability: AVAILABLE_RUNTIME
             }
         )).toMatchObject({
@@ -2452,6 +2464,7 @@ describe('CustomPlaybackEligibility', () => {
                 allowDolbyVision: false,
                 allowNativeDolbyVision: true,
                 allowRawHDR: false,
+                authorizedExternalHDRRouteKeys: [ 'external-hevc-main10-bt709-limited:pq-v1' ],
                 runtimeAvailability: AVAILABLE_RUNTIME
             }
         )).toEqual({ eligible: false, reason: 'hdr-presentation-unavailable' });
@@ -2518,6 +2531,7 @@ describe('CustomPlaybackEligibility', () => {
                     allowDolbyVision: false,
                     allowNativeDolbyVision: true,
                     allowRawHDR: false,
+                    authorizedExternalHDRRouteKeys: [ 'external-hevc-main10-bt709-limited:pq-v1' ],
                     runtimeAvailability: AVAILABLE_RUNTIME
                 }
             );
@@ -2570,6 +2584,7 @@ describe('CustomPlaybackEligibility', () => {
                 allowDolbyVision: false,
                 allowNativeDolbyVision: true,
                 allowRawHDR: false,
+                authorizedExternalHDRRouteKeys: [ 'external-hevc-main10-bt709-limited:pq-v1' ],
                 runtimeAvailability: AVAILABLE_RUNTIME
             }
         )).toMatchObject({
@@ -6925,7 +6940,12 @@ describe('GPU video decode route', () => {
         });
 
         it('keeps the native and raw RPU routes ahead of the GPU decoder', () => {
-            const eligibilityOptions = { ...createGPUEligibilityOptions(), allowDolbyVision: true, allowNativeDolbyVision: true };
+            const eligibilityOptions = {
+                ...createGPUEligibilityOptions(),
+                allowDolbyVision: true,
+                allowNativeDolbyVision: true,
+                authorizedExternalHDRRouteKeys: [ 'external-hevc-main10-bt709-limited:pq-v1' as const ]
+            };
 
             expect(getCustomPlaybackEligibility(createGPUOptions(PROFILE_5_STREAM), createCapabilities(), eligibilityOptions))
                 .toMatchObject({ dolbyVisionProfile: 5, videoDecoderBackend: 'native', videoOutputMode: 'video-frame' });

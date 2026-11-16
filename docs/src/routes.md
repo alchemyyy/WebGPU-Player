@@ -67,6 +67,7 @@ Without a container mask, the host's `audioMetadataLayout` (Jellyfin's count and
 - External HDR authorization opens a hardware decoder (HEVC `hvc1.2.4.L120.B0` at 1920x1088, AV1 `av01.0.08M.10` at 1920x1080, `prefer-hardware`), so its `isConfigSupported` check and its decode run as recorded steps of the page's probe session, under the probes `external-hdr-authorization:hevc` and `external-hdr-authorization:av1`, with labels such as `check hvc1.2.4.L120.B0 1920x1088 prefer-hardware`.
   A crash in them is quarantined like a capability probe step's, and a blocked or defective step rejects the route with the reason `stopped-page` or `browser-defect`.
   The decode step's call decodes, imports, renders, and reads back within the manager's step timeout (`CapabilityProbeManager.timeoutMilliseconds`), and returns decisions, never the frame.
+  It first renders the frame through a calibration probe, the browser's RGB into a float target, and fits the levels that recover the vector's codes from it, which every route of the batch then renders through and its decision keeps.
   The routes of one codec and target format asked for in the same task, such as the HEVC PQ and HLG keys, share one check and one decode, and a device runs a codec's batches one after another, so it never holds two of that codec's decoders.
   A deadline that passes during the check opens no decoder.
 - External Dolby Vision authorization returns `video-frame-creation-failed` before compiling anything when `canHoldVideoFrameFormat('I420P10')` is false, as on shipping Safari or without `VideoFrame`.
@@ -324,12 +325,13 @@ MPEG-1, H.263, MS-MPEG4, VP8, VP9, and AV1 have no interlaced coding.
 
 - Raw: `<I420P10..I444P12>:bt2020-ncl:bt2020:limited:<pq|hlg>` and `<I420..I444P12>:<matrix>:<primaries>:<full|limited>:sdr`, with every matrix (`bt709`, `bt470bg`, `smpte170m`, `bt2020-ncl`) and primaries set (`bt709`, `bt470bg`, `smpte170m`, `bt2020`).
   The HDR keys and the BT.709 SDR keys are prewarmed; every other SDR key authorizes on first use, and its vector doubles the chroma excursion so the gamut conversion moves its samples beyond the tolerance.
-- External HDR: `external-hevc-main10-bt709-limited:<pq|hlg>-v1` and `external-av1-main10-bt709-limited:<pq|hlg>-v1`, each with its own codec's vector, authorize on first use, since they are the only keys whose check decodes a frame.
+- External HDR: `external-hevc-main10-bt709-limited:<pq|hlg>-v1` and `external-av1-main10-bt709-limited:<pq|hlg>-v1`, each with its own codec's vector, authorize on first use, since they are the only keys whose check decodes a frame; each decision keeps the levels its codec's frames are recovered with on the device.
   The two HEVC keys start together, sharing one decode, when an HDR negotiation waits for them (`waitForExternalHDRAuthorizationPrewarm`) or a playback that requests the external HDR route starts them (`prewarmExternalHDRPresentationAuthorization`); an AV1 key starts when its route is first used.
   Device creation prewarms only the raw and Dolby Vision keys named prewarmed here.
 - Dolby Vision raw, each per BL format from I420 to I444P12: `<format>:dovi-rpu-v1`, `<format>:dovi-profile4-base-v1`, `<format>:dovi-profile4-fel-v1`, `<format>:dovi-profile7-base-v1`, and `<format>:dovi-profile7-fel-v1`.
   Only `I420P10:dovi-rpu-v1` and the I420P10 Profile 7 keys are prewarmed; the others authorize on first use.
 - Dolby Vision external: `external-I420P10-bt709-limited:dovi-p5-rpu-v1`, prewarmed, and `external-I420P10-bt709-limited:dovi-p8-rpu-v1`, which only AV1 P10 uses and which authorizes on first use; both check the same shader with their profile's synthetic RPU.
+  Their routes also need their codec's PQ external key, whose levels they recover the decoder's frames with: HEVC's for HEVC P5, AV1's for AV1 P10.
 
 ## Audio routes
 

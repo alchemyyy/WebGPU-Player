@@ -167,6 +167,7 @@ export type PassManifest = {
 export type EngineResource =
     | 'dolby-vision-enhancement'
     | 'dolby-vision-rpu'
+    | 'external-frame-calibration'
     | 'external-texture'
     | 'frame-pool'
     | 'planes-nv12'
@@ -181,6 +182,7 @@ export type EngineBindingResource =
     | 'enhancement-chroma-v'
     | 'enhancement-luma'
     | 'enhancement-uniform'
+    | 'external-frame-calibration'
     | 'external-texture'
     | 'frame-pool'
     | 'frame-pool-layout'

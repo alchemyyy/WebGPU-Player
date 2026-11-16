@@ -12,7 +12,9 @@ const rawHDRAuthorizationMockState = vi.hoisted(() => ({
 const externalHDRAuthorizationMockState = vi.hoisted(() => ({
     authorizeCalls: [] as GPUDevice[],
     authorized: true,
-    failure: 'pixel-mismatch: external-hevc-main10-bt709-limited:pq-v1 14/255 > 10/255 at (3, 7)',
+    // The levels an authorized route recovers its codec's frames with, which the presenter writes into the route's executors
+    calibration: { gain: [ 1.004, 1.003, 1.002 ], offset: [ -0.5, 0.25, -0.125 ] },
+    failure: 'pixel-mismatch: external-hevc-main10-bt709-limited:pq-v1 14/255 > 3/255 at (3, 7)',
     prewarmCalls: [] as Array<{ device: GPUDevice, targetFormat: GPUTextureFormat }>
 }));
 const dolbyVisionAuthorizationMockState = vi.hoisted(() => ({
@@ -117,14 +119,20 @@ vi.mock('webgpu-player/validation/ExternalHDRPresentationAuthorization', () => (
             externalHDRAuthorizationMockState.authorized ? null : externalHDRAuthorizationMockState.failure
         ));
 
+        getFrameCalibration = vi.fn(() => (
+            externalHDRAuthorizationMockState.authorized ? externalHDRAuthorizationMockState.calibration : null
+        ));
+
         getTelemetry = vi.fn((_device: GPUDevice | null, targetFormat: GPUTextureFormat | null) => ({
             authorizedRouteKeys: externalHDRAuthorizationMockState.authorized ? [
                 'external-hevc-main10-bt709-limited:pq-v1',
                 'external-hevc-main10-bt709-limited:hlg-v1'
             ] : [],
+            calibrations: {},
             failureReasons: {},
             vectorVersion: 1,
             maximumChannelErrors: {},
+            maximumInputChannelErrors: {},
             pendingRouteKeys: [],
             rejectedRouteKeys: externalHDRAuthorizationMockState.authorized ? [] : [
                 'external-hevc-main10-bt709-limited:pq-v1',
@@ -355,6 +363,7 @@ const RESOURCE_TIMEOUT_DETAIL = `timeout after ${microsecondsToMilliseconds(WEBG
 const RENDER_SETTINGS_BUFFER_LABEL = 'Presentation render settings';
 const PRESENTATION_UNIFORMS_BUFFER_LABEL = 'Presentation uniforms';
 const DOLBY_VISION_RPU_BUFFER_LABEL = 'Presentation Dolby Vision RPU';
+const EXTERNAL_FRAME_CALIBRATION_BUFFER_LABEL = 'Presentation external frame calibration';
 const DOLBY_VISION_ENHANCEMENT_BUFFER_LABEL = 'Presentation Dolby Vision enhancement uniforms';
 // A presentation uniform starts with the texture scale and offset, two floats each
 const PRESENTATION_COORDINATE_COUNT = 4;
@@ -938,6 +947,19 @@ function getRenderSettingsWrites(deviceHarness: DeviceHarness): Uint8Array<Array
     return deviceHarness.queueWriteBuffer.mock.calls
         .filter((call: unknown[]): boolean => (call[0] as { label?: string }).label === RENDER_SETTINGS_BUFFER_LABEL)
         .map((call: unknown[]): Uint8Array<ArrayBuffer> => toBytes(call[2]));
+}
+
+/** Returns the levels last written into the executor's external frame calibration uniform since the queue mock was last cleared, gains then offsets. */
+function getLastExternalFrameCalibrationWrite(deviceHarness: DeviceHarness): number[] | undefined {
+    const writes = deviceHarness.queueWriteBuffer.mock.calls
+        .filter((call: unknown[]): boolean => (call[0] as { label?: string }).label === EXTERNAL_FRAME_CALIBRATION_BUFFER_LABEL)
+        .map((call: unknown[]): number[] => Array.from(new Float32Array(toBytes(call[2]).buffer)));
+    return writes.at(-1);
+}
+
+/** The uniform layout of levels: the three gains and the three offsets, each padded to a vec4f. */
+function packExternalFrameCalibration(calibration: { gain: readonly number[], offset: readonly number[] }): number[] {
+    return Array.from(new Float32Array([ ...calibration.gain, 0, ...calibration.offset, 0 ]));
 }
 
 function installGPU(gpu: GPU): void {
@@ -1573,6 +1595,8 @@ describe('WebGPUPresenter', () => {
             .map((call: unknown[]) => call[0] as { code: string })
             .find(descriptor => descriptor.code.includes('fn recoverLimitedRangeBT709YUV'));
         expect(toneMappingShaderDescriptor).toBeDefined();
+        // The route recovers the frame's codes through the levels its authorization fitted to the codec's frames
+        expect(getLastExternalFrameCalibrationWrite(gpuHarness.devices[0])).toEqual(packExternalFrameCalibration(externalHDRAuthorizationMockState.calibration));
         expect(fallbackHandler).not.toHaveBeenCalled();
     });
 
@@ -1624,6 +1648,35 @@ describe('WebGPUPresenter', () => {
             'decoded-frame-color-mismatch',
             'color: pq:bt2020:bt2020-ncl:limited, expected iec61966-2-1:bt709:bt709:limited or iec61966-2-1:bt709:bt709:full'
         ));
+    });
+
+    it('reconstructs external Dolby Vision through its codec\'s levels, and fails closed while that codec\'s external HDR key is not authorized', async () => {
+        webSettingsMockState.hdrToneMappingEnabled = true;
+        const gpuHarness = createGPUHarness();
+        installGPU(gpuHarness.gpu);
+        installCanvasContext(createCanvasContextHarness().context);
+        const surfaceHarness = createSurfaceHarness();
+        const fallbackHandler = vi.fn();
+        const presenter = new WebGPUPresenter(fallbackHandler);
+        const configuration = {
+            codec: 'hevc',
+            inputMode: 'external-dolby-vision',
+            profile: 5,
+            settings: createHDRToSDRRenderSettings({ toneMapping: { inputPeakNits: 4_000 } })
+        } as const;
+
+        presenter.startSession(1);
+        presenter.setDecodedFramePushMode(true, 1);
+        presenter.attach(surfaceHarness.surface, 1);
+        await vi.waitFor(() => expect(
+            surfaceHarness.surface.container.querySelector('.webgpuPlayerCanvas')
+        ).toBeInstanceOf(HTMLCanvasElement));
+        await expect(presenter.configureColorPipeline(configuration, 1)).resolves.toBe(true);
+        expect(getLastExternalFrameCalibrationWrite(gpuHarness.devices[0])).toEqual(packExternalFrameCalibration(externalHDRAuthorizationMockState.calibration));
+
+        externalHDRAuthorizationMockState.authorized = false;
+        await expect(presenter.configureColorPipeline(configuration, 1)).resolves.toBe(false);
+        expect(fallbackHandler).toHaveBeenCalledWith(1, 'hdr-authorization-unavailable', externalHDRAuthorizationMockState.failure);
     });
 
     it('requests one generation-safe pushed-frame refresh after device recovery', async () => {

@@ -371,6 +371,7 @@ describe('PresentationSetup', () => {
             }, GENERATION);
             expect(presenter.configureColorPipeline).toHaveBeenNthCalledWith(2, {
                 ...createHDRRenderConfiguration(DOLBY_VISION_INPUT_PEAK_NITS),
+                codec: 'hevc',
                 frameRate: null,
                 inputMode: 'external-dolby-vision',
                 profile: 5,
@@ -404,6 +405,7 @@ describe('PresentationSetup', () => {
 
             expect(presenter.configureColorPipeline).toHaveBeenCalledWith({
                 ...createHDRRenderConfiguration(DOLBY_VISION_INPUT_PEAK_NITS),
+                codec: 'av1',
                 frameRate: null,
                 inputMode: 'external-dolby-vision',
                 profile: 8,
@@ -527,6 +529,17 @@ describe('PresentationSetup', () => {
             const hevcPresenter = createPresenter();
             await getCustomPresentationEligibilityOptions(asPresenter(hevcPresenter), createAuthorizationRequest(PROFILE_8_STREAM));
             expect(hevcPresenter.waitForExternalDolbyVisionProfile8Authorization).not.toHaveBeenCalled();
+        });
+
+        it('waits for the HEVC decoder key of an HEVC Profile 5 stream, whose external route recovers frames through that key\'s levels', async () => {
+            const presenter = createPresenter();
+            const request = createAuthorizationRequest({ ...PROFILE_5_STREAM, Profile: 'Main 10' });
+
+            await expect(getCustomPresentationEligibilityOptions(asPresenter(presenter), request)).resolves.toMatchObject({
+                authorizedExternalHDRRouteKeys: [ EXTERNAL_PQ_ROUTE_KEY ]
+            });
+            expect(presenter.waitForExternalHDRRouteAuthorization).toHaveBeenCalledExactlyOnceWith('hevc', expect.objectContaining({ transfer: 'pq' }));
+            expect(presenter.waitForExternalDolbyVisionProfile8Authorization).not.toHaveBeenCalled();
         });
 
         it('waits for the stream\'s own RPU route and allows it once authorized', async () => {

@@ -22,6 +22,7 @@ import type { StandardAspectRatio } from 'webgpu-player/presentation/StandardAsp
 import type { PresentationTelemetry } from 'webgpu-player/presentation/WebGPUPresenter';
 import { requireMicroseconds } from 'webgpu-player/TimeMath';
 import type { DolbyVisionAuthorizationTelemetry } from 'webgpu-player/validation/DolbyVisionPresentationAuthorization';
+import type { ExternalFrameCalibration } from 'webgpu-player/color/ExternalFrameCalibration';
 import type { ExternalDolbyVisionAuthorizationTelemetry } from 'webgpu-player/validation/ExternalDolbyVisionPresentationAuthorization';
 import type { ExternalHDRAuthorizationTelemetry } from 'webgpu-player/validation/ExternalHDRPresentationAuthorization';
 import type { RawHDRAuthorizationTelemetry } from 'webgpu-player/validation/RawHDRPresentationAuthorization';
@@ -86,6 +87,10 @@ const FORCED_TRACK_TEXT = 'forced';
 // Labels a row that continues the row above it, such as one route key of an authorization
 const CONTINUATION_LABEL = '';
 const GAIN_DECIMALS = 2;
+// An external route's levels: each component's gain to four places, and its offset in 10-bit codes to two
+const LEVEL_GAIN_DECIMALS = 4;
+const LEVEL_OFFSET_DECIMALS = 2;
+const LEVEL_COMPONENT_NAMES = [ 'Y', 'Cb', 'Cr' ] as const;
 
 /**
  * Describes the playback as sections in a fixed order: the media and its tracks, the route, the clock, video decode, audio, presentation, authorization, and the failure log.
@@ -761,17 +766,32 @@ function describeRawHDRAuthorization(telemetry: RawHDRAuthorizationTelemetry): I
     return rows;
 }
 
+/** Formats an external route's levels as each component's gain and offset in 10-bit codes, such as `Y 1.0039x -0.02, Cb 1.0039x +0.01, Cr 1.0040x +0.00`. */
+function formatFrameCalibration(calibration: ExternalFrameCalibration): string {
+    return LEVEL_COMPONENT_NAMES.map((name: string, componentIndex: number): string => {
+        const offset = calibration.offset[componentIndex];
+        const sign = offset < 0 ? '-' : '+';
+        return `${name} ${calibration.gain[componentIndex].toFixed(LEVEL_GAIN_DECIMALS)}x ${sign}${Math.abs(offset).toFixed(LEVEL_OFFSET_DECIMALS)}`;
+    }).join(VALUE_SEPARATOR);
+}
+
 function describeExternalHDRAuthorization(telemetry: ExternalHDRAuthorizationTelemetry): InfoRow[] {
     const rows: InfoRow[] = [];
     rows.push(createRow('External HDR', joinPresentValues([ telemetry.status, telemetry.targetFormat ]), getAuthorizationTone(telemetry.status)));
     for (const routeKey of telemetry.authorizedRouteKeys) {
         const sampleCount = telemetry.sampleCounts[routeKey];
         const maximumChannelError = telemetry.maximumChannelErrors[routeKey];
+        const maximumInputChannelError = telemetry.maximumInputChannelErrors[routeKey];
+        const calibration = telemetry.calibrations[routeKey];
         rows.push(createRow(CONTINUATION_LABEL, joinPresentValues([
             `authorized ${routeKey}`,
             sampleCount === undefined ? null : `${sampleCount} samples`,
-            maximumChannelError === undefined ? null : `max error ${formatNormalizedError(maximumChannelError)}`
+            maximumChannelError === undefined ? null : `max error ${formatNormalizedError(maximumChannelError)}`,
+            maximumInputChannelError === undefined ? null : `max input error ${formatNormalizedError(maximumInputChannelError)}`
         ]), 'success'));
+        if (calibration !== undefined) {
+            rows.push(createRow(CONTINUATION_LABEL, `levels ${formatFrameCalibration(calibration)}`, 'success'));
+        }
     }
     for (const routeKey of telemetry.rejectedRouteKeys) {
         rows.push(createRow(CONTINUATION_LABEL, `rejected ${routeKey}: ${formatFailure(telemetry.failureReasons[routeKey], telemetry.failureDetails[routeKey])}`, 'failure'));
