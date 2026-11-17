@@ -109,8 +109,11 @@ import {
 } from './passes/PresentationExecutor';
 import { planPresentation } from './passes/PresentationPlanner';
 import {
+    calculatePresentedPictureRectangles,
     calculateTexturePresentationGeometry,
     FULL_SOURCE_RECTANGLE,
+    type PresentationRectangle,
+    type PresentedPictureRectangles,
     type SourceRectangle,
     type TexturePresentationGeometry
 } from './PresentationGeometry';
@@ -230,6 +233,14 @@ export type PresentationSurface = {
     container: HTMLDivElement
     video: HTMLVideoElement
 };
+
+/**
+ * Where the presented picture lands on the surface, in CSS pixels: the video's box in its container, where the presenter's canvas lies, and in that box,
+ * from its top left corner, the whole source frame and the part of it that shows.
+ */
+export type PresentedPictureGeometry = PresentedPictureRectangles & Readonly<{
+    box: PresentationRectangle
+}>;
 
 export type PresentationFallbackReason =
     | 'adapter-unavailable'
@@ -464,6 +475,9 @@ type PresentationFallbackHandler = (generation: number, reason: PresentationFall
 
 type DecodedPresentationRefreshHandler = (generation: number) => void;
 
+/** Receives the presented picture's geometry whenever it changes, and null once nothing presents. */
+type PresentedPictureGeometryHandler = (geometry: PresentedPictureGeometry | null) => void;
+
 /** Receives the browser's reason and message for each loss of the presenter's device that it did not destroy itself, before it recovers or falls back. */
 type PresentationDeviceLossHandler = (reason: GPUDeviceLostReason, message: string) => void;
 
@@ -556,6 +570,8 @@ type PendingSubmissionValidation = {
 
 type CanvasGeometry = {
     cssHeight: number
+    cssLeft: number
+    cssTop: number
     cssWidth: number
     height: number
     width: number
@@ -564,6 +580,7 @@ type CanvasGeometry = {
 type CachedPresentationLayout = {
     devicePixelRatio: number
     geometry: CanvasGeometry
+    picture: PresentedPictureGeometry
     presentation: TexturePresentation
     videoHeight: number
     videoWidth: number
@@ -975,6 +992,10 @@ function layoutPlanSizesMatch(first: CachedPresentationLayout, second: CachedPre
         && first.presentation.viewportWidth === second.presentation.viewportWidth
         && first.videoHeight === second.videoHeight
         && first.videoWidth === second.videoWidth;
+}
+
+function presentationRectanglesMatch(first: PresentationRectangle, second: PresentationRectangle): boolean {
+    return first.height === second.height && first.width === second.width && first.x === second.x && first.y === second.y;
 }
 
 function createTelemetry(settings: RenderSettings): PresentationTelemetry {
@@ -1468,6 +1489,7 @@ export default class WebGPUPresenter {
     private readonly fallbackHandler: PresentationFallbackHandler;
     private readonly decodedPresentationRefreshHandler: DecodedPresentationRefreshHandler;
     private readonly deviceLossHandler: PresentationDeviceLossHandler;
+    private readonly presentedPictureGeometryHandler: PresentedPictureGeometryHandler;
     private readonly externalDolbyVisionAuthorization = new ExternalDolbyVisionPresentationAuthorizationRegistry();
     // External Profile 8 reconstruction, which only AV1 Profile 10 takes, authorizes on first use
     private readonly externalDolbyVisionProfile8Authorization = new ExternalDolbyVisionPresentationAuthorizationRegistry(
@@ -1501,6 +1523,8 @@ export default class WebGPUPresenter {
     private activeInputMode: PresentationInputMode = 'external-texture';
     private activeRawFrameFormat: SupportedRawVideoFrameFormat | null = null;
     private cachedPresentationLayout: CachedPresentationLayout | null = null;
+    // The geometry last published to the host, null while nothing presents
+    private presentedPictureGeometry: PresentedPictureGeometry | null = null;
     private canvas: HTMLCanvasElement | null = null;
     private canvasContext: GPUCanvasContext | null = null;
     private canvasFormat: GPUTextureFormat | null = null;
@@ -1582,11 +1606,13 @@ export default class WebGPUPresenter {
     constructor(
         fallbackHandler: PresentationFallbackHandler,
         decodedPresentationRefreshHandler: DecodedPresentationRefreshHandler = (): void => undefined,
-        deviceLossHandler: PresentationDeviceLossHandler = (): void => undefined
+        deviceLossHandler: PresentationDeviceLossHandler = (): void => undefined,
+        presentedPictureGeometryHandler: PresentedPictureGeometryHandler = (): void => undefined
     ) {
         this.fallbackHandler = fallbackHandler;
         this.decodedPresentationRefreshHandler = decodedPresentationRefreshHandler;
         this.deviceLossHandler = deviceLossHandler;
+        this.presentedPictureGeometryHandler = presentedPictureGeometryHandler;
         this.scheduleDevicePrewarm();
     }
 
@@ -1746,6 +1772,11 @@ export default class WebGPUPresenter {
     /** Returns a snapshot of current presentation telemetry. */
     getTelemetry(): PresentationTelemetry {
         return { ...this.telemetry };
+    }
+
+    /** Returns where the presented picture lands on the surface, or null while nothing presents. */
+    getPresentedPictureGeometry(): PresentedPictureGeometry | null {
+        return this.presentedPictureGeometry;
     }
 
     /** Returns a detached snapshot of the active renderer controls. */
@@ -4645,6 +4676,8 @@ export default class WebGPUPresenter {
 
         return {
             cssHeight: canvasHeight,
+            cssLeft: canvasLeft,
+            cssTop: canvasTop,
             cssWidth: canvasWidth,
             height: backingHeight,
             width: backingWidth
@@ -4682,10 +4715,11 @@ export default class WebGPUPresenter {
             return null;
         }
 
-        const presentation = this.calculateTexturePresentation(surface.video, geometry, sourceWidth, sourceHeight);
+        const { picture, presentation } = this.calculateLayoutGeometry(surface.video, geometry, sourceWidth, sourceHeight);
         const layout: CachedPresentationLayout = {
             devicePixelRatio,
             geometry,
+            picture,
             presentation,
             videoHeight: sourceHeight,
             videoWidth: sourceWidth
@@ -4695,6 +4729,7 @@ export default class WebGPUPresenter {
         if (!cachedLayout || !layoutPlanSizesMatch(cachedLayout, layout)) {
             this.replanForPresetFacts();
         }
+        this.publishPresentedPictureGeometry(picture);
         return layout;
     }
 
@@ -4710,25 +4745,56 @@ export default class WebGPUPresenter {
         void this.applyPlanInputs();
     }
 
-    /** Fits the source to the surface as the video's object-fit and object-position say, the picture the black bar crop leaves standing for the source. */
-    private calculateTexturePresentation(
+    /**
+     * Fits the source to the surface as the video's object-fit and object-position say, the picture the black bar crop leaves standing for the source:
+     * the texture's viewport, and where the picture lands for the host.
+     */
+    private calculateLayoutGeometry(
         video: HTMLVideoElement,
         geometry: CanvasGeometry,
         sourceWidth: number,
         sourceHeight: number
-    ): TexturePresentation {
+    ): { picture: PresentedPictureGeometry; presentation: TexturePresentation } {
         const computedStyle = window.getComputedStyle(video);
-        return calculateTexturePresentationGeometry({
+        const fit = {
             objectFit: computedStyle.objectFit || 'fill',
             objectPosition: computedStyle.objectPosition || '50% 50%',
             sourceCrop: this.getBlackBarSourceCrop(sourceWidth, sourceHeight),
             sourceHeight,
             sourceWidth,
             targetCSSHeight: geometry.cssHeight,
-            targetCSSWidth: geometry.cssWidth,
-            targetPixelHeight: geometry.height,
-            targetPixelWidth: geometry.width
-        });
+            targetCSSWidth: geometry.cssWidth
+        };
+        return {
+            picture: {
+                ...calculatePresentedPictureRectangles(fit),
+                box: { height: geometry.cssHeight, width: geometry.cssWidth, x: geometry.cssLeft, y: geometry.cssTop }
+            },
+            presentation: calculateTexturePresentationGeometry({
+                ...fit,
+                targetPixelHeight: geometry.height,
+                targetPixelWidth: geometry.width
+            })
+        };
+    }
+
+    /** Hands the host the presented picture's geometry, or null once nothing presents, when it differs from what the host last received. */
+    private publishPresentedPictureGeometry(geometry: PresentedPictureGeometry | null): void {
+        const previous = this.presentedPictureGeometry;
+        if (
+            previous === geometry
+            || (
+                previous
+                && geometry
+                && presentationRectanglesMatch(previous.box, geometry.box)
+                && presentationRectanglesMatch(previous.frame, geometry.frame)
+                && presentationRectanglesMatch(previous.visible, geometry.visible)
+            )
+        ) {
+            return;
+        }
+        this.presentedPictureGeometry = geometry;
+        this.presentedPictureGeometryHandler(geometry);
     }
 
     /**
@@ -5104,6 +5170,7 @@ export default class WebGPUPresenter {
         this.canvasContext = null;
         this.cachedPresentationLayout = null;
         this.invalidatePresentationLayout();
+        this.publishPresentedPictureGeometry(null);
         this.configuredDevice = null;
         this.configuredOutput = null;
     }

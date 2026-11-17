@@ -2138,6 +2138,84 @@ describe('WebGPUPresenter', () => {
         );
     });
 
+    it('publishes where the picture lands on each layout change only, paused too, and null once nothing presents', async () => {
+        const gpuHarness = createGPUHarness();
+        const contextHarness = createCanvasContextHarness();
+        const surfaceHarness = createSurfaceHarness();
+        surfaceHarness.surface.video.style.objectFit = 'contain';
+        // The video's box sits 10px right and 20px down in its container
+        surfaceHarness.surface.video.getBoundingClientRect = vi.fn(() => createRectangle(10, 20, 1_280, 720));
+        installGPU(gpuHarness.gpu);
+        installCanvasContext(contextHarness.context);
+        const geometryHandler = vi.fn();
+        const presenter = new WebGPUPresenter(vi.fn(), vi.fn(), vi.fn(), geometryHandler);
+        // A 4:3 picture, anamorphic: 1440x1080 displayed from 1080x1080 coded samples
+        const createFrame = (): VideoFrame => ({
+            close: vi.fn(),
+            codedHeight: 1_080,
+            codedWidth: 1_080,
+            displayHeight: 1_080,
+            displayWidth: 1_440
+        }) as unknown as VideoFrame;
+        const presentFrame = (seconds: number): void => {
+            expect(presenter.presentDecodedFrame({
+                durationMicroseconds: secondsToMicroseconds(1 / 24),
+                frame: createFrame(),
+                mediaTimeMicroseconds: secondsToMicroseconds(seconds),
+                outputMode: 'video-frame'
+            }, 1)).toBe(true);
+        };
+
+        presenter.startSession(1);
+        presenter.setDecodedFramePushMode(true, 1);
+        presenter.attach(surfaceHarness.surface, 1);
+        await vi.waitFor(() => expect(
+            surfaceHarness.surface.container.querySelector('.webgpuPlayerCanvas')
+        ).toBeInstanceOf(HTMLCanvasElement));
+        expect(presenter.getPresentedPictureGeometry()).toBeNull();
+        presentFrame(2);
+        await vi.waitFor(() => expect(presenter.getTelemetry().presentedFrameCount).toBe(1));
+        const pillarboxed = {
+            box: { height: 720, width: 1_280, x: 10, y: 20 },
+            frame: { height: 720, width: 960, x: 160, y: 0 },
+            visible: { height: 720, width: 960, x: 160, y: 0 }
+        };
+        expect(geometryHandler.mock.calls).toEqual([ [ pillarboxed ] ]);
+        expect(presenter.getPresentedPictureGeometry()).toEqual(pillarboxed);
+
+        // Another frame, and a resize that changes nothing, keep the geometry
+        presentFrame(3);
+        window.dispatchEvent(new Event('resize'));
+        expect(geometryHandler).toHaveBeenCalledOnce();
+
+        // While paused, a resize lays the picture out again without any frame
+        resizeSurface(surfaceHarness, 800, 400);
+        notifyResizeObservers(surfaceHarness.surface.container);
+        expect(geometryHandler).toHaveBeenCalledTimes(2);
+        expect(geometryHandler).toHaveBeenLastCalledWith({
+            box: { height: 400, width: 800, x: 0, y: 0 },
+            frame: { height: 400, width: expect.closeTo(1_600 / 3, 8), x: expect.closeTo(400 / 3, 8), y: 0 },
+            visible: { height: 400, width: expect.closeTo(1_600 / 3, 8), x: expect.closeTo(400 / 3, 8), y: 0 }
+        });
+
+        // Cover cuts the frame, which extends past the box while only the box shows
+        surfaceHarness.surface.video.style.objectFit = 'cover';
+        notifyMutationObservers(surfaceHarness.surface.video);
+        expect(geometryHandler).toHaveBeenCalledTimes(3);
+        expect(geometryHandler).toHaveBeenLastCalledWith({
+            box: { height: 400, width: 800, x: 0, y: 0 },
+            frame: { height: 600, width: 800, x: 0, y: -100 },
+            visible: { height: 400, width: 800, x: 0, y: 0 }
+        });
+
+        presenter.endSession(2);
+        expect(geometryHandler).toHaveBeenCalledTimes(4);
+        expect(geometryHandler).toHaveBeenLastCalledWith(null);
+        expect(presenter.getPresentedPictureGeometry()).toBeNull();
+        presenter.destroy();
+        expect(geometryHandler).toHaveBeenCalledTimes(4);
+    });
+
     it('observes instantaneous style and class changes on the surface ancestor chain', async () => {
         const gpuHarness = createGPUHarness();
         const contextHarness = createCanvasContextHarness();

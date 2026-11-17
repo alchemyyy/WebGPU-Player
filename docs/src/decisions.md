@@ -954,6 +954,11 @@ Unless an entry names another environment, these were settled on stock Chrome on
   Its table is kept, each ratio that names a fraction at the fraction's value and Academy at its defined 1.375, since the rounding sets the crop: 1.33 for 4:3 would cut nearly 2 columns from each side of a 1440-column picture.
   Coded pictures round their ratio to a few lines, such as 1920x804 for 2.39:1 or 1920x816 for 2.35:1's 817.02, so rounding to the nearest ratio either way would bring a sliver of bar back.
   Rounding cuts at most 0.5% of the picture, 2 lines at each end of 800, and shows at most half a line of each bar, which leaves a 1920x816 picture as measured; on an axis without bars it moves nothing, since that axis's picture is whole.
+- The presenter publishes where the picture lands, and a host's overlays follow it (11-17).
+  Only the presenter knows the fit: the element's computed object-fit and object-position, the source's display size, and the black bar crop, which changes during playback.
+  A host that derives the rectangle again, from its media metadata and its own reading of the aspect setting, drifts from what the canvas shows: rounded aspect ratios, object-position, and the crop all escape it.
+  So `calculatePresentedPictureRectangles` derives the rectangles from the fit the texture's viewport takes, and the presenter hands its host the whole frame's rectangle and the visible one whenever its layout changes, paused or not.
+  The whole frame, not the cropped picture, is the rectangle overlays need: subtitles are authored against the full frame, bars included, so a crop or `cover` moves and scales them with the picture and cuts them where it cuts it.
 
 ## Firefox
 

@@ -292,6 +292,19 @@ The backing size is the CSS size times the device pixel ratio, capped by `maxTex
   A change takes effect from the next frame; the presenter invalidates the layout and asks for a redraw, which a paused pushed session answers with a refresh.
 - Telemetry's `blackBarCrop` gives the bars in the analyzed frame's lines, null while the crop is off, and `blackBarAspectRatio` the standard ratio the picture presents at, null while it presents as measured.
 
+### Picture geometry
+
+- The presenter tells its host where the picture lands, so layers the host draws over the source's own frame, such as subtitles, line up with it.
+  The host passes a handler as the presenter's fourth constructor argument, and `getPresentedPictureGeometry` returns the current geometry, null while nothing presents.
+- A geometry (`PresentedPictureGeometry`) is in CSS pixels.
+  `box` is the video element's box in the surface's container, where the presenter's canvas lies, with the container's CSS transform divided out.
+  `frame` and `visible` are relative to that box: `frame` is the whole source at its display size, encoded bars included, and `visible` the part of the box its picture covers.
+  `frame` reaches past the box where `cover`, an object-position, or the black bar crop cuts the source; a letterboxed film cropped on an ultrawide surface reaches past its top and bottom by the bars.
+- `calculatePresentedPictureRectangles` computes them from the same fit as the texture's viewport, `calculateTexturePresentationGeometry`'s, so they always agree with what the canvas shows.
+- The presenter publishes on every layout it computes that differs from the last one it published, never per frame: a resize or fullscreen change, a change of object-fit or object-position, a new source size, and a new crop.
+  Layout changes recompute while paused too, as they redraw the paused frame, so the handler fires then as well.
+  Ending a session, a fallback, or removing the canvas publishes null.
+
 ## Transitions
 
 - Seek: a new presentation generation, then `controller.seek`, which stops the running generation and starts a new one at the target in the same worker.

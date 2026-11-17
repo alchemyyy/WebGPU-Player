@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+    calculatePresentedPictureRectangles,
     calculateTexturePresentationGeometry,
     FULL_SOURCE_RECTANGLE,
+    type PresentationRectangle,
     type SourceRectangle,
     type TexturePresentationGeometry,
     type TexturePresentationGeometryInput
@@ -24,6 +26,12 @@ const LETTERBOX_CROP: SourceRectangle = { height: 800 / 1_080, width: 1, x: 0, y
 
 function expectGeometry(actual: TexturePresentationGeometry, expected: TexturePresentationGeometry): void {
     for (const propertyName of Object.keys(expected) as Array<keyof TexturePresentationGeometry>) {
+        expect(actual[propertyName]).toBeCloseTo(expected[propertyName], 8);
+    }
+}
+
+function expectRectangle(actual: PresentationRectangle, expected: PresentationRectangle): void {
+    for (const propertyName of Object.keys(expected) as Array<keyof PresentationRectangle>) {
         expect(actual[propertyName]).toBeCloseTo(expected[propertyName], 8);
     }
 }
@@ -211,5 +219,78 @@ describe('calculateTexturePresentationGeometry', () => {
             viewportY: 0
         });
         expect(() => calculateTexturePresentationGeometry({ ...BASE_INPUT, sourceCrop: { ...LETTERBOX_CROP, y: 0.5 } })).toThrow(RangeError);
+    });
+});
+
+describe('calculatePresentedPictureRectangles', () => {
+    it('places the whole frame as contain, cover, and fill fit it, and shows the part in the target', () => {
+        const contain = calculatePresentedPictureRectangles({ ...BASE_INPUT, objectFit: 'contain' });
+        const cover = calculatePresentedPictureRectangles({ ...BASE_INPUT, objectFit: 'cover' });
+        const fill = calculatePresentedPictureRectangles({ ...BASE_INPUT, objectFit: 'fill' });
+
+        expectRectangle(contain.frame, { height: 562.5, width: 1_000, x: 0, y: 218.75 });
+        expectRectangle(contain.visible, { height: 562.5, width: 1_000, x: 0, y: 218.75 });
+        // Cover cuts the frame's sides, which extend past the target
+        expectRectangle(cover.frame, { height: 1_000, width: 16_000 / 9, x: -3_500 / 9, y: 0 });
+        expectRectangle(cover.visible, { height: 1_000, width: 1_000, x: 0, y: 0 });
+        expectRectangle(fill.frame, { height: 1_000, width: 1_000, x: 0, y: 0 });
+        expectRectangle(fill.visible, { height: 1_000, width: 1_000, x: 0, y: 0 });
+    });
+
+    it('moves the frame with object-position', () => {
+        const contain = calculatePresentedPictureRectangles({ ...BASE_INPUT, objectFit: 'contain', objectPosition: 'left bottom' });
+        const cover = calculatePresentedPictureRectangles({ ...BASE_INPUT, objectFit: 'cover', objectPosition: 'right top' });
+
+        expectRectangle(contain.frame, { height: 562.5, width: 1_000, x: 0, y: 437.5 });
+        expectRectangle(cover.frame, { height: 1_000, width: 16_000 / 9, x: -7_000 / 9, y: 0 });
+        expectRectangle(cover.visible, { height: 1_000, width: 1_000, x: 0, y: 0 });
+    });
+
+    it('extends the frame past the target by the bars a source crop fits away', () => {
+        // The 2.40:1 picture fills an ultrawide screen's width, so its 16:9 frame reaches past the top and bottom
+        const ultrawide = calculatePresentedPictureRectangles({
+            ...BASE_INPUT,
+            objectFit: 'contain',
+            sourceCrop: LETTERBOX_CROP,
+            targetCSSHeight: 1_080,
+            targetCSSWidth: 2_560
+        });
+        // Cover on a 16:9 screen fills it with the picture, so the frame reaches past every edge
+        const cover = calculatePresentedPictureRectangles({
+            ...BASE_INPUT,
+            objectFit: 'cover',
+            sourceCrop: LETTERBOX_CROP,
+            targetCSSHeight: 1_080,
+            targetCSSWidth: 1_920
+        });
+
+        expectRectangle(ultrawide.frame, { height: 1_440, width: 2_560, x: 0, y: -180 });
+        expectRectangle(ultrawide.visible, { height: 3_200 / 3, width: 2_560, x: 0, y: 20 / 3 });
+        expectRectangle(cover.frame, { height: 1_458, width: 2_592, x: -336, y: -189 });
+        expectRectangle(cover.visible, { height: 1_080, width: 1_920, x: 0, y: 0 });
+    });
+
+    it('fits an anamorphic source by its display size', () => {
+        // PAL DVD's 720x576 samples display at 1024x576 for 16:9 and at 768x576 for 4:3
+        const widescreen = calculatePresentedPictureRectangles({
+            ...BASE_INPUT,
+            objectFit: 'contain',
+            sourceHeight: 576,
+            sourceWidth: 1_024,
+            targetCSSHeight: 1_080,
+            targetCSSWidth: 1_920
+        });
+        const fullscreen = calculatePresentedPictureRectangles({
+            ...BASE_INPUT,
+            objectFit: 'contain',
+            sourceHeight: 576,
+            sourceWidth: 768,
+            targetCSSHeight: 1_080,
+            targetCSSWidth: 1_920
+        });
+
+        expectRectangle(widescreen.frame, { height: 1_080, width: 1_920, x: 0, y: 0 });
+        expectRectangle(fullscreen.frame, { height: 1_080, width: 1_440, x: 240, y: 0 });
+        expectRectangle(fullscreen.visible, { height: 1_080, width: 1_440, x: 240, y: 0 });
     });
 });

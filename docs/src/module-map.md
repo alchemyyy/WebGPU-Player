@@ -16,7 +16,7 @@ Each source file's tests are at the same relative path under `test/`, and integr
 
 ## presentation/
 
-- `WebGPUPresenter.ts`: the GPU device and canvas; rVFC and pushed-frame submission; each route's built-in chain, planned and recorded through `passes/`; HDR and Dolby Vision authorization; device-loss recovery; the latched fallback.
+- `WebGPUPresenter.ts`: the GPU device and canvas; rVFC and pushed-frame submission; each route's built-in chain, planned and recorded through `passes/`; HDR and Dolby Vision authorization; device-loss recovery; the latched fallback; the presented picture's geometry, published to the host.
   It also holds the engine API for presentation: the host's preset of user passes, live parameter changes, the plan report, HDR output for HDR sources, the deinterlacing mode, and the black bar crop.
   While a plan deinterlaces it shows the frame before the newest, tells the frame loop its lookahead, and draws held fields from history.
   While a plan holds a display-rate pass it measures the display's refresh rate from the frame loop's animation frames, takes frames one refresh ahead, and redraws from history at each tick's clock time.
@@ -29,7 +29,7 @@ Each source file's tests are at the same relative path under `test/`, and integr
 - `PresentationInput.ts`: MediaStream metadata to color metadata; Dolby Vision descriptors with their RPU route; declared and exact native base metadata; the presented video ordinal; the known-SDR gate; the stream's fields from its `FieldOrder` or `IsInterlaced` and its size, and its declared frame rate, which `PresentationSetup.ts` hands the presenter.
 - `DolbyVisionGeometry.ts`: the P4 and P7 EL coded size (half the BL when the BL is wider than 1920).
 - `PresentationSetup.ts`: what a host calls around the eligibility, without state of its own: the play options' presentation input, the authorizations that gate the eligibility's presentation routes, the offers of the host's GPU decoder packages for a stream (`getGPUVideoDecoderOffers`) and the factory of their sessions on the presenter's device, the presenter's color pipeline for the chosen route, Dolby Vision bases included, and static HDR metadata updates.
-- `PresentationGeometry.ts`: pure object-fit and object-position math to viewport and texture transforms, fitting a crop of the source, the black bar crop's, as the whole object.
+- `PresentationGeometry.ts`: pure object-fit and object-position math to viewport and texture transforms, fitting a crop of the source, the black bar crop's, as the whole object, and, from the same fit, the rectangles of the whole source frame and of the picture that shows.
 - `RenderSettings.ts`: versioned (v7) HDR-to-SDR settings, the four tone map operators, and their 144-byte uniform, with the dynamic fields of HDR10+ and Dolby Vision L1.
 - `WebGPUConstants.ts`: the WebGPU values presentation and GPU decode share: canvas configuration, texture formats, features, and default limits.
 
