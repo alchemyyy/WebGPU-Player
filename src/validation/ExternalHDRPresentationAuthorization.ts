@@ -132,6 +132,11 @@ type ExternalHDRAuthorizationVector = Readonly<{
     decoderCodec: string
     displayHeight: number
     displayWidth: number
+    /**
+     * The transfer tags a decoded vector frame may carry. Edge tags HEVC's neutralized sRGB output BT.709, so HEVC also takes that tag; the
+     * route's readback then decides, and the decision records the tag that passed.
+     */
+    frameTransfers: readonly VideoTransferCharacteristics[]
     samples: readonly ExternalHDRAuthorizationVectorSample[]
     sha256: string
     version: number
@@ -145,6 +150,7 @@ const EXTERNAL_HDR_AUTHORIZATION_VECTORS: Readonly<Record<ExternalHDRVideoCodec,
         decoderCodec: EXTERNAL_AV1_HDR_AUTHORIZATION_CODEC,
         displayHeight: EXTERNAL_AV1_HDR_AUTHORIZATION_DISPLAY_HEIGHT,
         displayWidth: EXTERNAL_AV1_HDR_AUTHORIZATION_DISPLAY_WIDTH,
+        frameTransfers: [ 'iec61966-2-1' ],
         samples: EXTERNAL_AV1_HDR_AUTHORIZATION_VECTOR_SAMPLES,
         sha256: EXTERNAL_AV1_HDR_AUTHORIZATION_VECTOR_SHA256,
         version: EXTERNAL_AV1_HDR_AUTHORIZATION_VECTOR_VERSION
@@ -159,6 +165,7 @@ const EXTERNAL_HDR_AUTHORIZATION_VECTORS: Readonly<Record<ExternalHDRVideoCodec,
         decoderCodec: 'hvc1.2.4.L120.B0',
         displayHeight: EXTERNAL_HDR_AUTHORIZATION_DISPLAY_HEIGHT,
         displayWidth: EXTERNAL_HDR_AUTHORIZATION_DISPLAY_WIDTH,
+        frameTransfers: [ 'iec61966-2-1', 'bt709' ],
         samples: EXTERNAL_HDR_AUTHORIZATION_VECTOR_SAMPLES,
         sha256: EXTERNAL_HDR_AUTHORIZATION_VECTOR_SHA256,
         version: EXTERNAL_HDR_AUTHORIZATION_VECTOR_VERSION
@@ -211,6 +218,8 @@ export type ExternalHDRRouteAuthorizationDecision = {
 export type ExternalHDRAuthorizationTelemetry = {
     authorizedRouteKeys: readonly ExternalHDRAuthorizationRouteKey[]
     calibrations: Readonly<Partial<Record<ExternalHDRAuthorizationRouteKey, ExternalFrameCalibration>>>
+    /** The transfer tag each authorized route's decoded vector frame carried, the only tags besides sRGB its playback frames may carry */
+    decodedFrameTransfers: Readonly<Partial<Record<ExternalHDRAuthorizationRouteKey, VideoTransferCharacteristics>>>
     failureDetails: Readonly<Partial<Record<ExternalHDRAuthorizationRouteKey, string>>>
     failureReasons: Readonly<Partial<Record<
         ExternalHDRAuthorizationRouteKey,
@@ -293,6 +302,7 @@ type RouteProbeIdentity = {
 type TelemetryAccumulator = {
     authorizedRouteKeys: ExternalHDRAuthorizationRouteKey[]
     calibrations: Partial<Record<ExternalHDRAuthorizationRouteKey, ExternalFrameCalibration>>
+    decodedFrameTransfers: Partial<Record<ExternalHDRAuthorizationRouteKey, VideoTransferCharacteristics>>
     failureDetails: Partial<Record<ExternalHDRAuthorizationRouteKey, string>>
     failureReasons: Partial<Record<
         ExternalHDRAuthorizationRouteKey,
@@ -418,7 +428,8 @@ export function createExternalHDRShaderSignature(
         `uniform=${RENDER_SETTINGS_VERSION}`,
         `route=${routeKey}`,
         `codec=${vector.decoderCodec}`,
-        'frame=opaque:bt709:bt709:iec61966-2-1:limited',
+        `decoder-size=${vector.displayWidth}x${vector.displayHeight}`,
+        `frame=opaque:bt709:bt709:${vector.frameTransfers.join('|')}:limited`,
         `input-format=${CALIBRATION_PROBE_TARGET_FORMAT}`,
         `input-tolerance=${EXTERNAL_HDR_INPUT_TOLERANCE}`,
         `tolerance=${EXTERNAL_HDR_AUTHORIZATION_TOLERANCE}`,
@@ -437,7 +448,6 @@ export function createExternalHDRShaderSignature(
 function frameMatchesAuthorizationContract(frame: VideoFrame, vector: ExternalHDRAuthorizationVector): boolean {
     const visibleRectangle = frame.visibleRect;
     // VideoToolbox reports the coded size unpadded
-    // HEVC's BT.709 tag is provisional until its rendered pixels pass validation.
     return frame.format === null
         && frame.codedWidth >= vector.displayWidth
         && frame.codedWidth <= vector.codedWidth
@@ -454,8 +464,8 @@ function frameMatchesAuthorizationContract(frame: VideoFrame, vector: ExternalHD
         && frame.colorSpace.fullRange === false
         && frame.colorSpace.matrix === 'bt709'
         && frame.colorSpace.primaries === 'bt709'
-        && (frame.colorSpace.transfer === 'iec61966-2-1'
-            || (vector === EXTERNAL_HDR_AUTHORIZATION_VECTORS.hevc && frame.colorSpace.transfer === 'bt709'));
+        && frame.colorSpace.transfer !== null
+        && vector.frameTransfers.includes(frame.colorSpace.transfer);
 }
 
 async function flushVideoDecoderUntilAbort(decoder: VideoDecoder, signal?: AbortSignal): Promise<void> {
@@ -1209,6 +1219,9 @@ function recordDecisionTelemetry(
         if (decision.calibration) {
             accumulator.calibrations[routeKey] = decision.calibration;
         }
+        if (decision.decodedFrameTransfer) {
+            accumulator.decodedFrameTransfers[routeKey] = decision.decodedFrameTransfer;
+        }
         return;
     }
     accumulator.rejectedRouteKeys.push(routeKey);
@@ -1340,7 +1353,8 @@ export class ExternalHDRPresentationAuthorizationRegistry {
 
     /**
      * Returns why this device, target format, and codec's route for the metadata are not authorized, as `<state>: <route key>` with the failing value, or null when they are.
-     * Metadata no probe covers reports `route-unsupported` with its bit depth and color description.
+     * Metadata no probe covers reports `route-unsupported` with its bit depth and color description. A playback frame's BT.709 transfer tag
+     * is authorized only when the route's vector frame carried that tag through the readback.
      */
     public getAuthorizationFailure(
         device: GPUDevice,
@@ -1398,6 +1412,7 @@ export class ExternalHDRPresentationAuthorizationRegistry {
         const accumulator: TelemetryAccumulator = {
             authorizedRouteKeys: [],
             calibrations: {},
+            decodedFrameTransfers: {},
             failureDetails: {},
             failureReasons: {},
             maximumChannelErrors: {},

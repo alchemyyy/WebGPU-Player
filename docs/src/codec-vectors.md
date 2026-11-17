@@ -89,14 +89,23 @@ The decode step's memory budget still covers the 1920x1088 allocation and the de
 
 The frame must be opaque (`format === null`), have a coded size between the visible size and the vector's coded raster, and report exactly the 1920x1080 visible and display size, with a visible origin of (0, 0).
 Its primaries and matrix must be BT.709 and its range limited.
-The transfer may be sRGB or, for HEVC, BT.709; either output must then pass the production shader's GPU readback against all eight reference samples, with a maximum channel error of 10/255.
-Metadata acceptance alone never authorizes the route.
-The successful decision records `decodedFrameTransfer`, and a BT.709-tagged playback frame requires BT.709-tagged evidence for its route on the same device, target format, and shader.
+
+### BT.709-tagged HEVC frames
+
+The frame's transfer may be sRGB, or for HEVC BT.709, which Edge on Windows reports whatever the bitstream and the configuration say ([Decisions](decisions.md#video-decode-and-dolby-vision)).
+A tag never authorizes a route by itself: the decoded frame must then pass the same calibration and readback as an sRGB-tagged one.
+The calibration probe fits each component's gain, from 0.8 to 1.25, and offset, within 128 codes, and the recovered codes of every sample must match the vector's within 4 codes; the production shader's output must then match a CPU reference of those recovered codes within 3/255 on all eight samples.
+The shader signature names the configured size and the transfers the vector's frame may carry, `iec61966-2-1|bt709` for HEVC and `iec61966-2-1` for AV1.
+
+An authorized decision records the frame's transfer as `decodedFrameTransfer`, which the external HDR telemetry reports per route key and the sandbox's Playback info shows as `frame transfer`.
+A playback frame tagged with limited BT.709 is accepted only when the route whose levels it is presented with recorded `bt709` on the same device, target format, and shader; an sRGB-tagged decision does not cover it.
+That route is the frame's own key on the external HDR route, and the HEVC PQ key on the external Dolby Vision routes, whose levels come from that key.
+AV1 frames, on either route, must carry the sRGB tag.
+An sRGB-tagged frame is accepted after either tag's evidence, because sRGB is the tag the rewritten stream and the configuration request.
 
 `test/capability/vectors/ExternalHDRAuthorizationVector.test.ts` checks the original vector's syntax, digest, and sample positions.
-`test/validation/ExternalHDRPresentationAuthorization.test.ts` covers visible-size configuration, exact crop validation, padded memory accounting, transfer evidence, and pixel mismatches.
-`test/presentation/WebGPUPresenter.test.ts` covers acceptance of proven BT.709-tagged HEVC output and rejection of an untested tag or that tag on AV1.
-See [Eligibility and routes](routes.md#probes-and-caching) and the [Edge investigation](decisions.md#video-decode-and-dolby-vision) for the runtime policy and its evidence.
+`test/validation/ExternalHDRPresentationAuthorization.test.ts` covers visible-size configuration, exact crop validation, padded memory accounting, transfer evidence and its telemetry, and pixel mismatches.
+`test/presentation/WebGPUPresenter.test.ts` covers acceptance of proven BT.709-tagged HEVC frames on the external HDR and Dolby Vision routes, and rejection of an untested tag or that tag on AV1.
 
 ## HEVC range-extension vectors
 

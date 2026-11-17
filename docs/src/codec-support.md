@@ -244,10 +244,7 @@ GPU authorizations, all in `validation/`:
 `I420P10:dovi-rpu-v1` and the I420P10 Profile 7 keys are part of the default Dolby Vision prewarm.
 The Profile 4 keys in any format, and the Profile 7 and single-layer keys of other formats, authorize on first use, so a host must wait for them before it advertises or starts a stream that needs one.
 The external HDR keys authorize on first use too: an HDR negotiation waits for the HEVC pair (`waitForExternalHDRAuthorizationPrewarm`), which shares one decode, and an AV1 HDR stream waits for its own key.
-The HEVC authorization configures the vector's visible size so Edge exposes its crop correctly; the decoded visible rectangle must match, while the allocation may include coded padding.
-The HEVC vector may report a limited BT.709 transfer tag instead of sRGB; its rendered pixels must still match the reference.
-BT.709-tagged HEVC playback requires that tag in the successful authorization decision; an sRGB-tagged test alone does not qualify it.
-The [HEVC external HDR vector](codec-vectors.md#hevc-external-hdr-authorization-vector) describes the crop, configuration hints, and pixel tolerance this evidence covers.
+The HEVC authorization configures the vector's visible size, and takes a BT.709 transfer tag only under the [BT.709-tagged HEVC frames](codec-vectors.md#bt709-tagged-hevc-frames) contract.
 
 Other conditions:
 
@@ -283,11 +280,8 @@ Other conditions:
 
 ## Known issues
 
-- Edge on Windows can return limited BT.709 transfer for native HEVC frames even when both the bitstream and decoder configuration request sRGB.
-  Changing the size hints fixes the authorization vector's crop but does not fix that transfer behavior.
-  Native HDR remains available when that output passes the route's pixel-reference check; no browser-name exception or output-frame retagging is used.
-  SDR HEVC decode support and raw or Dolby Vision shader authorization alone do not establish native HDR eligibility.
-  See the [recorded investigation](decisions.md#video-decode-and-dolby-vision).
+- Edge on Windows tags native HEVC frames with the BT.709 transfer even when the bitstream and the decoder configuration request sRGB.
+  Native HDR and external Dolby Vision play there only after the HEVC authorization rendered such a frame within tolerance (see [BT.709-tagged HEVC frames](codec-vectors.md#bt709-tagged-hevc-frames) and the [investigation](decisions.md#video-decode-and-dolby-vision)).
 - Firefox on Windows has no WebCodecs HEVC (see [Decisions](decisions.md#firefox)), so HEVC plays there only through GPU.
   Dolby Vision then plays through GPU-DV, Profile 5 included, when the host offers the HEVC package and authorized the RPU route's key.
   Firefox decodes 10-bit AV1 to 8-bit `BGRX`, so no raw AV1 route, P10 included, qualifies there.

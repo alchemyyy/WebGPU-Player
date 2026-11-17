@@ -493,6 +493,7 @@ describe('External HDR presentation authorization', () => {
         expect(registry.getAuthorizationFailure(harness.device, TARGET_FORMAT, 'hevc', metadata, 'bt709') === null).toBe(accepted);
         expect(registry.getAuthorizationFailure(harness.device, TARGET_FORMAT, 'hevc', createHLGColorMetadata(), 'bt709')).not.toBeNull();
         expect(registry.getAuthorizationFailure(harness.device, TARGET_FORMAT, 'av1', metadata, 'bt709')).not.toBeNull();
+        expect(registry.getTelemetry(harness.device, TARGET_FORMAT).decodedFrameTransfers).toEqual(pixelsMatch ? { [PQ_ROUTE_KEY]: transfer } : {});
         if (!pixelsMatch) {
             expect(decision.failureReason).toBe('pixel-mismatch');
         }
@@ -799,7 +800,10 @@ describe('External HDR presentation authorization', () => {
         });
     });
 
-    it('rejects a decoded AV1 frame of the HEVC vector\'s coded size', async () => {
+    it.each([
+        [ 1_088, 'iec61966-2-1' ],
+        [ 1_080, 'bt709' ]
+    ])('rejects a decoded AV1 frame coded %i lines high and tagged %s', async (codedHeight, transfer) => {
         let decoderInit: VideoDecoderInit | null = null;
         const close = vi.fn();
         class FakeEncodedVideoChunk {}
@@ -823,9 +827,9 @@ describe('External HDR presentation authorization', () => {
             public decode(): void {
                 decoderInit?.output({
                     close,
-                    codedHeight: 1_088,
+                    codedHeight,
                     codedWidth: 1_920,
-                    colorSpace: { fullRange: false, matrix: 'bt709', primaries: 'bt709', transfer: 'iec61966-2-1' },
+                    colorSpace: { fullRange: false, matrix: 'bt709', primaries: 'bt709', transfer },
                     displayHeight: 1_080,
                     displayWidth: 1_920,
                     format: null,

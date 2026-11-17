@@ -70,9 +70,8 @@ Without a container mask, the host's `audioMetadataLayout` (Jellyfin's count and
   It first renders the frame through a calibration probe, the browser's RGB into a float target, and fits the levels that recover the vector's codes from it, which every route of the batch then renders through and its decision keeps.
   The routes of one codec and target format asked for in the same task, such as the HEVC PQ and HLG keys, share one check and one decode, and a device runs a codec's batches one after another, so it never holds two of that codec's decoders.
   A deadline that passes during the check opens no decoder.
-  The HEVC vector's coded raster is 1920x1088, which its decode memory budget still covers; configuring its visible size makes Edge expose the intended crop, and output must have the exact 1920x1080 visible rectangle.
-  HEVC accepts a limited BT.709 transfer tag, as Edge can report despite the sRGB bitstream and configuration, only subject to the rendered pixel-reference check.
-  The decision records the tested transfer; playback accepts a BT.709-tagged HEVC frame only when that tag passed the same route's check on the current device, target format, and shader.
+  The HEVC vector's coded raster is 1920x1088, which its decode memory budget still covers; its visible size configures the decoder because Edge takes the hints as the visible rectangle, and output must have the exact 1920x1080 visible rectangle.
+  A frame's transfer tag follows the [BT.709-tagged HEVC frames](codec-vectors.md#bt709-tagged-hevc-frames) contract.
 - External Dolby Vision authorization returns `video-frame-creation-failed` before compiling anything when `canHoldVideoFrameFormat('I420P10')` is false, as on shipping Safari or without `VideoFrame`.
   The other authorizations open no decoder, so they are not recorded.
 - `selectCustomDecodeProbes(item)` picks the probes an item needs.

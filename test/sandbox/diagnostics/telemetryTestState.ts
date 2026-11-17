@@ -240,6 +240,7 @@ export function createExternalHDRAuthorization(overrides: Partial<ExternalHDRAut
     return {
         authorizedRouteKeys: [],
         calibrations: {},
+        decodedFrameTransfers: {},
         failureDetails: {},
         failureReasons: {},
         maximumChannelErrors: {},

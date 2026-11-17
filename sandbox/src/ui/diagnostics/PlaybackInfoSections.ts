@@ -783,11 +783,13 @@ function describeExternalHDRAuthorization(telemetry: ExternalHDRAuthorizationTel
         const maximumChannelError = telemetry.maximumChannelErrors[routeKey];
         const maximumInputChannelError = telemetry.maximumInputChannelErrors[routeKey];
         const calibration = telemetry.calibrations[routeKey];
+        const decodedFrameTransfer = telemetry.decodedFrameTransfers[routeKey];
         rows.push(createRow(CONTINUATION_LABEL, joinPresentValues([
             `authorized ${routeKey}`,
             sampleCount === undefined ? null : `${sampleCount} samples`,
             maximumChannelError === undefined ? null : `max error ${formatNormalizedError(maximumChannelError)}`,
-            maximumInputChannelError === undefined ? null : `max input error ${formatNormalizedError(maximumInputChannelError)}`
+            maximumInputChannelError === undefined ? null : `max input error ${formatNormalizedError(maximumInputChannelError)}`,
+            decodedFrameTransfer === undefined ? null : `frame transfer ${decodedFrameTransfer}`
         ]), 'success'));
         if (calibration !== undefined) {
             rows.push(createRow(CONTINUATION_LABEL, `levels ${formatFrameCalibration(calibration)}`, 'success'));

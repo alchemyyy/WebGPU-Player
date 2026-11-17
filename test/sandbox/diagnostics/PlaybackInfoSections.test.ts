@@ -552,6 +552,7 @@ describe('describePlaybackInfo', () => {
                     externalHDR: createExternalHDRAuthorization({
                         authorizedRouteKeys: [ EXTERNAL_HDR_ROUTE_KEY ],
                         calibrations: { [EXTERNAL_HDR_ROUTE_KEY]: { gain: [ 1.0039, 1.0047, 0.99707 ], offset: [ -0.02, -1.5, 3.3 ] } },
+                        decodedFrameTransfers: { [EXTERNAL_HDR_ROUTE_KEY]: 'bt709' },
                         maximumChannelErrors: { [EXTERNAL_HDR_ROUTE_KEY]: CHANNEL_ERROR },
                         maximumInputChannelErrors: { [EXTERNAL_HDR_ROUTE_KEY]: CHANNEL_ERROR },
                         sampleCounts: { [EXTERNAL_HDR_ROUTE_KEY]: SAMPLE_COUNT },
@@ -577,7 +578,7 @@ describe('describePlaybackInfo', () => {
             {
                 label: '',
                 tone: 'success',
-                value: `authorized ${EXTERNAL_HDR_ROUTE_KEY}, ${SAMPLE_COUNT} samples, max error ${CHANNEL_ERROR_TEXT}, max input error ${CHANNEL_ERROR_TEXT}`
+                value: `authorized ${EXTERNAL_HDR_ROUTE_KEY}, ${SAMPLE_COUNT} samples, max error ${CHANNEL_ERROR_TEXT}, max input error ${CHANNEL_ERROR_TEXT}, frame transfer bt709`
             },
             { label: '', tone: 'success', value: 'levels Y 1.0039x -0.02, Cb 1.0047x -1.50, Cr 0.9971x +3.30' },
             { label: 'Dolby Vision', tone: 'failure', value: `rejected, ${state.telemetry.authorization.dolbyVision?.routeKey}` },
