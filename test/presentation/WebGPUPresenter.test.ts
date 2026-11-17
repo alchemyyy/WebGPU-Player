@@ -1670,7 +1670,7 @@ describe('WebGPUPresenter', () => {
         await vi.waitFor(() => expect(fallbackHandler).toHaveBeenCalledWith(
             1,
             'decoded-frame-color-mismatch',
-            'color: pq:bt2020:bt2020-ncl:limited, expected iec61966-2-1:bt709:bt709:limited or iec61966-2-1:bt709:bt709:full'
+            'color: pq:bt2020:bt2020-ncl:limited, expected iec61966-2-1:bt709:bt709:limited or iec61966-2-1:bt709:bt709:full or bt709:bt709:bt709:limited'
         ));
     });
 
@@ -1701,6 +1701,60 @@ describe('WebGPUPresenter', () => {
         externalHDRAuthorizationMockState.authorized = false;
         await expect(presenter.configureColorPipeline(configuration, 1)).resolves.toBe(false);
         expect(fallbackHandler).toHaveBeenCalledWith(1, 'hdr-authorization-unavailable', externalHDRAuthorizationMockState.failure);
+    });
+
+    it.each([
+        [ 'hevc', 'iec61966-2-1', 'iec61966-2-1', true ],
+        [ 'hevc', 'bt709', 'bt709', true ],
+        [ 'hevc', 'bt709', 'iec61966-2-1', false ],
+        [ 'av1', 'bt709', 'bt709', false ]
+    ] as const)('checks external Dolby Vision %s frames tagged %s against its PQ key\'s tested %s output (accepted: %s)', async (codec, transfer, testedTransfer, accepted) => {
+        webSettingsMockState.hdrToneMappingEnabled = true;
+        externalHDRAuthorizationMockState.decodedFrameTransfer = testedTransfer;
+        const gpuHarness = createGPUHarness();
+        installGPU(gpuHarness.gpu);
+        installCanvasContext(createCanvasContextHarness().context);
+        const surfaceHarness = createSurfaceHarness();
+        const fallbackHandler = vi.fn();
+        const presenter = new WebGPUPresenter(fallbackHandler);
+        const closeFrame = vi.fn();
+        const neutralFrame = createNeutralBT709VideoFrame(closeFrame);
+        const frame = {
+            ...neutralFrame,
+            colorSpace: { ...neutralFrame.colorSpace, transfer }
+        } as unknown as VideoFrame;
+
+        presenter.startSession(1);
+        presenter.setDecodedFramePushMode(true, 1);
+        presenter.attach(surfaceHarness.surface, 1);
+        await vi.waitFor(() => expect(
+            surfaceHarness.surface.container.querySelector('.webgpuPlayerCanvas')
+        ).toBeInstanceOf(HTMLCanvasElement));
+        await expect(presenter.configureColorPipeline({
+            codec,
+            inputMode: 'external-dolby-vision',
+            profile: 5,
+            settings: createHDRToSDRRenderSettings({ toneMapping: { inputPeakNits: 4_000 } })
+        }, 1)).resolves.toBe(true);
+
+        expect(presenter.presentDecodedFrame({
+            durationMicroseconds: secondsToMicroseconds(1 / 24),
+            encodedDolbyVisionMetadata: createDolbyVisionEncodedMetadata(),
+            frame,
+            mediaTimeMicroseconds: secondsToMicroseconds(1),
+            outputMode: 'video-frame'
+        }, 1)).toBe(accepted);
+        if (!accepted) {
+            await vi.waitFor(() => expect(fallbackHandler).toHaveBeenCalledWith(
+                1, 'decoded-frame-color-mismatch', expect.any(String)
+            ));
+            expect(gpuHarness.devices[0].importExternalTexture).not.toHaveBeenCalled();
+            expect(closeFrame).toHaveBeenCalledOnce();
+            return;
+        }
+        await vi.waitFor(() => expect(presenter.getTelemetry().presentedFrameCount).toBe(1));
+        expect(gpuHarness.devices[0].importExternalTexture).toHaveBeenCalledWith({ colorSpace: 'srgb', source: frame });
+        expect(fallbackHandler).not.toHaveBeenCalled();
     });
 
     it('requests one generation-safe pushed-frame refresh after device recovery', async () => {

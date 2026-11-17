@@ -180,6 +180,8 @@ const EXTERNAL_IDENTITY_CHAIN_CONFIGURATION: BuiltinChainConfiguration = { metad
 const NEUTRAL_BT709_COLOR_DESCRIPTION = 'iec61966-2-1:bt709:bt709:limited';
 // Neutralized HEVC keeps its stream's range; the recovery then yields the codes' limited-range equivalents, which the limited metadata presents exactly
 const NEUTRAL_BT709_FULL_RANGE_COLOR_DESCRIPTION = 'iec61966-2-1:bt709:bt709:full';
+// Edge tags neutralized HEVC output with BT.709's transfer; accepted only where the route's authorization rendered that tag
+const NEUTRAL_BT709_TRANSFER_COLOR_DESCRIPTION = 'bt709:bt709:bt709:limited';
 // Names a preset pass whose header failed before it declared a name, followed by its preset position
 const UNNAMED_PRESET_PASS_PREFIX = 'pass ';
 // Marks a compile error in engine-generated code, whose line is in the generated module rather than in a pass source
@@ -1028,24 +1030,35 @@ function getDecodedFrameColorFailure(frame: VideoFrame, metadata: InputColorMeta
     return actualColor === expectedColor ? null : `color: ${actualColor}, expected ${expectedColor}`;
 }
 
-/**
- * Checks the neutralized sRGB description and optional range/transfer variants.
- * A caller allowing BT.709 must also check that tag's pixel-reference evidence.
- */
-function getNeutralBT709FrameColorFailure(frame: VideoFrame, fullRangeAllowed = false, bt709TransferAllowed = false): string | null {
+type NeutralFrameColorOptions = {
+    /** Also accept the full-range sRGB description */
+    fullRangeAllowed?: boolean
+    /**
+     * Also accept the limited BT.709 transfer tag Edge gives neutralized HEVC output; the caller must then check that the route's
+     * authorization rendered a frame with that tag.
+     */
+    bt709TransferAllowed?: boolean
+};
+
+/** Returns how a decoded frame differs from the neutralized limited sRGB description, or the variants the options allow, or null when it matches. */
+function getNeutralBT709FrameColorFailure(
+    frame: VideoFrame,
+    { fullRangeAllowed = false, bt709TransferAllowed = false }: NeutralFrameColorOptions = {}
+): string | null {
     const actualColor = describeVideoFrameColor(frame);
-    // HEVC authorization tests this Edge output through the pixel-reference
-    // check. Keep playback consistent with that contract, without retagging it.
-    if (bt709TransferAllowed && actualColor === 'bt709:bt709:bt709:limited') {
+    if (
+        actualColor === NEUTRAL_BT709_COLOR_DESCRIPTION
+        || (fullRangeAllowed && actualColor === NEUTRAL_BT709_FULL_RANGE_COLOR_DESCRIPTION)
+        || (bt709TransferAllowed && actualColor === NEUTRAL_BT709_TRANSFER_COLOR_DESCRIPTION)
+    ) {
         return null;
     }
-    if (actualColor === NEUTRAL_BT709_COLOR_DESCRIPTION || (fullRangeAllowed && actualColor === NEUTRAL_BT709_FULL_RANGE_COLOR_DESCRIPTION)) {
-        return null;
-    }
-    const expectedColor = fullRangeAllowed ?
-        `${NEUTRAL_BT709_COLOR_DESCRIPTION} or ${NEUTRAL_BT709_FULL_RANGE_COLOR_DESCRIPTION}` :
-        NEUTRAL_BT709_COLOR_DESCRIPTION;
-    return `color: ${actualColor}, expected ${expectedColor}`;
+    const expectedColors = [
+        NEUTRAL_BT709_COLOR_DESCRIPTION,
+        ...fullRangeAllowed ? [ NEUTRAL_BT709_FULL_RANGE_COLOR_DESCRIPTION ] : [],
+        ...bt709TransferAllowed ? [ NEUTRAL_BT709_TRANSFER_COLOR_DESCRIPTION ] : []
+    ];
+    return `color: ${actualColor}, expected ${expectedColors.join(' or ')}`;
 }
 
 function isExternalInputMode(inputMode: PresentationInputMode): boolean {
@@ -3277,10 +3290,10 @@ export default class WebGPUPresenter {
     }
 
     /**
-     * Returns why the active external Dolby Vision route is not authorized for its profile, or its codec's frames for the levels they recover
-     * with, including a mode that tone maps nothing.
+     * Returns why the active external Dolby Vision route is not authorized for its profile, or its codec's frames, tagged with the transfer, for
+     * the levels they recover with, including a mode that tone maps nothing.
      */
-    private getActiveExternalDolbyVisionAuthorizationFailure(): string | null {
+    private getActiveExternalDolbyVisionAuthorizationFailure(decodedFrameTransfer: VideoColorSpace['transfer']): string | null {
         const profile = this.activeDolbyVisionProfile;
         if (profile !== 5 && profile !== 8) {
             return `profile: ${profile}, expected 5 or 8`;
@@ -3293,7 +3306,7 @@ export default class WebGPUPresenter {
             return 'codec: none configured';
         }
         return this.getExternalDolbyVisionAuthorizationFailure(profile)
-            ?? this.getExternalHDRAuthorizationFailure(codec, EXTERNAL_DOLBY_VISION_CALIBRATION_METADATA);
+            ?? this.getExternalHDRAuthorizationFailure(codec, EXTERNAL_DOLBY_VISION_CALIBRATION_METADATA, decodedFrameTransfer);
     }
 
     private suspendForColorConfiguration(): void {
@@ -3929,8 +3942,9 @@ export default class WebGPUPresenter {
                 const executor = this.executor;
                 const profile = this.activeDolbyVisionProfile;
                 const frameFailure = (profile === 5 || profile === 8 ? null : `profile: ${profile}, expected 5 or 8`)
-                    ?? getNeutralBT709FrameColorFailure(frame)
-                    ?? prefixFailure('authorization', this.getActiveExternalDolbyVisionAuthorizationFailure());
+                    // The levels come from the codec's PQ key, so its frames may carry the transfer tag that key's evidence carried
+                    ?? getNeutralBT709FrameColorFailure(frame, { bt709TransferAllowed: this.activeExternalHDRCodec === 'hevc' })
+                    ?? prefixFailure('authorization', this.getActiveExternalDolbyVisionAuthorizationFailure(frame.colorSpace.transfer));
                 if (frameFailure !== null || !executor) {
                     this.fallback(generation, 'decoded-frame-color-mismatch', frameFailure ?? 'executor: unavailable');
                     return null;
@@ -3949,7 +3963,7 @@ export default class WebGPUPresenter {
             case 'external-hdr': {
                 const metadata = this.activeInputColorMetadata;
                 const frameFailure = metadata ?
-                    getNeutralBT709FrameColorFailure(frame, true, this.activeExternalHDRCodec === 'hevc')
+                    getNeutralBT709FrameColorFailure(frame, { bt709TransferAllowed: this.activeExternalHDRCodec === 'hevc', fullRangeAllowed: true })
                         ?? prefixFailure('authorization', this.getActiveExternalHDRAuthorizationFailure(metadata, frame.colorSpace.transfer)) :
                     'metadata: none configured';
                 if (frameFailure !== null) {
