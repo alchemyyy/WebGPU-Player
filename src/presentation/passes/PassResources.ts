@@ -174,6 +174,12 @@ const ENGINE_BINDINGS: Readonly<Record<EngineBindingResource, EngineBindingDecla
         layout: { buffer: { type: 'uniform' } },
         structs: [ 'RenderSettingsUniforms' ]
     },
+    // The same buffer, which the peak detection's reduction writes the detected scene peak and average into before the frame's passes read it
+    'render-settings-storage': {
+        declaration: 'var<storage, read_write> writableRenderSettings: RenderSettingsUniforms;',
+        layout: { buffer: { type: 'storage' } },
+        structs: [ 'RenderSettingsUniforms' ]
+    },
     'sampler-linear': {
         declaration: 'var videoSampler: sampler;',
         layout: { sampler: { type: 'filtering' } },
@@ -190,6 +196,7 @@ const ENGINE_RESOURCE_BINDINGS: Readonly<Record<EngineResource, readonly EngineB
     'planes-nv12': [ 'plane-luma', 'plane-chroma' ],
     'planes-yuv': [ 'plane-luma', 'plane-chroma-u', 'plane-chroma-v' ],
     'render-settings': [ 'render-settings' ],
+    'render-settings-storage': [ 'render-settings-storage' ],
     'sampler-linear': [ 'sampler-linear' ]
 };
 

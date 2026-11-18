@@ -26,6 +26,11 @@ export type ToneMappingSettings = {
     operator: ToneMapOperator
     outputPeakNits: number
     paperWhiteNits: number
+    /**
+     * Whether a PQ frame without Dolby Vision L1 or HDR10+ scene statistics tone-maps from the scene peak and average its plan measures on the GPU,
+     * as libplacebo's peak detection and mpv's `--hdr-compute-peak` do; it applies only while the input peak follows the source.
+     */
+    peakDetection: boolean
 };
 
 export type DisplaySettings = {
@@ -77,7 +82,9 @@ const DEFAULT_TONE_MAPPING_SETTINGS: ToneMappingSettings = {
     inputPeakNits: 1_000,
     operator: 'reinhard',
     outputPeakNits: 100,
-    paperWhiteNits: 203
+    paperWhiteNits: 203,
+    // On by default, as mpv's --hdr-compute-peak=auto is wherever compute shaders run
+    peakDetection: true
 };
 
 const DEFAULT_DISPLAY_SETTINGS: DisplaySettings = {
@@ -155,6 +162,9 @@ export function assertValidRenderSettings(settings: RenderSettings): void {
     }
     requireHDRSettingRange('exposure', toneMapping.exposure);
     requireHDRSettingRange('desaturationStrength', toneMapping.desaturationStrength);
+    if (typeof toneMapping.peakDetection !== 'boolean') {
+        throw new RangeError(`peakDetection: ${String(toneMapping.peakDetection)} is not boolean`);
+    }
     requireHDRSettingRange('brightness', settings.display.brightness);
     requireHDRSettingRange('contrast', settings.display.contrast);
     requireHDRSettingRange('saturation', settings.display.saturation);

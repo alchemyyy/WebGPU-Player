@@ -438,6 +438,8 @@ export type SandboxSessionCommands = {
     setMuted: (muted: boolean) => void
     /** Changes the playback rate live, or restarts the media at the current time when the rate crosses the audible range's boundary */
     setPlaybackRate: (rate: number) => void
+    /** Turns HDR peak detection on or off, keeping the input peak automatic while no tone mapping control set it */
+    setPeakDetectionEnabled: (enabled: boolean) => void
     setRenderSettings: (settings: HDRToSDRRenderSettings) => void
     /** Restarts the media on the route the override selects, at the current time */
     setRouteOverride: (override: RouteOverride) => Promise<void>

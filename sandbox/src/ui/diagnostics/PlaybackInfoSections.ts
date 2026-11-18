@@ -641,6 +641,12 @@ function describePresenterRows(presenter: PresentationTelemetry): InfoRow[] {
         `${presenter.staticToneMappedFrameCount} static`,
         presenter.lastDynamicInputPeakNits === null ? null : `last peak ${Math.round(presenter.lastDynamicInputPeakNits)} nits`
     ])));
+    rows.push(createRow('Peak detection', joinPresentValues([
+        `${presenter.appliedPeakDetectionFrameCount} frames`,
+        presenter.detectedPeakNits === null ? null : `peak ${Math.round(presenter.detectedPeakNits)} nits`,
+        // A dark scene's average is a few nits, which a tenth resolves
+        presenter.detectedAverageNits === null ? null : `average ${presenter.detectedAverageNits.toFixed(1)} nits`
+    ])));
     rows.push(createRow('HDR10+', joinPresentValues([
         `${presenter.appliedHDR10PlusFrameCount} applied`,
         `${presenter.carriedHDR10PlusFrameCount} carried`,
@@ -699,7 +705,8 @@ function describeRenderSettings(settings: RenderSettings | null): string {
                 toneMapping.operator,
                 `${toneMapping.inputPeakNits} nits in`,
                 `${toneMapping.outputPeakNits} nits out`,
-                `paper white ${toneMapping.paperWhiteNits} nits`
+                `paper white ${toneMapping.paperWhiteNits} nits`,
+                `peak detection ${toneMapping.peakDetection ? 'on' : 'off'}`
             ]);
         }
     }

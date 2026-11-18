@@ -35,6 +35,7 @@ export function createFakeSession(): SandboxSessionCommands {
         setHDROutputEnabled: vi.fn((): Promise<void> => Promise.resolve()),
         setMuted: vi.fn(),
         setPlaybackRate: vi.fn(),
+        setPeakDetectionEnabled: vi.fn(),
         setAudioOutputSettings: vi.fn((): Promise<void> => Promise.resolve()),
         setRenderSettings: vi.fn(),
         setRouteOverride: vi.fn((): Promise<void> => Promise.resolve()),

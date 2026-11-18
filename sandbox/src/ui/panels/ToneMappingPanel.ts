@@ -1,4 +1,4 @@
-// The tone mapping controls: the HDR-to-SDR render settings over the engine's ranges, and HDR output.
+// The tone mapping controls: the HDR-to-SDR render settings over the engine's ranges, peak detection, and HDR output.
 import {
     assertValidRenderSettings,
     createHDRToSDRRenderSettings,
@@ -89,12 +89,14 @@ export function createToneMappingPanel(context: PanelContext): Panel {
     const modeElement = createElement('span', { className: 'tone-mapping-mode' });
     const resetButton = createElement('button', { text: 'Reset' });
     const hdrOutputInput = createElement('input', { attributes: { type: 'checkbox' } });
+    const peakDetectionInput = createElement('input', { attributes: { type: 'checkbox' } });
     const validationElement = createElement('div', { className: 'tone-mapping-validation' });
     validationElement.hidden = true;
 
     /** Shows the settings in the controls; a refresh keeps the value being typed in a box until Enter or leaving the box commits it. */
     const renderControls = (keepTypedValue: boolean): void => {
         operatorSelect.setValue(settings.toneMapping.operator);
+        peakDetectionInput.checked = settings.toneMapping.peakDetection;
         for (const control of controls) {
             const value = String(readRangedSetting(settings, control.name));
             control.rangeInput.value = value;
@@ -164,10 +166,16 @@ export function createToneMappingPanel(context: PanelContext): Panel {
             hdrOutputInput.checked = store.getState().presentation.hdrOutput;
         });
     });
+    // Peak detection measures the peak an automatic input peak follows, so it has a command of its own, which keeps the input peak automatic
+    peakDetectionInput.addEventListener('change', (): void => {
+        settings = { ...settings, toneMapping: { ...settings.toneMapping, peakDetection: peakDetectionInput.checked } };
+        session.setPeakDetectionEnabled(peakDetectionInput.checked);
+    });
 
     const element = createElement('section', { className: 'tone-mapping-panel' }, [
         createElement('header', { className: 'tone-mapping-header' }, [ createElement('span', { text: 'Tone mapping' }), modeElement, resetButton ]),
         createElement('label', { className: 'tone-mapping-toggle' }, [ hdrOutputInput, createElement('span', { text: 'HDR output' }) ]),
+        createElement('label', { className: 'tone-mapping-toggle' }, [ peakDetectionInput, createElement('span', { text: 'Peak detection' }) ]),
         createElement('label', { className: 'tone-mapping-row' }, [ createElement('span', { text: 'Operator' }), operatorSelect.element, operatorDefaultButton ]),
         ...rows,
         validationElement

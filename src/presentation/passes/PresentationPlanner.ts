@@ -1,5 +1,6 @@
 // Builds presentation plans: it arranges a route's built-in chain and the user passes on the spatial spine and the color track, then generates each pass's WGSL.
 // The Presentation section of docs/src/architecture.md and docs/src/new-pass.md describe the rules it implements.
+import type { RGBCoefficients } from '../../color/ColorPipeline';
 import {
     DEFAULT_MAXIMUM_TEXTURE_DIMENSION_3D,
     FLOAT32_FILTERABLE_FEATURE,
@@ -64,6 +65,14 @@ import {
     DEINTERLACE_HISTORY_DEPTH,
     DEINTERLACE_SIGNAL_INPUT_NAME
 } from './builtin/DeinterlacePass';
+import {
+    createPeakDetectionAccumulationWGSL,
+    createPeakDetectionMeasureWGSL,
+    createPeakDetectionReduceWGSL,
+    createPeakDetectionStateWGSL,
+    PEAK_DETECTION_ACCUMULATION_BYTE_LENGTH,
+    PEAK_DETECTION_STATE_BYTE_LENGTH
+} from './builtin/PeakDetectionPass';
 import type {
     BuiltinChain,
     BuiltinColorFunction,
@@ -86,6 +95,7 @@ import type {
     PlanDevice,
     PlanFacts,
     PlannedBinding,
+    PlannedBuffer,
     PlannedPass,
     PlannedPassTexture,
     PlannedTexture,
@@ -135,6 +145,13 @@ const DEINTERLACE_LABEL = `${LABEL_PREFIX} deinterlace`;
 const BLACK_BAR_LABEL = `${LABEL_PREFIX} black bars`;
 // The buffer the black bar analysis writes its statistics into
 const BLACK_BAR_STATISTICS_BUFFER_ID = 'black-bars';
+const PEAK_DETECTION_LABEL = `${LABEL_PREFIX} peak detection`;
+const PEAK_REDUCTION_LABEL = `${LABEL_PREFIX} peak reduction`;
+// The buffer each measured frame accumulates into, and the smoothed state the plan keeps across frames
+const PEAK_ACCUMULATION_BUFFER_ID = 'peak-accumulation';
+const PEAK_STATE_BUFFER_ID = 'peak-state';
+// The one workgroup of the peak reduction
+const SINGLE_WORKGROUP: readonly [number, number, number] = Object.freeze([ 1, 1, 1 ]);
 const SCALE_LABEL = `${LABEL_PREFIX} scale`;
 const COLOR_LABEL = `${LABEL_PREFIX} color`;
 const OUTPUT_LABEL = `${LABEL_PREFIX} output`;
@@ -203,6 +220,8 @@ type PlaneMerge = {
  * What a pass computes before its color steps.
  * - 'black-bar-analysis': the built-in black bar analysis, a compute pass over the signal that writes a buffer rather than an image.
  * - 'deinterlace': the built-in deinterlacing pass over the signal's history, at the stream's bit depth.
+ * - 'peak-detection': the built-in HDR peak measurement, a compute pass over the signal that accumulates into a buffer.
+ * - 'peak-reduction': the built-in reduction of that measurement into the smoothed state and the render settings, which reads no source.
  * - 'signal': the route's signal, read from the source at the pass's coordinate.
  * - 'plane-read': one of the signal's planes, read on its own grid as normalized codes, its target coordinate scaled onto the reference grid's extent.
  * - 'plane-merge': the signal's planes, from plane images or their source, merged on one grid and converted as the signal converts.
@@ -212,6 +231,8 @@ type PlaneMerge = {
 type DraftCore =
     | { kind: 'black-bar-analysis' }
     | { bitDepth: number; kind: 'deinterlace' }
+    | { kind: 'peak-detection'; luminanceCoefficients: RGBCoefficients }
+    | { kind: 'peak-reduction' }
     | { kind: 'plane-merge'; merge: PlaneMerge; source: PlaneSource }
     | { kind: 'plane-read'; plane: 'chroma' | 'luma'; scale: Offset; source: PlaneSource }
     | { kind: 'sample' }
@@ -543,6 +564,10 @@ class PresentationPlanBuilder {
         const candidates = this.selectPasses();
         const walkedPasses = this.createTrack(candidates);
         this.namedStages = collectNamedStages(walkedPasses);
+        const peakDetection = this.request.peakDetection ?? null;
+        if (peakDetection !== null) {
+            this.placePeakDetection(peakDetection.luminanceCoefficients);
+        }
         if (this.deinterlace !== null) {
             this.placeDeinterlace(this.deinterlace);
         }
@@ -571,6 +596,33 @@ class PresentationPlanBuilder {
             kind: 'compute',
             label: BLACK_BAR_LABEL,
             targetTextureId: null
+        });
+    }
+
+    /**
+     * Places the HDR peak detection first, before every pass that tone-maps, so a frame tone-maps from its own measurement: a compute pass over the
+     * signal in the presented part of the frame, which accumulates into its buffer, and a single invocation that reduces it into the smoothed state
+     * and writes the render settings.
+     */
+    private placePeakDetection(luminanceCoefficients: RGBCoefficients): void {
+        this.pushDraft({
+            core: { kind: 'peak-detection', luminanceCoefficients },
+            coordinateMapping: 'object-fit',
+            hookedTextureId: null,
+            inputs: [],
+            kind: 'compute',
+            label: PEAK_DETECTION_LABEL,
+            targetTextureId: null
+        });
+        this.pushDraft({
+            core: { kind: 'peak-reduction' },
+            coordinateMapping: 'identity',
+            hookedTextureId: null,
+            inputs: [],
+            kind: 'compute',
+            label: PEAK_REDUCTION_LABEL,
+            targetTextureId: null,
+            workgroupCounts: SINGLE_WORKGROUP
         });
     }
 
@@ -1186,11 +1238,20 @@ class PresentationPlanBuilder {
         const passes = this.drafts.map((draft: DraftPass): PlannedPass => generator.generate(draft));
         const includedPasses = candidates.filter((pass: ActivePass): boolean => this.activePasses.has(pass));
         const blackBarPassIndex = this.drafts.findIndex((draft: DraftPass): boolean => draft.core.kind === 'black-bar-analysis');
+        const peakDetectionPassIndex = this.drafts.findIndex((draft: DraftPass): boolean => draft.core.kind === 'peak-detection');
+        const buffers: PlannedBuffer[] = [];
+        if (blackBarPassIndex >= 0) {
+            buffers.push({ byteLength: BLACK_BAR_STATISTICS_BYTE_LENGTH, id: BLACK_BAR_STATISTICS_BUFFER_ID, indirect: false, persistent: false });
+        }
+        if (peakDetectionPassIndex >= 0) {
+            buffers.push(
+                { byteLength: PEAK_DETECTION_ACCUMULATION_BYTE_LENGTH, id: PEAK_ACCUMULATION_BUFFER_ID, indirect: false, persistent: false },
+                { byteLength: PEAK_DETECTION_STATE_BYTE_LENGTH, id: PEAK_STATE_BUFFER_ID, indirect: false, persistent: true }
+            );
+        }
         return {
             blackBarAnalysis: blackBarPassIndex < 0 ? null : { bufferId: BLACK_BAR_STATISTICS_BUFFER_ID, passIndex: blackBarPassIndex },
-            buffers: blackBarPassIndex < 0 ?
-                [] :
-                [ { byteLength: BLACK_BAR_STATISTICS_BYTE_LENGTH, id: BLACK_BAR_STATISTICS_BUFFER_ID, indirect: false, persistent: false } ],
+            buffers,
             deinterlace: this.deinterlace === null ? null : { ...this.deinterlace },
             displayRate: includedPasses.some((pass: ActivePass): boolean => pass.manifest.rate === 'display'),
             // A draw from history starts at the first pass whose output changes between the draws of one frame
@@ -1203,6 +1264,14 @@ class PresentationPlanBuilder {
                 .map((pass: ActivePass) => ({ parameters: pass.manifest.parameters, passName: pass.manifest.name })),
             passTextures: generator.getPassTextures(),
             passes,
+            peakDetection: peakDetectionPassIndex < 0 ?
+                null :
+                {
+                    accumulationBufferId: PEAK_ACCUMULATION_BUFFER_ID,
+                    measurePassIndex: peakDetectionPassIndex,
+                    reducePassIndex: this.drafts.findIndex((draft: DraftPass): boolean => draft.core.kind === 'peak-reduction'),
+                    stateBufferId: PEAK_STATE_BUFFER_ID
+                },
             report: {
                 activePasses: includedPasses.map((pass: ActivePass): string => pass.manifest.name),
                 inactivePasses: this.inactivePasses
@@ -1210,7 +1279,8 @@ class PresentationPlanBuilder {
             sourceKind: this.request.chain.signal.sourceKind,
             textures: [ ...this.textures.values() ],
             usesRenderSettings: passes.some((pass: PlannedPass): boolean => pass.bindings.some(
-                (binding: PlannedBinding): boolean => binding.kind === 'engine' && binding.resource === 'render-settings'
+                (binding: PlannedBinding): boolean => binding.kind === 'engine'
+                    && (binding.resource === 'render-settings' || binding.resource === 'render-settings-storage')
             ))
         };
     }
@@ -1585,11 +1655,14 @@ class PassCodeGenerator {
         }
     }
 
-    /** Binds the engine resources the signal, the built-in steps, and the input samplers read; returns the bound resources. */
+    /** Binds the engine resources the signal, the built-in steps, the input samplers, and the peak reduction read; returns the bound resources. */
     private bindEngineResources(draft: DraftPass, bindingList: BindingList): EngineBindingResource[] {
         const resources: EngineResource[] = [];
         if (readsSignal(draft.core)) {
             resources.push(...this.chain.signal.resources);
+        }
+        if (draft.core.kind === 'peak-reduction') {
+            resources.push('render-settings-storage');
         }
         for (const colorFunction of getBuiltinFunctions(draft)) {
             resources.push(...colorFunction.resources);
@@ -1662,12 +1735,27 @@ class PassCodeGenerator {
         return createTextureAccessorsWGSL(input.accessorPrefix, binding, this.isFilterable(input), SAMPLER_VARIABLE, input.offset);
     }
 
-    /** Binds what a compute pass writes: the black bar analysis its statistics buffer, and a user pass its storage target. */
+    /**
+     * Binds what a compute pass writes: the black bar analysis its statistics buffer, the peak detection its accumulation, the peak reduction the
+     * accumulation it reads and the state it keeps, and a user pass its storage target.
+     */
     private bindComputeOutput(draft: DraftPass, bindingList: BindingList): string {
         const binding = bindingList.bindings.length;
-        if (draft.core.kind === 'black-bar-analysis') {
-            bindingList.bindings.push({ access: 'storage', binding, bufferId: BLACK_BAR_STATISTICS_BUFFER_ID, kind: 'buffer' });
-            return createBlackBarStatisticsWGSL(binding);
+        switch (draft.core.kind) {
+            case 'black-bar-analysis':
+                bindingList.bindings.push({ access: 'storage', binding, bufferId: BLACK_BAR_STATISTICS_BUFFER_ID, kind: 'buffer' });
+                return createBlackBarStatisticsWGSL(binding);
+            case 'peak-detection':
+                bindingList.bindings.push({ access: 'storage', binding, bufferId: PEAK_ACCUMULATION_BUFFER_ID, kind: 'buffer' });
+                return createPeakDetectionAccumulationWGSL(binding, true);
+            case 'peak-reduction':
+                bindingList.bindings.push(
+                    { access: 'read-only-storage', binding, bufferId: PEAK_ACCUMULATION_BUFFER_ID, kind: 'buffer' },
+                    { access: 'storage', binding: binding + 1, bufferId: PEAK_STATE_BUFFER_ID, kind: 'buffer' }
+                );
+                return `${createPeakDetectionAccumulationWGSL(binding, false)}\n${createPeakDetectionStateWGSL(binding + 1)}`;
+            default:
+                break;
         }
         const textureId = requireTargetTexture(draft);
         bindingList.bindings.push({ access: 'storage', binding, historyOffset: 0, kind: 'texture', textureId });
@@ -1677,8 +1765,15 @@ class PassCodeGenerator {
     private createStage(draft: DraftPass): string {
         const core = draft.core;
         if (draft.kind === 'compute') {
-            if (core.kind === 'black-bar-analysis') {
-                return createBlackBarAnalysisWGSL(this.chain.signal.entryPoint);
+            switch (core.kind) {
+                case 'black-bar-analysis':
+                    return createBlackBarAnalysisWGSL(this.chain.signal.entryPoint);
+                case 'peak-detection':
+                    return createPeakDetectionMeasureWGSL(this.chain.signal.entryPoint, core.luminanceCoefficients);
+                case 'peak-reduction':
+                    return createPeakDetectionReduceWGSL();
+                default:
+                    break;
             }
             if (core.kind !== 'user' || !core.pass.manifest.workgroup) {
                 throw new Error(`Compute pass '${draft.label}' has no user workgroup`);
@@ -1698,6 +1793,8 @@ class PassCodeGenerator {
             `(${FRAGMENT_COORDINATE} + ${toWGSLVector(draft.coordinateShift)})`;
         switch (core.kind) {
             case 'black-bar-analysis':
+            case 'peak-detection':
+            case 'peak-reduction':
                 throw new Error(`Pass '${draft.label}' is a compute pass, which has no fragment core`);
             case 'deinterlace':
                 return `${DEINTERLACE_ENTRY_POINT}(${FRAGMENT_POSITION})`;
@@ -1764,18 +1861,20 @@ class PassCodeGenerator {
 }
 
 /**
- * Returns whether a core runs the route's signal code, whose resources its pass binds: the signal's, the black bar analysis's, and a plane core's
- * that reads the source.
+ * Returns whether a core runs the route's signal code, whose resources its pass binds: the signal's, the black bar analysis's, the peak detection's,
+ * and a plane core's that reads the source.
  */
 function readsSignal(core: DraftCore): boolean {
     switch (core.kind) {
         case 'black-bar-analysis':
+        case 'peak-detection':
         case 'signal':
             return true;
         case 'plane-merge':
         case 'plane-read':
             return core.source === 'signal';
         case 'deinterlace':
+        case 'peak-reduction':
         case 'sample':
         case 'user':
             return false;

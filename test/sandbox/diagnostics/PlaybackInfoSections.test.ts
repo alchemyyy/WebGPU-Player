@@ -122,6 +122,10 @@ const SIGNAL_SQUARE_SUM = SIGNAL_SAMPLE_COUNT * 0.25 * 0.25;
 
 const PRESENTER_FALLBACK_DETAIL = 'GPUValidationError: texture usage';
 const HDR10_PLUS_PEAK_NITS = 1_000.4;
+// The peak detection's frames and its smoothed scene statistics, which the row rounds to whole nits and to a tenth
+const PEAK_DETECTED_FRAME_COUNT = 240;
+const DETECTED_PEAK_NITS = 812.4;
+const DETECTED_AVERAGE_NITS = 4.26;
 const FEL_FAILURE = 'pixel-mismatch: scenario 2';
 const CALLBACK_TIME_MICROSECONDS = 1_000_000;
 const EXPECTED_DISPLAY_TIME_MICROSECONDS = 1_016_667;
@@ -497,6 +501,9 @@ describe('describePlaybackInfo', () => {
             telemetry: {
                 ...initialState.telemetry,
                 presenter: createPresenterTelemetry({
+                    appliedPeakDetectionFrameCount: PEAK_DETECTED_FRAME_COUNT,
+                    detectedAverageNits: DETECTED_AVERAGE_NITS,
+                    detectedPeakNits: DETECTED_PEAK_NITS,
                     dolbyVisionFELAuthorizationFailure: FEL_FAILURE,
                     fallbackDetail: PRESENTER_FALLBACK_DETAIL,
                     fallbackReason: 'frame-render-failed',
@@ -516,11 +523,12 @@ describe('describePlaybackInfo', () => {
         expect(requireRow(section, 'Not drawn')).toEqual({ label: 'Not drawn', tone: 'failure', value: SURFACE_EMPTY_REASON });
         expect(requireRow(section, 'Last frame').value).toBe(`0:10.000, ${DISPLAY_LEAD_TEXT}`);
         expect(requireRow(section, 'Tone mapping').value).toBe('0 static, last peak 1000 nits');
+        expect(requireRow(section, 'Peak detection').value).toBe(`${PEAK_DETECTED_FRAME_COUNT} frames, peak 812 nits, average 4.3 nits`);
         expect(requireRow(section, 'HDR10+').value).toBe('0 applied, 0 carried, last valid');
         expect(requireRow(section, 'FEL authorization')).toEqual({ label: 'FEL authorization', tone: 'failure', value: FEL_FAILURE });
         expect(requireRow(section, 'Plan').value).toBe(`2 passes, 1 textures, ${plan.sourceKind} source`);
         expect(requireRow(section, 'Render settings').value).toBe(
-            `hdr-to-sdr, ${toneMapping.operator}, ${toneMapping.inputPeakNits} nits in, ${toneMapping.outputPeakNits} nits out, paper white ${toneMapping.paperWhiteNits} nits`
+            `hdr-to-sdr, ${toneMapping.operator}, ${toneMapping.inputPeakNits} nits in, ${toneMapping.outputPeakNits} nits out, paper white ${toneMapping.paperWhiteNits} nits, peak detection on`
         );
         expect(requireRow(section, 'Display').value).toContain(`exposure ${toneMapping.exposure}`);
     });

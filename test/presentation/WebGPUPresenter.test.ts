@@ -250,7 +250,7 @@ import {
     type TransferableDolbyVisionEncodedFrameMetadata
 } from 'webgpu-player/demux/dolby-vision/DolbyVisionEncodedMetadataProtocol';
 import { DOLBY_VISION_RPU_PQ_CODE_MAXIMUM, DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH } from 'webgpu-player/demux/dolby-vision/DolbyVisionRPUParser';
-import { applyPQEOTF } from 'webgpu-player/color/ColorPipeline';
+import { applyPQEOTF, applyPQOETF, getLuminanceCoefficients } from 'webgpu-player/color/ColorPipeline';
 import {
     DOLBY_VISION_RPU_ENHANCEMENT_LAYER_BIT_DEPTH_WORD_OFFSET
 } from 'webgpu-player/demux/dolby-vision/DolbyVisionRPUDataLayout';
@@ -387,6 +387,12 @@ const RAW_FRAME_DURATION_MICROSECONDS = secondsToMicroseconds(1 / 24);
 const NEXT_RAW_FRAME_TIMESTAMP_MICROSECONDS = addMicroseconds(RAW_FRAME_TIMESTAMP_MICROSECONDS, RAW_FRAME_DURATION_MICROSECONDS);
 // Three frame durations, past the 2.5 that history tolerates
 const DISCONTINUOUS_FRAME_STEP_MICROSECONDS = requireMicroseconds(RAW_FRAME_DURATION_MICROSECONDS * 3);
+// The peak detection's readback, and the smoothed scene average and peak a test writes into it, in nits
+const PEAK_DETECTION_READBACK_LABEL = 'Presentation peak detection readback';
+const DETECTED_AVERAGE_NITS = 42;
+const DETECTED_PEAK_NITS = 812;
+// The PQ codes an f32 holds round the nits read back to within this many digits
+const DETECTED_NITS_DIGITS = 1;
 const FIRST_VIDEO_EPOCH = 0;
 const SECOND_VIDEO_EPOCH = 1;
 // A stream whose decoder configuration declares top-left 4:2:0 chroma, as BT.2020 sites it
@@ -2448,7 +2454,7 @@ describe('WebGPUPresenter', () => {
             inputMode: 'raw-yuv',
             metadata,
             rawFrameFormat: 'I420P10',
-            settings: createHDRToSDRRenderSettings()
+            settings: createHDRToSDRRenderSettings({ toneMapping: { peakDetection: false } })
         }, 1)).resolves.toBe(true);
         const deviceHarness = gpuHarness.devices[0];
         deviceHarness.queueWriteBuffer.mockClear();
@@ -2589,7 +2595,7 @@ describe('WebGPUPresenter', () => {
             inputMode: 'raw-yuv',
             metadata,
             rawFrameFormat: 'I420P10',
-            settings: createHDRToSDRRenderSettings()
+            settings: createHDRToSDRRenderSettings({ toneMapping: { peakDetection: false } })
         }, 1)).resolves.toBe(true);
         const deviceHarness = gpuHarness.devices[0];
         const validMetadata = parseHEVCHDR10PlusMetadata(createHDR10PlusHEVCVector('valid'), { kind: 'annex-b' }).metadata;
@@ -2814,7 +2820,7 @@ describe('WebGPUPresenter', () => {
             inputMode: 'raw-dolby-vision',
             profile: 8,
             rawFrameFormat: 'I420P10',
-            settings: createHDRToSDRRenderSettings({ toneMapping: { inputPeakNits: 4_000 } })
+            settings: createHDRToSDRRenderSettings({ toneMapping: { inputPeakNits: 4_000, peakDetection: false } })
         }, 1)).resolves.toBe(true);
         const deviceHarness = gpuHarness.devices[0];
         const validHDR10PlusMetadata = parseHEVCHDR10PlusMetadata(createHDR10PlusHEVCVector('valid'), { kind: 'annex-b' });
@@ -4024,7 +4030,7 @@ describe('WebGPUPresenter', () => {
             inputMode: 'raw-yuv',
             metadata,
             rawFrameFormat: 'I420P10',
-            settings: createHDRToSDRRenderSettings()
+            settings: createHDRToSDRRenderSettings({ toneMapping: { peakDetection: false } })
         }, 1);
 
         expect(configured).toBe(true);
@@ -4137,7 +4143,7 @@ describe('WebGPUPresenter', () => {
             inputMode: 'raw-yuv',
             metadata,
             rawFrameFormat: 'I420P10',
-            settings: createHDRToSDRRenderSettings()
+            settings: createHDRToSDRRenderSettings({ toneMapping: { peakDetection: false } })
         }, 1);
 
         const deviceHarness = gpuHarness.devices[0];
@@ -4153,7 +4159,8 @@ describe('WebGPUPresenter', () => {
                 toneMapping: {
                     exposure: 0.5,
                     operator: 'reinhard',
-                    outputPeakNits: 120
+                    outputPeakNits: 120,
+                    peakDetection: false
                 }
             }),
             1
@@ -5653,6 +5660,99 @@ describe('WebGPUPresenter', () => {
         expect(presenter.getTelemetry().blackBarAspectRatio).toBeNull();
         expect(presentAt(addMicroseconds(NEXT_RAW_FRAME_TIMESTAMP_MICROSECONDS, requireMicroseconds(2 * RAW_FRAME_DURATION_MICROSECONDS))))
             .toEqual([ 1, 1, 0, 0 ]);
+    });
+
+    it('tone-maps PQ frames without scene statistics from the plan\'s peak detection, while HDR10+ keeps priority, and plans without it once off', async () => {
+        const metadata = createPQColorMetadata();
+        const { deviceHarness, fallbackHandler, presenter } = await startRawRoutePresentation(metadata, 'I420P10', createHDRToSDRRenderSettings());
+        expect(getLastPlanRequest().peakDetection).toEqual({ luminanceCoefficients: getLuminanceCoefficients('bt2020') });
+        expect(presenter.getActivePresentationPlan()?.peakDetection).toMatchObject({ measurePassIndex: 0, reducePassIndex: 1 });
+        const frame = { ...createRawFrame('I420P10', metadata), timestampMicroseconds: RAW_FRAME_TIMESTAMP_MICROSECONDS };
+        const createCommandEncoder = vi.mocked(deviceHarness.device.createCommandEncoder);
+        const getLastEncoder = (): { beginComputePass: MockFunction; clearBuffer: MockFunction; copyBufferToBuffer: MockFunction } => (
+            createCommandEncoder.mock.results.at(-1)?.value as { beginComputePass: MockFunction; clearBuffer: MockFunction; copyBufferToBuffer: MockFunction }
+        );
+        deviceHarness.queueWriteBuffer.mockClear();
+
+        // The frame's reduction writes the detected peak and average into the render settings on the GPU, so the presenter writes none
+        expect(presentRawFrame(presenter, frame)).toBe(true);
+        expect(getRenderSettingsWrites(deviceHarness)).toEqual([]);
+        const measuredEncoder = getLastEncoder();
+        expect(measuredEncoder.beginComputePass.mock.calls.map((call: unknown[]): unknown => (call[0] as GPUComputePassDescriptor).label))
+            .toEqual([ 'Presentation peak detection', 'Presentation peak reduction' ]);
+        expect(measuredEncoder.clearBuffer).toHaveBeenCalledOnce();
+        const [ readback ] = getBuffers(deviceHarness, PEAK_DETECTION_READBACK_LABEL);
+        expect(measuredEncoder.copyBufferToBuffer).toHaveBeenCalledWith(expect.anything(), 0, readback, 0, readback.size);
+        new Float32Array(readback.bytes.buffer).set([ applyPQOETF(DETECTED_AVERAGE_NITS), applyPQOETF(DETECTED_PEAK_NITS) ]);
+        await vi.waitFor(() => expect(presenter.getTelemetry().detectedPeakNits).toBeCloseTo(DETECTED_PEAK_NITS, DETECTED_NITS_DIGITS));
+        expect(presenter.getTelemetry().detectedAverageNits).toBeCloseTo(DETECTED_AVERAGE_NITS, DETECTED_NITS_DIGITS);
+        expect(presenter.getTelemetry()).toMatchObject({ appliedPeakDetectionFrameCount: 1, lastDynamicInputPeakNits: null, staticToneMappedFrameCount: 0 });
+
+        // A frame with HDR10+ tone-maps from its metadata and measures nothing
+        expect(presenter.presentDecodedFrame({
+            HDR10PlusMetadata: parseHEVCHDR10PlusMetadata(createHDR10PlusHEVCVector('valid'), { kind: 'annex-b' }),
+            durationMicroseconds: RAW_FRAME_DURATION_MICROSECONDS,
+            frame: { ...frame, timestampMicroseconds: NEXT_RAW_FRAME_TIMESTAMP_MICROSECONDS },
+            mediaTimeMicroseconds: NEXT_RAW_FRAME_TIMESTAMP_MICROSECONDS,
+            outputMode: 'raw-planes'
+        }, 1)).toBe(true);
+        expect(getLastEncoder().beginComputePass).not.toHaveBeenCalled();
+        expect(new Uint32Array(getRenderSettingsWrites(deviceHarness).at(-1)?.buffer ?? new ArrayBuffer(0))[3]).toBe(2);
+        expect(presenter.getTelemetry()).toMatchObject({ appliedHDR10PlusFrameCount: 1, appliedPeakDetectionFrameCount: 1, detectedPeakNits: null });
+
+        // Switched off, the settings rebuild the plan without the detection, and frames tone-map statically again
+        expect(presenter.updateRenderSettings(createHDRToSDRRenderSettings({ toneMapping: { peakDetection: false } }), 1)).toBe(true);
+        await vi.waitFor(() => expect(presenter.getActivePresentationPlan()?.peakDetection).toBeNull());
+        expect(getLastPlanRequest().peakDetection).toBeNull();
+        expect(presentRawFrame(presenter, { ...frame, timestampMicroseconds: addMicroseconds(NEXT_RAW_FRAME_TIMESTAMP_MICROSECONDS, RAW_FRAME_DURATION_MICROSECONDS) }))
+            .toBe(true);
+        expect(getLastEncoder().beginComputePass).not.toHaveBeenCalled();
+        expect(new Uint32Array(getRenderSettingsWrites(deviceHarness).at(-1)?.buffer ?? new ArrayBuffer(0))[3]).toBe(0);
+        expect(presenter.getTelemetry()).toMatchObject({ appliedPeakDetectionFrameCount: 1, staticToneMappedFrameCount: 1 });
+        expect(fallbackHandler).not.toHaveBeenCalled();
+    });
+
+    it('keeps a paused frame\'s detected tone mapping through settings and plan redraws, which measure nothing and leave the smoothing as it was', async () => {
+        const metadata = createPQColorMetadata();
+        const { deviceHarness, fallbackHandler, presenter } = await startRawRoutePresentation(metadata, 'I420P10', createHDRToSDRRenderSettings());
+        const frame = { ...createRawFrame('I420P10', metadata), timestampMicroseconds: RAW_FRAME_TIMESTAMP_MICROSECONDS };
+        const createCommandEncoder = vi.mocked(deviceHarness.device.createCommandEncoder);
+        const getComputePassLabels = (): unknown[] => {
+            const encoder = createCommandEncoder.mock.results.at(-1)?.value as { beginComputePass: MockFunction };
+            return encoder.beginComputePass.mock.calls.map((call: unknown[]): unknown => (call[0] as GPUComputePassDescriptor).label);
+        };
+        expect(presentRawFrame(presenter, frame)).toBe(true);
+        expect(getComputePassLabels()).toEqual([ 'Presentation peak detection', 'Presentation peak reduction' ]);
+        await vi.waitFor(() => expect(presenter.getTelemetry().presentedFrameCount).toBe(1));
+
+        // A settings change writes the static settings, and the frame the host re-pushes for it reduces without measuring, which writes the
+        // last measured frame's smoothed peak and average over them again on the GPU
+        deviceHarness.queueWriteBuffer.mockClear();
+        expect(presenter.updateRenderSettings(createHDRToSDRRenderSettings({ toneMapping: { exposure: 0.5 } }), 1)).toBe(true);
+        expect(new Uint32Array(getRenderSettingsWrites(deviceHarness).at(-1)?.buffer ?? new ArrayBuffer(0))[3]).toBe(0);
+        expect(presentRawFrame(presenter, frame)).toBe(true);
+        expect(getComputePassLabels()).toEqual([ 'Presentation peak reduction' ]);
+        expect(getRenderSettingsWrites(deviceHarness)).toHaveLength(1);
+
+        // A plan rebuilt while paused takes over the replaced plan's smoothed state, so its first draw of the paused frame measures nothing either
+        await presenter.setBlackBarCropEnabled(true);
+        expect(getLastPlanRequest()).toMatchObject({ blackBarAnalysis: true, peakDetection: { luminanceCoefficients: getLuminanceCoefficients('bt2020') } });
+        expect(createCommandEncoder).toHaveBeenCalledWith({ label: 'Presentation peak detection state adoption' });
+        expect(presentRawFrame(presenter, frame)).toBe(true);
+        expect(getComputePassLabels()).toEqual([ 'Presentation peak reduction' ]);
+        expect(fallbackHandler).not.toHaveBeenCalled();
+    });
+
+    it('plans no peak detection while the input peak is manual, and measures a Dolby Vision route\'s BT.2020 PQ', async () => {
+        const metadata = createPQColorMetadata();
+        const { presenter } = await startRawRoutePresentation(metadata, 'I420P10', createHDRToSDRRenderSettings());
+        expect(presenter.updateRenderSettings(createHDRToSDRRenderSettings(), 1, false)).toBe(true);
+        await vi.waitFor(() => expect(presenter.getActivePresentationPlan()?.peakDetection).toBeNull());
+
+        const { configured, presenter: dolbyVisionPresenter } = await createRawDolbyVisionPresenterForTelemetry();
+        expect(configured).toBe(true);
+        expect(getLastPlanRequest().peakDetection).toEqual({ luminanceCoefficients: getLuminanceCoefficients('bt2020') });
+        expect(dolbyVisionPresenter.getActivePresentationPlan()?.peakDetection).not.toBeNull();
     });
 
     /** Configures a Profile 7 I420P10 session and returns whether it configured. */

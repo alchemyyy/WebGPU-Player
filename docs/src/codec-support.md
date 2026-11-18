@@ -202,11 +202,14 @@ The engine recognizes the message by its T.35 header whatever its BlockAddID, so
 A frame's scene peak and average drive every tone map operator; only the ST 2094-40 operator follows a frame's Bezier curve, adapted from its targeted display, and without a curve it builds libplacebo's brightness-matching curve from the scene's knee.
 A frame without a curve, such as every profile A frame, never has its targeted display read.
 A frame without HDR10+ metadata of its own, or whose payload fails to parse, takes the last metadata before it in decode order, as in FFmpeg (see [Decisions](decisions.md#video-decode-and-dolby-vision)).
-Conflicting metadata, unsupported metadata, and a curve with a targeted display of 0 tone-map their frame statically and end the carried metadata until the next valid payload.
+Conflicting metadata, unsupported metadata, and a curve with a targeted display of 0 tone-map their frame as a frame without HDR10+ and end the carried metadata until the next valid payload.
 Each decode attempt and each seek starts without carried metadata.
 
-An RPU route tone-maps each frame from its RPU, as libplacebo ranks the metadata: from its L1 scene peak and average, else from HDR10+, else statically from the peak of the mastering display the RPU names (`source_max_pq`), which an RPU without display management metadata leaves at FFmpeg's default of 4000 nits.
+An RPU route tone-maps each frame from its RPU, as libplacebo ranks the metadata: from its L1 scene peak and average, else from HDR10+, else from the peak detection below, else statically from the peak of the mastering display the RPU names (`source_max_pq`), which an RPU without display management metadata leaves at FFmpeg's default of 4000 nits.
 An L1 whose maximum or average is 0, as an RPU whose CM v2.9 section codes no L1 presents, counts as none.
+
+A PQ frame without HDR10+ or an L1 tone-maps per scene from the peak detection while it is on, its default (`toneMapping.peakDetection`), and the input peak follows the source: the GPU measures each frame's peak and average and smooths them across frames, as libplacebo and mpv's `--hdr-compute-peak` do (see [Peak detection](architecture.md#peak-detection)).
+So an HDR10-only stream, which tone-mapped every frame from its static mastering display peak, tone-maps each scene from its own brightness on VF-PQ, DV base PQ, RAW PQ, and GPU PQ; with the detection off, or the input peak set by hand, it tone-maps statically again.
 
 ## Evidence
 

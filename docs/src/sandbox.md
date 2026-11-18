@@ -101,6 +101,7 @@ About ffmpeg.wasm:
 - A selected subtitle track or file is converted to WebVTT with ffmpeg and shows as plain-text cues, without styling tags.
 - The tone mapping panel edits `HDRToSDRRenderSettings` within `HDR_RENDER_SETTING_RANGES`, both from `presentation/RenderSettings.ts`, and switches HDR output.
   It checks every change with `assertValidRenderSettings` before sending it, and shows the engine's reason for a value it rejects.
+  Its Peak detection checkbox, on by default, switches `toneMapping.peakDetection` through `setPeakDetectionEnabled`, which keeps an input peak that follows the stream automatic and keeps its choice across files; the detection runs only while no control set the input peak (see [Peak detection](architecture.md#peak-detection)).
 - The route override asks for a frame transport, raw planes or a `VideoFrame`, and a video decoder: Native (WebCodecs), or GPU (package), which decodes on the presenter's device.
   The session then restarts the media where its clock stopped.
   The panel shows the route the session plays, with the GPU decoder's id on the frame-pool route, and the reason for its choice.
@@ -161,6 +162,7 @@ It is in `sandbox/src/ui/panels/DecoderPackagePanel.ts`, over `sandbox/src/sessi
   Its sections collapse, and stay collapsed across refreshes.
   The clock section's source row names `media clock, without audio at this playback rate` while a rate outside the audible range sets the audio track aside.
   The presentation section's Black bars row shows the bars the presenter crops, in the frame's samples: `off` while the crop is off, `none` until bars are found, else `top`, `bottom`, `left`, and `right`, and the standard aspect ratio the picture presents at, such as `2.39:1 Modern Anamorphic Scope`, when it rounds to one.
+  Its Peak detection row counts the frames that tone-mapped from the detection and shows the smoothed scene peak and average it last read back, in nits, while frames tone-map from it; the render settings row says whether the detection is on.
   On the frame-pool route, video decode adds a GPU decoder row: its name, state, and failure, its pool's free slots, and its decoded, held-back, reused, and stream change counts.
 - The shader panel adds the [bundled passes](bundled-passes.md), passes from files, or files dropped on it.
   Its bundled pass selector lists the pass files in `bin/wgpup/`, which `npm run pinned-releases` installs from the pinned passes release, or `npm run passes` copies from the `wgpup/` submodule: the dev server lists them at `/__sandbox/built-passes`, and a pick fetches that file and records `built-pass-unavailable` when it cannot.

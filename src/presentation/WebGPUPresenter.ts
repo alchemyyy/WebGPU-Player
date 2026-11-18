@@ -36,7 +36,7 @@ import {
     readDolbyVisionRPUSnapshotHeader,
     type DolbyVisionRPUSnapshotHeader
 } from '../demux/dolby-vision/DolbyVisionRPUParser';
-import { applyPQEOTF } from '../color/ColorPipeline';
+import { applyPQEOTF, getLuminanceCoefficients } from '../color/ColorPipeline';
 import {
     getRawFormatBitDepth,
     isRawDolbyVisionVideoFrameFormat,
@@ -69,6 +69,11 @@ import {
 import type { ChromaLocation, ChromaSubsampling, VideoChromaFormat } from '../demux/VideoChromaFormat';
 import { createBuiltinChain } from './passes/builtin/BuiltinChains';
 import { getBlackBarLineCounts, type BlackBarLineCounts } from './passes/builtin/BlackBarAnalysisPass';
+import {
+    PEAK_DETECTION_STATE_AVERAGE_PQ_INDEX,
+    PEAK_DETECTION_STATE_BYTE_LENGTH,
+    PEAK_DETECTION_STATE_PEAK_PQ_INDEX
+} from './passes/builtin/PeakDetectionPass';
 import { BlackBarDetector, NO_BLACK_BAR_CROP, type BlackBarCrop } from './BlackBarDetector';
 import DeinterlaceTimeline, {
     DEFAULT_DEINTERLACE_MODE,
@@ -89,6 +94,7 @@ import type {
     PassManifest,
     PassParameter,
     PassRejection,
+    PeakDetectionRequest,
     PlanFacts,
     PlannedOutput,
     PlannedParameterSet,
@@ -193,6 +199,9 @@ const ENGINE_COMPILE_DETAIL_PREFIX = 'engine ';
 // frames limits itself by
 const BLACK_BAR_READBACK_COUNT = 3;
 const BLACK_BAR_READBACK_LABEL = 'Presentation black bar readback';
+const PEAK_DETECTION_READBACK_LABEL = 'Presentation peak detection readback';
+// The PQ peak detection measures, whose luminance weights the source primaries' are; every Dolby Vision reconstruction is BT.2020 PQ
+const DOLBY_VISION_PEAK_DETECTION: PeakDetectionRequest = Object.freeze({ luminanceCoefficients: getLuminanceCoefficients('bt2020') });
 // The external Dolby Vision routes recover their codec's frames through the levels its external HDR PQ key fitted, whose vector proves those frames import
 const EXTERNAL_DOLBY_VISION_CALIBRATION_METADATA: InputColorMetadata = Object.freeze(createPQColorMetadata());
 
@@ -265,6 +274,8 @@ export type PresentationTelemetry = {
     appliedDolbyVisionLevel1FrameCount: number
     /** HDR-to-SDR frames that tone-mapped from HDR10+ scene statistics, and with the ST 2094-40 operator from its curve. */
     appliedHDR10PlusFrameCount: number
+    /** HDR-to-SDR frames that tone-mapped from the scene peak and average the plan's peak detection measured, as frames without dynamic metadata do while it is on. */
+    appliedPeakDetectionFrameCount: number
     /** The standard aspect ratio the cropped picture presents at, rounded from its measured shape; null while nothing crops or no standard ratio is near. */
     blackBarAspectRatio: StandardAspectRatio | null
     /** The black bars presentation crops, in the presented frame's visible samples: all 0 until bars are found, and null while the crop is off. */
@@ -272,6 +283,9 @@ export type PresentationTelemetry = {
     /** Applied HDR10+ frames whose metadata was carried from an earlier frame, because they had no valid metadata of their own. */
     carriedHDR10PlusFrameCount: number
     decodedFrameCount: number
+    /** The smoothed scene average and peak the peak detection last read back, in nits; null while frames tone-map from anything else. */
+    detectedAverageNits: number | null
+    detectedPeakNits: number | null
     deviceRecoveryCount: number
     /** Dual-layer (Profile 4 or 7) FEL frames that presented their compatible base without the EL. */
     dolbyVisionDualLayerFELBaseFallbackPresentedFrameCount: number
@@ -296,7 +310,7 @@ export type PresentationTelemetry = {
     presentationSkipReason: string | null
     presentationSource: 'decoded' | 'native' | null
     presentedFrameCount: number
-    /** HDR-to-SDR frames that tone-mapped without dynamic metadata: from the static input peak, or a Dolby Vision RPU's mastering display peak. */
+    /** HDR-to-SDR frames that tone-mapped without dynamic metadata or peak detection: from the static input peak, or a Dolby Vision RPU's mastering display peak. */
     staticToneMappedFrameCount: number
     sessionStartedMicroseconds: Microseconds
     state: 'fallback' | 'idle' | 'initializing' | 'presenting'
@@ -599,6 +613,13 @@ type BlackBarAnalysisRequest = Readonly<{
     lines: BlackBarLineCounts
     readback: BlackBarReadback
 }>;
+
+/** The buffer the peak detection's smoothed state reads back through, on the device it was made on: pending while it maps a frame's copy, which no later frame then writes. */
+type PeakDetectionReadback = {
+    buffer: GPUBuffer
+    device: GPUDevice
+    pending: boolean
+};
 
 /** When a frame presents: a new frame advances history, and a redraw repeats the last new frame. */
 type FrameTiming = {
@@ -1002,10 +1023,13 @@ function createTelemetry(settings: RenderSettings): PresentationTelemetry {
     return {
         appliedDolbyVisionLevel1FrameCount: 0,
         appliedHDR10PlusFrameCount: 0,
+        appliedPeakDetectionFrameCount: 0,
         blackBarAspectRatio: null,
         blackBarCrop: null,
         carriedHDR10PlusFrameCount: 0,
         decodedFrameCount: 0,
+        detectedAverageNits: null,
+        detectedPeakNits: null,
         deviceRecoveryCount: 0,
         dolbyVisionDualLayerFELBaseFallbackPresentedFrameCount: 0,
         dolbyVisionDualLayerFELPresentedFrameCount: 0,
@@ -1247,6 +1271,14 @@ function getRawDolbyVisionEnhancementFrameFailure(decodedFrame: DecodedRawPresen
 
 /** Where a frame's dynamic tone mapping came from. */
 type DynamicHDRSource = 'dolby-vision-level1' | 'hdr10plus';
+
+/**
+ * Returns whether settings tone-map PQ frames without scene statistics from the scene peak and average the plan measures: HDR-to-SDR settings with
+ * peak detection on, while the input peak follows the source.
+ */
+function isPeakDetectionEnabled(settings: RenderSettings, automaticInputPeakNits: boolean): boolean {
+    return settings.mode === 'hdr-to-sdr' && settings.toneMapping.peakDetection && automaticInputPeakNits;
+}
 
 /** A frame's scene statistics in nits, each null where its metadata gives none. */
 type SceneLuminance = Readonly<{
@@ -1505,6 +1537,13 @@ export default class WebGPUPresenter {
 
     private activeGeneration = 0;
     private automaticInputPeakNits = true;
+    // Whether plans of PQ routes measure each frame's scene peak and average: the settings' peak detection, while the input peak follows the source
+    private peakDetectionEnabled = false;
+    // Whether the frame being presented runs its plan's peak detection, which its dynamic metadata decided
+    private framePeakDetection = false;
+    // Advances whenever frames stop tone-mapping from the detection, so a state read back before reaches telemetry no more
+    private peakDetectionEpoch = 0;
+    private peakDetectionReadback: PeakDetectionReadback | null = null;
     // The host's black bar crop choice, which outlives sessions
     private blackBarCropEnabled = false;
     // Decides the bars to crop from the analyzed frames' statistics; a session or a change of the choice starts it over
@@ -1634,6 +1673,9 @@ export default class WebGPUPresenter {
 
         this.activeGeneration = generation;
         this.automaticInputPeakNits = true;
+        this.peakDetectionEnabled = false;
+        this.framePeakDetection = false;
+        this.peakDetectionEpoch += 1;
         this.activeDolbyVisionProfile = null;
         this.activeDolbyVisionFELReconstruction = false;
         this.activeInputColorMetadata = null;
@@ -1735,6 +1777,9 @@ export default class WebGPUPresenter {
         this.colorConfigurationRevision += 1;
         this.sessionActive = false;
         this.automaticInputPeakNits = true;
+        this.peakDetectionEnabled = false;
+        this.framePeakDetection = false;
+        this.peakDetectionEpoch += 1;
         this.activeDolbyVisionProfile = null;
         this.activeDolbyVisionFELReconstruction = false;
         this.activeInputColorMetadata = null;
@@ -1761,6 +1806,8 @@ export default class WebGPUPresenter {
         this.device = null;
         this.releaseExecutor();
         this.releaseBlackBarReadbacks();
+        this.peakDetectionReadback?.buffer.destroy();
+        this.peakDetectionReadback = null;
         this.canvasFormat = null;
         this.configuredDevice = null;
         this.configuredOutput = null;
@@ -2160,6 +2207,8 @@ export default class WebGPUPresenter {
             this.videoFieldFacts = configuration.videoFields ?? UNKNOWN_VIDEO_STREAM_FIELDS;
         });
         this.streamFrameRate = configuration.frameRate ?? null;
+        // The route's executor measures the peak from its first frame while the settings ask for it
+        this.setPeakDetectionEnabled(isPeakDetectionEnabled(preparedPipeline.settings, configuration.automaticInputPeakNits ?? true));
         const installFailure = await this.installPreparedExecutor(preparedPipeline, pendingConfiguration);
         if (!this.isColorConfigurationCurrent(pendingConfiguration)) {
             return false;
@@ -2257,8 +2306,13 @@ export default class WebGPUPresenter {
         return { frameSettings: masteringFrameSettings, source: null };
     }
 
-    /** Writes a frame's dynamic tone mapping into the render settings uniform, or the static settings back after frames that had some. */
+    /**
+     * Writes a frame's dynamic tone mapping into the render settings uniform, or the static settings back after frames that had some.
+     * A frame without scene statistics runs the plan's peak detection while it is on, whose reduction writes the uniform on the GPU instead, so it
+     * needs no write unless the uniform holds an earlier frame's metadata, which the detection's scene statistics mode never reads.
+     */
     private applyDynamicHDRFrameMetadata(decodedFrame: DecodedPresentationFrame, generation: number): boolean {
+        this.framePeakDetection = false;
         if (!this.isCurrent(generation) || this.settings.mode !== 'hdr-to-sdr') {
             return true;
         }
@@ -2267,14 +2321,16 @@ export default class WebGPUPresenter {
         this.telemetry.lastHDR10PlusMetadataStatus = HDR10PlusStatus;
 
         const { frameSettings, source } = this.resolveDynamicFrameSettings(decodedFrame, settings);
-        if (frameSettings || this.dynamicHDRSettingsActive) {
+        const measures = source === null && this.peakDetectionEnabled && this.executorPlan?.peakDetection != null;
+        if (frameSettings !== null || (this.dynamicHDRSettingsActive && !measures)) {
             const writeFailure = this.writeRenderSettingsUniform(settings, frameSettings);
             if (writeFailure !== null) {
                 this.fallback(generation, 'frame-render-failed', writeFailure);
                 return false;
             }
-            this.dynamicHDRSettingsActive = frameSettings !== null;
         }
+        this.dynamicHDRSettingsActive = frameSettings !== null || measures;
+        this.framePeakDetection = measures;
         switch (source) {
             case 'dolby-vision-level1':
                 this.telemetry.appliedDolbyVisionLevel1FrameCount += 1;
@@ -2286,14 +2342,44 @@ export default class WebGPUPresenter {
                 }
                 break;
             case null:
-                this.telemetry.staticToneMappedFrameCount += 1;
+                if (measures) {
+                    this.telemetry.appliedPeakDetectionFrameCount += 1;
+                } else {
+                    this.telemetry.staticToneMappedFrameCount += 1;
+                }
                 break;
+        }
+        if (!measures) {
+            this.clearDetectedPeakTelemetry();
         }
         this.telemetry.lastDynamicInputPeakNits = source === null ? null : frameSettings?.inputPeakNits ?? null;
         return true;
     }
 
-    /** Updates live HDR controls through uniforms without rebuilding the shader. */
+    /** Sets whether plans of PQ routes run the peak detection; a change builds a new plan, which starts the detection over. */
+    private setPeakDetectionEnabled(enabled: boolean): void {
+        if (enabled === this.peakDetectionEnabled) {
+            return;
+        }
+        this.peakDetectionEnabled = enabled;
+        this.planRevision += 1;
+    }
+
+    /** Forgets the detected peak telemetry shows, and any state still reading back, once frames tone-map from something else. */
+    private clearDetectedPeakTelemetry(): void {
+        if (this.telemetry.detectedPeakNits === null && this.peakDetectionReadback?.pending !== true) {
+            return;
+        }
+        this.peakDetectionEpoch += 1;
+        this.telemetry.detectedAverageNits = null;
+        this.telemetry.detectedPeakNits = null;
+    }
+
+    /**
+     * Updates live HDR controls through uniforms without rebuilding the shader.
+     * A change of whether frames tone-map from the peak detection, its setting or the automatic input peak, builds a plan with or without it,
+     * while the current executor presents with the static settings.
+     */
     updateRenderSettings(
         settings: HDRToSDRRenderSettings,
         generation: number,
@@ -2321,6 +2407,11 @@ export default class WebGPUPresenter {
 
         this.settings = cloneRenderSettings(settings);
         this.automaticInputPeakNits = automaticInputPeakNits;
+        const peakDetectionEnabled = isPeakDetectionEnabled(settings, automaticInputPeakNits);
+        if (peakDetectionEnabled !== this.peakDetectionEnabled) {
+            this.setPeakDetectionEnabled(peakDetectionEnabled);
+            void this.applyPlanInputs();
+        }
         this.requestDecodedPresentationRefresh(generation);
         return true;
     }
@@ -3574,7 +3665,7 @@ export default class WebGPUPresenter {
 
     /**
      * Returns the plan request of the route's chain and the planned preset passes: the canvas output, HDR while HDR output is active, the black bar
-     * analysis while the crop is on, and the best-known facts.
+     * analysis while the crop is on, the peak detection while it applies to the route, and the best-known facts.
      * Display-rate passes plan while frames come from the frame loop, which draws between them.
      */
     private createPlanRequest(device: GPUDevice, canvasFormat: GPUTextureFormat, presetPasses: readonly PresetPass[]): PlanRequest {
@@ -3593,8 +3684,34 @@ export default class WebGPUPresenter {
             facts: this.getPlanFacts(hdrOutput),
             output: createPlannedOutput(hdrOutput, canvasFormat),
             parameterValues: getPlannedParameterValues(presetPasses),
-            passes: getPlannedManifests(presetPasses)
+            passes: getPlannedManifests(presetPasses),
+            peakDetection: this.getPeakDetectionRequest()
         };
+    }
+
+    /**
+     * Returns the peak detection of the route's plans while it is on: a route that tone-maps PQ, through its primaries' luminance coefficients, and a
+     * Dolby Vision route, which reconstructs BT.2020 PQ; null for any other route.
+     */
+    private getPeakDetectionRequest(): PeakDetectionRequest | null {
+        if (!this.peakDetectionEnabled) {
+            return null;
+        }
+        const configuration = this.desiredChainConfiguration;
+        switch (configuration.route) {
+            case 'external-dolby-vision':
+            case 'frame-pool-dolby-vision':
+            case 'raw-dolby-vision':
+                return DOLBY_VISION_PEAK_DETECTION;
+            case 'external-hdr':
+            case 'frame-pool':
+            case 'raw-yuv':
+                return configuration.settings.mode === 'hdr-to-sdr' && configuration.metadata.transfer === 'pq' ?
+                    { luminanceCoefficients: getLuminanceCoefficients(configuration.metadata.primaries) } :
+                    null;
+            case 'external-identity':
+                return null;
+        }
     }
 
     /** Returns whether plans present on the HDR canvas: the host selected HDR output and the route reads an HDR signal. */
@@ -3626,8 +3743,8 @@ export default class WebGPUPresenter {
     }
 
     /**
-     * Swaps in a new executor: it takes over the render settings, the external route's levels, and its preset's parameter values, the old one is
-     * destroyed, and an attached canvas is configured for its output.
+     * Swaps in a new executor: it takes over the render settings, the external route's levels, its preset's parameter values, and the old one's
+     * smoothed peak detection state, the old one is destroyed, and an attached canvas is configured for its output.
      * A canvas that cannot take the new output falls the session back.
      */
     private installExecutor(build: BuiltExecutor, revision: number): void {
@@ -3646,7 +3763,10 @@ export default class WebGPUPresenter {
             executor.writeExternalFrameCalibration(this.externalFrameCalibration);
         }
         applyParameterValues(executor, build.plan, build.presetPasses);
-        previousExecutor?.destroy();
+        if (previousExecutor) {
+            executor.adoptPeakDetectionState(previousExecutor);
+            previousExecutor.destroy();
+        }
         // The installed plan's texture blocks and the current preset's stay; a replaced preset's are released
         const retainedTextures = new Set<string>(collectPassTextures(getPlannedManifests(this.presetPasses)).keys());
         for (const texture of build.plan.passTextures) {
@@ -4230,6 +4350,8 @@ export default class WebGPUPresenter {
      * A plan that deinterlaces takes the frame into its history, and shows the field of the held frame the frame's target time reaches;
      * a display-rate plan takes it as its history's newest frame, and draws it at its target time.
      * While the black bar crop is on, a new frame's statistics read back for the detector once the GPU wrote them.
+     * A frame whose metadata left it to the peak detection runs the plan's detection, and its smoothed state reads back for telemetry unless an
+     * earlier frame's still maps.
      */
     private submitFrame(
         source: PresentationFrameSource,
@@ -4260,10 +4382,14 @@ export default class WebGPUPresenter {
         }
         const draw = this.prepareFrameDraw(source, timing);
         const analysis = timing.newFrame ? this.requestBlackBarAnalysis(device, source) : null;
+        const peakDetection = this.framePeakDetection && this.executorPlan?.peakDetection != null;
+        const peakDetectionReadback = peakDetection ? this.requestPeakDetectionReadback(device) : null;
         const submission = this.encodeSubmission(device, canvasContext, executor, layout, {
             blackBarReadback: analysis?.readback.buffer ?? null,
             fieldState: draw.fieldState,
             newFrame: timing.newFrame,
+            peakDetection,
+            peakDetectionReadback: peakDetectionReadback?.buffer ?? null,
             presentedTimeMicroseconds: draw.presentedTimeMicroseconds,
             source,
             targetTimeMicroseconds: timing.targetTimeMicroseconds ?? timing.timestampMicroseconds,
@@ -4271,6 +4397,9 @@ export default class WebGPUPresenter {
         });
         if (analysis !== null) {
             this.readBlackBarStatistics(device, analysis, timing.timestampMicroseconds);
+        }
+        if (peakDetectionReadback !== null) {
+            this.readPeakDetectionState(peakDetectionReadback);
         }
         return submission;
     }
@@ -4333,7 +4462,10 @@ export default class WebGPUPresenter {
         canvasContext: GPUCanvasContext,
         executor: PresentationExecutor,
         layout: CachedPresentationLayout,
-        frame: Pick<PresentationFrameInput, 'blackBarReadback' | 'fieldState' | 'newFrame' | 'source' | 'targetTimeMicroseconds' | 'timestampMicroseconds'>
+        frame: Pick<
+            PresentationFrameInput,
+            'blackBarReadback' | 'fieldState' | 'newFrame' | 'peakDetection' | 'peakDetectionReadback' | 'source' | 'targetTimeMicroseconds' | 'timestampMicroseconds'
+        >
             & Pick<PresentationDraw, 'presentedTimeMicroseconds'>
     ): FrameSubmission {
         const validateSubmission = !this.submissionValidated;
@@ -4349,6 +4481,8 @@ export default class WebGPUPresenter {
                 frameDurationMicroseconds: this.frameInterval.getIntervalMicroseconds(),
                 geometry: layout.presentation,
                 newFrame: frame.newFrame,
+                peakDetection: frame.peakDetection,
+                peakDetectionReadback: frame.peakDetectionReadback,
                 refreshMicroseconds: this.getRefreshMicroseconds(),
                 skippedFrameCount: 0,
                 source: frame.source,
@@ -4371,7 +4505,10 @@ export default class WebGPUPresenter {
         };
     }
 
-    /** Records a draw from history alone at a clock time, at the last frame's layout; returns null while the surface has no layout box. */
+    /**
+     * Records a draw from history alone at a clock time, at the last frame's layout; returns null while the surface has no layout box.
+     * While frames tone-map from the peak detection, the draw writes its smoothed state into the render settings again without measuring.
+     */
     private submitHistoryDraw(draw: PresentationDraw, clockMicroseconds: number): FrameSubmission | null {
         const surface = this.surface;
         const canvas = this.canvas;
@@ -4390,6 +4527,8 @@ export default class WebGPUPresenter {
             blackBarReadback: null,
             fieldState: draw.fieldState,
             newFrame: false,
+            peakDetection: this.framePeakDetection && this.executorPlan?.peakDetection != null,
+            peakDetectionReadback: null,
             presentedTimeMicroseconds: draw.presentedTimeMicroseconds,
             source: null,
             targetTimeMicroseconds: clockMicroseconds,
@@ -4896,6 +5035,44 @@ export default class WebGPUPresenter {
         }
         this.blackBarReadbacks = [];
         this.blackBarReadbackDevice = null;
+    }
+
+    /** Returns the idle readback a measured frame's smoothed state copies into, made on the frame's device; null while it still maps an earlier frame's. */
+    private requestPeakDetectionReadback(device: GPUDevice): PeakDetectionReadback | null {
+        if (this.peakDetectionReadback?.device !== device) {
+            this.peakDetectionReadback?.buffer.destroy();
+            this.peakDetectionReadback = {
+                buffer: device.createBuffer({
+                    label: PEAK_DETECTION_READBACK_LABEL,
+                    size: PEAK_DETECTION_STATE_BYTE_LENGTH,
+                    usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ
+                }),
+                device,
+                pending: false
+            };
+        }
+        return this.peakDetectionReadback.pending ? null : this.peakDetectionReadback;
+    }
+
+    /** Maps a measured frame's smoothed state once the GPU wrote it, and shows its scene average and peak in telemetry unless frames stopped measuring since. */
+    private readPeakDetectionState(readback: PeakDetectionReadback): void {
+        const epoch = this.peakDetectionEpoch;
+        readback.pending = true;
+        void waitForGPUCompletion(readback.device, readback.buffer.mapAsync(GPUMapMode.READ)).then((): void => {
+            try {
+                if (epoch === this.peakDetectionEpoch) {
+                    const state = new Float32Array(readback.buffer.getMappedRange());
+                    this.telemetry.detectedAverageNits = applyPQEOTF(state[PEAK_DETECTION_STATE_AVERAGE_PQ_INDEX]);
+                    this.telemetry.detectedPeakNits = applyPQEOTF(state[PEAK_DETECTION_STATE_PEAK_PQ_INDEX]);
+                }
+            } finally {
+                readback.buffer.unmap();
+                readback.pending = false;
+            }
+        }, (): void => {
+            // A lost device or a released readback maps nothing
+            readback.pending = false;
+        });
     }
 
     private recordPresentedFrame(

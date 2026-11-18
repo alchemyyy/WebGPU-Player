@@ -64,6 +64,7 @@ export function createPresentationPlan(overrides: Partial<PresentationPlan> & Pi
         output: TEST_CANVAS_OUTPUT,
         parameterSets: [],
         passTextures: [],
+        peakDetection: null,
         report: { activePasses: [], inactivePasses: [] },
         sourceKind: 'planes',
         textures: [],

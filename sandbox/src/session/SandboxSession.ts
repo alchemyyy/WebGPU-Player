@@ -172,14 +172,19 @@ function isPageVisible(): boolean {
     return !(typeof document !== 'undefined' && document.visibilityState === HIDDEN_DOCUMENT_STATE);
 }
 
-/** Returns the HDR settings that follow a stream's detected peak, with paper white no brighter than the peak. */
-function createAutomaticRenderSettings(detectedInputPeakNits: number): HDRToSDRRenderSettings {
+/** Returns the HDR settings that follow a stream's detected peak, with paper white no brighter than the peak, and the peak detection choice. */
+function createAutomaticRenderSettings(detectedInputPeakNits: number, peakDetection: boolean): HDRToSDRRenderSettings {
     const defaults = createHDRToSDRRenderSettings();
     const range = HDR_RENDER_SETTING_RANGES.inputPeakNits;
     const inputPeakNits = Math.min(Math.max(detectedInputPeakNits, range.minimum), range.maximum);
     return createHDRToSDRRenderSettings({
-        toneMapping: { inputPeakNits, paperWhiteNits: Math.min(defaults.toneMapping.paperWhiteNits, inputPeakNits) }
+        toneMapping: { inputPeakNits, paperWhiteNits: Math.min(defaults.toneMapping.paperWhiteNits, inputPeakNits), peakDetection }
     });
+}
+
+/** Returns settings with peak detection on or off. */
+function withPeakDetection(settings: HDRToSDRRenderSettings, peakDetection: boolean): HDRToSDRRenderSettings {
+    return { ...settings, toneMapping: { ...settings.toneMapping, peakDetection } };
 }
 
 /** Describes a preset file for the shader panel: each of its passes, with its manifest when its header parses, else its header failure. */
@@ -269,6 +274,8 @@ export function createSandboxSession(options: SandboxSessionOptions): SandboxSes
     let files: SandboxShaderFile[] = [];
     // The tone mapping panel's settings, which replace the automatic ones until media changes
     let renderSettingsOverride: HDRToSDRRenderSettings | null = null;
+    // The peak detection choice, which outlives media; it applies only while the input peak follows the stream's
+    let peakDetection = true;
     let telemetryTimer: ReturnType<typeof globalThis.setInterval> | null = null;
 
     const getTool = (): FFmpegTool => {
@@ -323,7 +330,7 @@ export function createSandboxSession(options: SandboxSessionOptions): SandboxSes
 
     const createHDRRenderConfiguration = (detectedInputPeakNits: number): HDRRenderConfiguration => (
         renderSettingsOverride === null ?
-            { automaticInputPeakNits: true, settings: createAutomaticRenderSettings(detectedInputPeakNits) } :
+            { automaticInputPeakNits: true, settings: createAutomaticRenderSettings(detectedInputPeakNits, peakDetection) } :
             { automaticInputPeakNits: false, settings: renderSettingsOverride }
     );
 
@@ -932,6 +939,18 @@ export function createSandboxSession(options: SandboxSessionOptions): SandboxSes
             // Without an HDR route presenting, the settings wait for the next one
             renderSettingsOverride = settings;
             presenter.updateRenderSettings(settings, presentationGeneration, false);
+            store.setState((state: SandboxState): Partial<SandboxState> => ({ presentation: { ...state.presentation, renderSettings: presenter.getRenderSettings() } }));
+        },
+        setPeakDetectionEnabled: (enabled: boolean): void => {
+            // The detection measures the peak the input peak would follow, so the choice keeps an automatic input peak automatic
+            peakDetection = enabled;
+            if (renderSettingsOverride !== null) {
+                renderSettingsOverride = withPeakDetection(renderSettingsOverride, enabled);
+            }
+            const current = presenter.getRenderSettings();
+            if (current.mode === 'hdr-to-sdr') {
+                presenter.updateRenderSettings(withPeakDetection(current, enabled), presentationGeneration, renderSettingsOverride === null);
+            }
             store.setState((state: SandboxState): Partial<SandboxState> => ({ presentation: { ...state.presentation, renderSettings: presenter.getRenderSettings() } }));
         },
         setAudioOutputSettings: (settings: AudioOutputSettings): Promise<void> => {

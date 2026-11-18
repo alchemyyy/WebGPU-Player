@@ -149,10 +149,13 @@ export function createPresenterTelemetry(overrides: Partial<PresentationTelemetr
     return {
         appliedDolbyVisionLevel1FrameCount: 0,
         appliedHDR10PlusFrameCount: 0,
+        appliedPeakDetectionFrameCount: 0,
         blackBarAspectRatio: null,
         blackBarCrop: null,
         carriedHDR10PlusFrameCount: 0,
         decodedFrameCount: 0,
+        detectedAverageNits: null,
+        detectedPeakNits: null,
         deviceRecoveryCount: 0,
         dolbyVisionDualLayerFELBaseFallbackPresentedFrameCount: 0,
         dolbyVisionDualLayerFELPresentedFrameCount: 0,

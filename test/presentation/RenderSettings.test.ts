@@ -64,6 +64,9 @@ describe('RenderSettings', () => {
             contrast: 1,
             saturation: 1
         });
+        // Peak detection is on by default, as mpv's --hdr-compute-peak=auto is
+        expect(defaultSettings.toneMapping.peakDetection).toBe(true);
+        expect(createHDRToSDRRenderSettings({ toneMapping: { peakDetection: false } }).toneMapping.peakDetection).toBe(false);
     });
 
     it('rejects invalid HDR luminance and desaturation settings', () => {
@@ -88,6 +91,9 @@ describe('RenderSettings', () => {
         expect(() => createHDRToSDRRenderSettings({
             toneMapping: { desaturationStrength: 1.1 }
         })).toThrow('desaturationStrength: 1.1 outside [0, 1]');
+        expect(() => createHDRToSDRRenderSettings({
+            toneMapping: { peakDetection: 'yes' as unknown as boolean }
+        })).toThrow('peakDetection: yes is not boolean');
         expect(() => createHDRToSDRRenderSettings({
             display: { brightness: 1.1 }
         })).toThrow('brightness: 1.1 outside [-1, 1]');

@@ -1,6 +1,7 @@
 // The contracts shared by the pass manifest, the built-in passes, the planner, the executor, and the GPU decode route.
 // The Presentation section of docs/src/architecture.md and docs/src/new-pass.md describe them.
 import type { InputColorMetadata } from '../../color/ColorMetadata';
+import type { RGBCoefficients } from '../../color/ColorPipeline';
 import type { ChromaLocation, ChromaSubsampling } from '../../demux/VideoChromaFormat';
 import type {
     RawDolbyVisionVideoFrameFormat,
@@ -173,6 +174,7 @@ export type EngineResource =
     | 'planes-nv12'
     | 'planes-yuv'
     | 'render-settings'
+    | 'render-settings-storage'
     | 'sampler-linear';
 
 /** One engine-owned binding, with a fixed WGSL variable name in PassResources. */
@@ -191,6 +193,7 @@ export type EngineBindingResource =
     | 'plane-chroma-v'
     | 'plane-luma'
     | 'render-settings'
+    | 'render-settings-storage'
     | 'sampler-linear';
 
 export type PresentationSourceKind = 'external' | 'frame-pool' | 'planes';
@@ -405,6 +408,14 @@ export type DeinterlaceRequest = {
     frameWidth: number
 };
 
+/**
+ * The HDR peak detection a plan places before every other pass, over the route's signal, which must read PQ 'source' RGB.
+ * It measures the luminance through the source primaries' coefficients.
+ */
+export type PeakDetectionRequest = {
+    luminanceCoefficients: RGBCoefficients
+};
+
 export type PlanRequest = {
     /** Whether the plan analyzes the frames' black bars, through a compute pass over the signal whose statistics the presenter reads back; absent is false */
     blackBarAnalysis?: boolean
@@ -426,6 +437,8 @@ export type PlanRequest = {
     parameterValues?: ReadonlyMap<string, ReadonlyMap<string, number>>
     /** User passes in preset order. */
     passes: readonly PassManifest[]
+    /** The HDR peak detection, or absent or null for none */
+    peakDetection?: PeakDetectionRequest | null
 };
 
 export type PlannedTexture = {
@@ -565,6 +578,17 @@ export type PlannedBlackBarAnalysis = {
     passIndex: number
 };
 
+/**
+ * A plan's HDR peak detection: its measurement and reduction passes, which run only for a frame that asks for them, before the frame's passes;
+ * the accumulation buffer each frame's measurement starts from zero, and the state buffer the reduction keeps across frames.
+ */
+export type PlannedPeakDetection = {
+    accumulationBufferId: string
+    measurePassIndex: number
+    reducePassIndex: number
+    stateBufferId: string
+};
+
 /** An immutable plan: passes in execution order and the resources they use. */
 export type PresentationPlan = {
     /** The black bar analysis the plan placed, or null for none */
@@ -584,6 +608,8 @@ export type PresentationPlan = {
     /** The texture blocks the passes bind, each once by identity */
     passTextures: readonly PlannedPassTexture[]
     passes: readonly PlannedPass[]
+    /** The HDR peak detection the plan placed, or null for none */
+    peakDetection: PlannedPeakDetection | null
     report: PlanReport
     sourceKind: PresentationSourceKind
     textures: readonly PlannedTexture[]
@@ -630,6 +656,15 @@ export type PresentationFrameInput = {
     geometry: TexturePresentationGeometry
     /** True advances history; false redraws the same frame. */
     newFrame: boolean
+    /**
+     * Whether the frame tone-maps from the plan's HDR peak detection, whose reduction writes the smoothed scene peak and average into the render
+     * settings its tone mapping reads; only a plan with the detection may ask. A new frame, or the first frame with a source since the state
+     * started over, measures its source and updates the smoothed state; any other draw, a redraw or a draw from history, measures nothing and
+     * writes the state its last measured frame left, so a paused frame keeps its tone mapping whatever the CPU wrote into the settings since.
+     */
+    peakDetection: boolean
+    /** The buffer the frame's smoothed peak detection state copies into, at offset 0, or null for none; MAP_READ and COPY_DST usage, PEAK_DETECTION_STATE_BYTE_LENGTH bytes. */
+    peakDetectionReadback: GPUBuffer | null
     /** The media time one display refresh covers: the refresh interval times the clock's rate; 0 while the display is unmeasured or the clock stands still. */
     refreshMicroseconds: number
     /** Frames dropped since the previous new frame. */

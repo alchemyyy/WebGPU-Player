@@ -16,6 +16,13 @@ import type {
 } from 'webgpu-player/presentation/passes/PassTypes';
 import { planPresentation } from 'webgpu-player/presentation/passes/PresentationPlanner';
 import { BLACK_BAR_STATISTICS_BYTE_LENGTH } from 'webgpu-player/presentation/passes/builtin/BlackBarAnalysisPass';
+import {
+    createPeakDetectionMeasureWGSL,
+    createPeakDetectionReduceWGSL,
+    PEAK_DETECTION_ACCUMULATION_BYTE_LENGTH,
+    PEAK_DETECTION_STATE_BYTE_LENGTH
+} from 'webgpu-player/presentation/passes/builtin/PeakDetectionPass';
+import { getLuminanceCoefficients } from 'webgpu-player/color/ColorPipeline';
 import { DEFAULT_MAXIMUM_TEXTURE_DIMENSION_3D } from 'webgpu-player/presentation/WebGPUConstants';
 import { createDefaultRenderSettings, createHDRToSDRRenderSettings } from 'webgpu-player/presentation/RenderSettings';
 
@@ -223,6 +230,60 @@ describe('planPresentation without user passes', () => {
         // The frame's own passes are the plan's without the analysis
         expect(presentationPlan.passes.slice(0, -1)).toEqual(planPresentation(request).passes);
         expect(planPresentation(request).blackBarAnalysis).toBeNull();
+    });
+
+    it('places the peak detection first when asked: a measurement over the presented source, then a reduction that writes the render settings', () => {
+        const request: PlanRequest = {
+            chain: createHDRChain(),
+            device: { features: new Set<string>(), maximumTextureDimension: MAXIMUM_TEXTURE_DIMENSION },
+            facts: createFacts(),
+            output: SDR_OUTPUT,
+            passes: [ createKernelPass({ domain: 'sdr', name: 'Sharpen' }) ]
+        };
+        const luminanceCoefficients = getLuminanceCoefficients('bt2020');
+        const presentationPlan = planPresentation({ ...request, peakDetection: { luminanceCoefficients } });
+        const [ measurePass, reducePass ] = presentationPlan.passes;
+
+        expect(presentationPlan.peakDetection).toEqual({
+            accumulationBufferId: 'peak-accumulation',
+            measurePassIndex: 0,
+            reducePassIndex: 1,
+            stateBufferId: 'peak-state'
+        });
+        // The accumulation starts every measured frame from zero, and the smoothed state outlives frames
+        expect(presentationPlan.buffers).toEqual([
+            { byteLength: PEAK_DETECTION_ACCUMULATION_BYTE_LENGTH, id: 'peak-accumulation', indirect: false, persistent: false },
+            { byteLength: PEAK_DETECTION_STATE_BYTE_LENGTH, id: 'peak-state', indirect: false, persistent: true }
+        ]);
+        // The measurement reads the signal through the output's object-fit mapping, so it measures the region that presents
+        expect(measurePass).toMatchObject({
+            coordinateMapping: 'object-fit',
+            inputTextureId: null,
+            kind: 'compute',
+            label: 'Presentation peak detection',
+            target: null,
+            workgroupCounts: null
+        });
+        expect(measurePass.bindings).toEqual([
+            { binding: 0, kind: 'presentation' },
+            { binding: 1, kind: 'engine', resource: 'plane-luma' },
+            { binding: 2, kind: 'engine', resource: 'plane-chroma-u' },
+            { binding: 3, kind: 'engine', resource: 'plane-chroma-v' },
+            { access: 'storage', binding: 4, bufferId: 'peak-accumulation', kind: 'buffer' }
+        ]);
+        expect(measurePass.code).toContain(createPeakDetectionMeasureWGSL(SIGNAL_ENTRY_POINT, luminanceCoefficients));
+        expect(reducePass).toMatchObject({ coordinateMapping: 'identity', kind: 'compute', label: 'Presentation peak reduction', workgroupCounts: [ 1, 1, 1 ] });
+        expect(reducePass.bindings).toEqual([
+            { binding: 0, kind: 'presentation' },
+            { binding: 1, kind: 'engine', resource: 'render-settings-storage' },
+            { access: 'read-only-storage', binding: 2, bufferId: 'peak-accumulation', kind: 'buffer' },
+            { access: 'storage', binding: 3, bufferId: 'peak-state', kind: 'buffer' }
+        ]);
+        expect(reducePass.code).toContain('@group(0) @binding(1) var<storage, read_write> writableRenderSettings: RenderSettingsUniforms;');
+        expect(reducePass.code).toContain(createPeakDetectionReduceWGSL());
+        // The frame's own passes are the plan's without the detection
+        expect(presentationPlan.passes.slice(2)).toEqual(planPresentation(request).passes);
+        expect(planPresentation(request).peakDetection).toBeNull();
     });
 
     it('guards every step with the Profile 4 bypass in the pass that reads the signal', () => {

@@ -21,6 +21,7 @@ Each source file's tests are at the same relative path under `test/`, and integr
   While a plan deinterlaces it shows the frame before the newest, tells the frame loop its lookahead, and draws held fields from history.
   While a plan holds a display-rate pass it measures the display's refresh rate from the frame loop's animation frames, takes frames one refresh ahead, and redraws from history at each tick's clock time.
   While the black bar crop is on it reads back each new frame's black bar statistics and fits the picture the detector's bars leave, rounded to a standard aspect ratio near it.
+  While peak detection applies to a PQ route it plans the detection, lets each frame without HDR10+ or L1 tone-map from it, and reads the smoothed state back for telemetry.
 - `BlackBarDetector.ts`: the black bars a presentation crops, decided frame by frame from the black bar analysis's statistics: symmetric bars per axis, cropped at once for a letterbox or a pillarbox and else once two shots agree, given up at once for picture inside them, and cropped again only after 30 s of playback.
 - `StandardAspectRatios.ts`: the film and television aspect ratios of the Detect Aspect Ratio plugin, and the rounding of a black bar crop to the nearest one its bars reach by cutting at most 0.5% of the picture or showing at most a line of bar.
 - `DisplayRefresh.ts`: the display's refresh interval, a least-squares fit of animation frame times over refresh counts, reported once it is precise and restarted when the display changes.
@@ -30,7 +31,7 @@ Each source file's tests are at the same relative path under `test/`, and integr
 - `DolbyVisionGeometry.ts`: the P4 and P7 EL coded size (half the BL when the BL is wider than 1920).
 - `PresentationSetup.ts`: what a host calls around the eligibility, without state of its own: the play options' presentation input, the authorizations that gate the eligibility's presentation routes, the offers of the host's GPU decoder packages for a stream (`getGPUVideoDecoderOffers`) and the factory of their sessions on the presenter's device, the presenter's color pipeline for the chosen route, Dolby Vision bases included, and static HDR metadata updates.
 - `PresentationGeometry.ts`: pure object-fit and object-position math to viewport and texture transforms, fitting a crop of the source, the black bar crop's, as the whole object, and, from the same fit, the rectangles of the whole source frame and of the picture that shows.
-- `RenderSettings.ts`: versioned (v7) HDR-to-SDR settings, the four tone map operators, and their 144-byte uniform, with the dynamic fields of HDR10+ and Dolby Vision L1.
+- `RenderSettings.ts`: versioned (v7) HDR-to-SDR settings, the four tone map operators, the peak detection switch, and their 144-byte uniform, with the dynamic fields of HDR10+, Dolby Vision L1, and the peak detection.
 - `WebGPUConstants.ts`: the WebGPU values presentation and GPU decode share: canvas configuration, texture formats, features, and default limits.
 
 ### presentation/passes/
@@ -46,14 +47,15 @@ The presentation pipeline: each route's fixed signal and default color track, us
 - `PassPrelude.ts`: the WGSL around pass code: input accessors, each with its input's plan-time offset, texture block accessors, constants, the prelude's linear light and planes transform, entry stages, and the renaming that keeps each user body's names apart.
 - `PresentationPlanner.ts`: arranges a route's built-in chain and the user passes on the stage spine and the color track, then generates each pass's module.
   A pass that cannot run is left out with a reason code and a terse detail.
-  Without user passes every route plans one pass, which reads the source and writes the canvas.
+  Without user passes every route plans one pass, which reads the source and writes the canvas, besides the compute passes of the black bar analysis and the peak detection while they apply.
   It reads the signal's planes apart for plane passes, from the source or a deinterlaced image, merges and converts the planes they replace, and gives every image its offset and extent, which the scaler corrects.
 - `PresentationExecutor.ts`: compiles a plan, owns its textures, history rings, buffers, and bind groups, binds the caller's uploads of its texture blocks, and records each frame without submitting; a draw from history records the passes from the plan's history draw start on, except those that read the source.
   It runs a plan's black bar analysis only for a frame with a readback buffer, a workgroup per row and column of the frame's source, and copies its statistics into that buffer.
+  It runs a plan's peak detection before the frame's passes for a frame that asks for it, measuring only a new frame or the first since a history reset, and hands its smoothed state to the executor that replaces it.
 - `PresentationPipelineCache.ts`: the passes each device keeps compiled, a bounded least recently used cache keyed by WGSL, bind group layout, and target format, which the executor compiles through.
 - `PassTextureCache.ts`: the uploads of texture blocks on one device by content identity, made when a plan first binds a block and released when no plan or preset holds it.
 - `PlaneTextureSource.ts`: the plane route's ingress: layout validation that names the failed check, one integer texture per plane, and the uploads.
-- `builtin/`: the built-in signals (`BuiltinSignals.ts`, `FramePoolSignal.ts`, which reads a pool slot of any output format, as its layout says, for the frame-pool route's chain, and `FramePoolDolbyVisionSignal.ts`, the raw Dolby Vision reconstruction over that read), color functions (`BuiltinColorFunctions.ts`), and route chains (`BuiltinChains.ts`), the deinterlacing pass (`DeinterlacePass.ts`, yadif over the signal's ring), and the black bar analysis (`BlackBarAnalysisPass.ts`, a compute pass over the signal that writes how many of 64 points along each row and column are lit and bright, and the sum of their signed luma).
+- `builtin/`: the built-in signals (`BuiltinSignals.ts`, `FramePoolSignal.ts`, which reads a pool slot of any output format, as its layout says, for the frame-pool route's chain, and `FramePoolDolbyVisionSignal.ts`, the raw Dolby Vision reconstruction over that read), color functions (`BuiltinColorFunctions.ts`), and route chains (`BuiltinChains.ts`), the deinterlacing pass (`DeinterlacePass.ts`, yadif over the signal's ring), the black bar analysis (`BlackBarAnalysisPass.ts`, a compute pass over the signal that writes how many of 64 points along each row and column are lit and bright, and the sum of their signed luma), and the HDR peak detection (`PeakDetectionPass.ts`, libplacebo's measurement over the presented region of the signal and its reduction, which smooths the scene peak and average and writes them into the render settings).
   A deinterlacing plan's raw and frame pool signals read an interlaced frame's 4:2:0 chroma within each field.
   Every signal reads 4:2:0 chroma at the stream's declared location, left where it declares none.
   Each signal offers its planes to plane passes: the raw and frame pool signals their decoded planes, with chroma's siting, range, and matrix, the external signals planes derived from RGB through the stream's own matrix and range at its chroma subsampling, and the Dolby Vision signals none.
@@ -343,6 +345,7 @@ The authorization vectors are in `capability/vectors/`.
 ## Outside src/
 
 - `test/helpers/enginePaths.ts`: the engine root and the `node_modules` location, independent of the test runner's working directory, and the folders from `tools/constants.json`.
+- `test/helpers/peakDetectionReference.ts`: a CPU reference of the peak detection passes, from libplacebo's `pl_shader_detect_peak`, `measure_peak`, and `update_peak_buf`: the accumulation word by word, its reduction, and the smoothing, in f64 with the passes' fixed-point truncation.
 - `test/helpers/dolbyVisionAV1ITUTT35Payload.ts`, `test/helpers/dolbyVisionMixedRPUVector.ts`: wrap an HEVC RPU in the AV1 EMDF T.35 container, and build RPUs with mixed and linear pieces.
 - `test/helpers/libraryAssets.ts`: the asset build's tables from `scripts/library-assets.mjs`, and a served binary read as bytes from the file the build copies, since tests have no server for its URL.
 - `test/helpers/decoderPackages.ts`: video decoder packages for tests, assembled with the engine's package tool or built in memory, and the decoder projects' sources, vectors, and built packages.

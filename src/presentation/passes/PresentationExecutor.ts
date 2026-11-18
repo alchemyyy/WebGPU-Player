@@ -48,6 +48,7 @@ import type {
     PlannedBuffer,
     PlannedOutput,
     PlannedPass,
+    PlannedPeakDetection,
     PlannedPassTexture,
     PlannedTexture,
     PresentationCompileMessage,
@@ -65,6 +66,7 @@ import {
     uploadPlanes
 } from './PlaneTextureSource';
 import { getBlackBarLineCounts } from './builtin/BlackBarAnalysisPass';
+import { getPeakDetectionWorkgroupCounts, PEAK_DETECTION_STATE_BYTE_LENGTH } from './builtin/PeakDetectionPass';
 import {
     getCompiledPresentationPass,
     type CompiledPresentationPass,
@@ -97,6 +99,7 @@ const DOLBY_VISION_RPU_LABEL = 'Presentation Dolby Vision RPU';
 const ENHANCEMENT_UNIFORM_LABEL = 'Presentation Dolby Vision enhancement uniforms';
 const EXTERNAL_FRAME_CALIBRATION_LABEL = 'Presentation external frame calibration';
 const SAMPLER_LABEL = 'Presentation linear sampler';
+const PEAK_DETECTION_ADOPTION_LABEL = 'Presentation peak detection state adoption';
 const PASS_SAMPLER_LABEL = 'Presentation texture block sampler';
 const BASE_PLANES_LABEL = 'Raw video';
 const ENHANCEMENT_PLANES_LABEL = 'Raw Dolby Vision enhancement';
@@ -143,8 +146,8 @@ type RenderTarget = { kind: 'output' } | { kind: 'ring'; ring: HistoryRing };
 type ComputeDispatch =
     | { indirectBuffer: GPUBuffer; kind: 'indirect' }
     | { kind: 'direct'; workgroupCounts: readonly [number, number, number] }
-    /** A workgroup per row and per column of the frame's source, which the black bar analysis reads */
-    | { kind: 'source-lines' };
+    /** The workgroups the frame's own size needs: a workgroup per row and per column of the source for the black bar analysis, or per 16x16 points of the presented region for the peak detection */
+    | { kind: 'frame' };
 
 type ComputeRecording = { dispatch: ComputeDispatch; kind: 'compute'; pipeline: GPUComputePipeline };
 
@@ -514,6 +517,31 @@ function getRecordedFrameNumber(newFrameCount: number, newFrame: boolean): numbe
     return newFrame ? newFrameCount : Math.max(newFrameCount - 1, 0);
 }
 
+/**
+ * Returns the usage of a planned buffer: storage, a uniform where a pass binds it as one, indirect dispatch arguments, and the copies the frames
+ * take: frames that ask for the black bar analysis copy its statistics out, and frames that run the peak detection clear its accumulation, clear its
+ * smoothed state after a history reset, and copy that state out, which a replacing executor also copies in.
+ */
+function getPlannedBufferUsage(plan: PresentationPlan, buffer: PlannedBuffer, uniformBufferIds: ReadonlySet<string>): GPUBufferUsageFlags {
+    let usage = GPUBufferUsage.STORAGE;
+    if (uniformBufferIds.has(buffer.id)) {
+        usage |= GPUBufferUsage.UNIFORM;
+    }
+    if (buffer.indirect) {
+        usage |= GPUBufferUsage.INDIRECT;
+    }
+    switch (buffer.id) {
+        case plan.blackBarAnalysis?.bufferId:
+            return usage | GPUBufferUsage.COPY_SRC;
+        case plan.peakDetection?.accumulationBufferId:
+            return usage | GPUBufferUsage.COPY_DST;
+        case plan.peakDetection?.stateBufferId:
+            return usage | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST;
+        default:
+            return usage;
+    }
+}
+
 function alignToUniformSlot(byteLength: number): number {
     return Math.ceil(byteLength / UNIFORM_SLOT_BYTE_LENGTH) * UNIFORM_SLOT_BYTE_LENGTH;
 }
@@ -653,7 +681,7 @@ function recordComputePass(
     pass: ExecutorPass,
     recording: ComputeRecording,
     bindGroup: GPUBindGroup,
-    sourceLineCount: number
+    frameWorkgroupCounts: readonly [number, number, number]
 ): void {
     const computePass = commandEncoder.beginComputePass({ label: pass.label });
     computePass.setPipeline(recording.pipeline);
@@ -666,8 +694,8 @@ function recordComputePass(
         case 'indirect':
             computePass.dispatchWorkgroupsIndirect(dispatch.indirectBuffer, INDIRECT_DISPATCH_BYTE_OFFSET);
             break;
-        case 'source-lines':
-            computePass.dispatchWorkgroups(sourceLineCount, 1, 1);
+        case 'frame':
+            computePass.dispatchWorkgroups(frameWorkgroupCounts[0], frameWorkgroupCounts[1], frameWorkgroupCounts[2]);
             break;
     }
     computePass.end();
@@ -718,6 +746,7 @@ export class PresentationExecutor {
     private readonly presentationView: DataView<ArrayBuffer>;
     private readonly presentationWriteByteLength: number;
     private readonly renderSettingsBuffer: GPUBuffer | null;
+    private readonly peakDetection: PlannedPeakDetection | null;
     private readonly rings = new Map<string, HistoryRing>();
     private readonly passSamplers = new Map<string, GPUSampler>();
     private readonly passTextures = new Map<string, PlannedPassTexture>();
@@ -759,6 +788,10 @@ export class PresentationExecutor {
     private uploadedEnhancementFrame: TransferableRawVideoFrame | null = null;
     private uploadedFrame: TransferableRawVideoFrame | null = null;
     private writtenEnhancementPresent: number | null = null;
+    // Whether the next draw that runs the peak detection starts its smoothed state over, as a history reset asks
+    private peakDetectionResetPending = false;
+    // Whether the smoothed state holds a measurement since the last history reset, which a draw without one keeps writing into the settings
+    private peakDetectionMeasured = false;
 
     private constructor(
         device: GPUDevice,
@@ -771,6 +804,7 @@ export class PresentationExecutor {
         this.passTextureViews = passTextureViews;
         this.sourceKind = plan.sourceKind;
         this.blackBarAnalysis = plan.blackBarAnalysis;
+        this.peakDetection = plan.peakDetection;
         for (const texture of plan.passTextures) {
             this.passTextures.set(texture.id, texture);
         }
@@ -791,11 +825,12 @@ export class PresentationExecutor {
             const uniformUsage = GPUBufferUsage.COPY_DST | GPUBufferUsage.UNIFORM;
             this.presentationBuffer = this.createOwnedBuffer(PRESENTATION_UNIFORMS_LABEL, this.presentationView.byteLength, uniformUsage);
             this.parametersBuffer = this.createOptionalBuffer(parameterByteLength > 0, PARAMETERS_LABEL, parameterByteLength, uniformUsage);
+            // The peak reduction writes the detected scene peak and average into the render settings, which it binds as storage
             this.renderSettingsBuffer = this.createOptionalBuffer(
                 plan.usesRenderSettings,
                 RENDER_SETTINGS_LABEL,
                 RENDER_SETTINGS_UNIFORM_BYTE_LENGTH,
-                uniformUsage
+                plan.peakDetection === null ? uniformUsage : uniformUsage | GPUBufferUsage.STORAGE
             );
             this.enhancementBuffer = this.createOptionalBuffer(
                 engineResources.has('enhancement-uniform'),
@@ -953,9 +988,46 @@ export class PresentationExecutor {
         this.device.queue.writeBuffer(this.parametersBuffer, 0, this.parameterView.buffer);
     }
 
-    /** Restarts history: the next new frame writes the first ring slots and sees `historyValid` 0. */
+    /**
+     * Restarts history: the next new frame writes the first ring slots and sees `historyValid` 0, and the peak detection's smoothed state starts
+     * over, so the next measured frame sets it.
+     */
     resetHistory(): void {
         this.historyFrameCount = 0;
+        this.peakDetectionResetPending = true;
+        this.peakDetectionMeasured = false;
+    }
+
+    /**
+     * Takes over the smoothed peak detection state of the executor this one replaces on the same device, as libplacebo keeps its state across
+     * renders until its parameters change or a seek resets it: a plan rebuilt for a resize or a new preset then tone-maps a paused frame as the
+     * replaced plan did. Nothing carries over without a measurement since the replaced executor's last history reset.
+     * Call it before the replaced executor is destroyed; the copy is submitted ahead of this executor's first frame.
+     */
+    adoptPeakDetectionState(previous: PresentationExecutor): void {
+        this.requireUsable();
+        const peakDetection = this.peakDetection;
+        const previousPeakDetection = previous.peakDetection;
+        if (
+            peakDetection === null
+            || previousPeakDetection === null
+            || previous.destroyed
+            || previous.device !== this.device
+            || !previous.peakDetectionMeasured
+        ) {
+            return;
+        }
+        const commandEncoder = this.device.createCommandEncoder({ label: PEAK_DETECTION_ADOPTION_LABEL });
+        commandEncoder.copyBufferToBuffer(
+            previous.requireBuffer(previousPeakDetection.stateBufferId),
+            0,
+            this.requireBuffer(peakDetection.stateBufferId),
+            0,
+            PEAK_DETECTION_STATE_BYTE_LENGTH
+        );
+        this.device.queue.submit([ commandEncoder.finish() ]);
+        this.peakDetectionMeasured = true;
+        this.peakDetectionResetPending = false;
     }
 
     /** Returns whether a frame can draw from history alone: every pass that reads the source writes history that later passes read, none the output. */
@@ -969,23 +1041,24 @@ export class PresentationExecutor {
      * A new frame advances history after recording; a redraw repeats the last new frame's ring slots and history state.
      * A frame without a source redraws the last new frame from history: it skips the passes that read the source, and every pass before
      * the plan's history draw start, whose outputs no draw of that frame changes.
+     * The peak detection runs only for a frame that asks for it, before the frame's passes (see `PresentationFrameInput.peakDetection`).
      * The black bar analysis runs only for a frame with a readback buffer, after the frame's passes, and copies its statistics into that buffer.
      */
     encode(commandEncoder: GPUCommandEncoder, frame: PresentationFrameInput): void {
         this.requireUsable();
         this.requireFrameSource(frame);
+        this.requirePeakDetectionInput(frame);
         const source = frame.source;
         const historyFrameNumber = getRecordedFrameNumber(this.historyFrameCount, frame.newFrame);
         const externalTexture = source === null ? null : this.prepareSource(source, frame.newFrame);
         this.writePresentationUniforms(frame, historyFrameNumber);
+        if (frame.peakDetection) {
+            this.recordPeakDetection(commandEncoder, frame, externalTexture);
+        }
         for (const pass of this.passes) {
-            if (source === null && (pass.bindsSource || pass.index < this.historyDrawStart)) {
-                continue;
+            if (this.isFramePass(pass, frame)) {
+                this.recordPass(commandEncoder, pass, historyFrameNumber % pass.phaseCount, externalTexture, frame);
             }
-            if (pass.index === this.blackBarAnalysis?.passIndex && frame.blackBarReadback === null) {
-                continue;
-            }
-            this.recordPass(commandEncoder, pass, historyFrameNumber % pass.phaseCount, externalTexture, frame);
         }
         if (this.blackBarAnalysis !== null && frame.blackBarReadback !== null) {
             const lines = getBlackBarLineCounts(this.uniformValues.sourceWidth, this.uniformValues.sourceHeight);
@@ -996,6 +1069,66 @@ export class PresentationExecutor {
             this.frameCount += 1;
             this.historyFrameCount += 1;
         }
+    }
+
+    /**
+     * Returns whether a frame records a pass of the plan in order: not the peak detection's, which `recordPeakDetection` records, nor the black
+     * bar analysis without a readback, nor, in a draw from history, a pass that reads the source or comes before the history draw start.
+     */
+    private isFramePass(pass: ExecutorPass, frame: PresentationFrameInput): boolean {
+        if (pass.index === this.peakDetection?.measurePassIndex || pass.index === this.peakDetection?.reducePassIndex) {
+            return false;
+        }
+        if (frame.source === null && (pass.bindsSource || pass.index < this.historyDrawStart)) {
+            return false;
+        }
+        return pass.index !== this.blackBarAnalysis?.passIndex || frame.blackBarReadback !== null;
+    }
+
+    /**
+     * Records the peak detection of a frame that tone-maps from it, from a cleared accumulation: the first draw after a history reset clears the
+     * smoothed state too. A new frame, or the first frame with a source since the state started over, measures its source; any other draw leaves
+     * the accumulation empty, so the reduction keeps the state and only writes it into the render settings again. The smoothed state then copies
+     * into the frame's readback buffer when it has one.
+     */
+    private recordPeakDetection(commandEncoder: GPUCommandEncoder, frame: PresentationFrameInput, externalTexture: GPUExternalTexture | null): void {
+        const peakDetection = this.requirePeakDetection();
+        const stateBuffer = this.requireBuffer(peakDetection.stateBufferId);
+        commandEncoder.clearBuffer(this.requireBuffer(peakDetection.accumulationBufferId));
+        if (this.peakDetectionResetPending) {
+            commandEncoder.clearBuffer(stateBuffer);
+            this.peakDetectionResetPending = false;
+        }
+        if (frame.source !== null && (frame.newFrame || !this.peakDetectionMeasured)) {
+            this.recordPass(commandEncoder, this.passes[peakDetection.measurePassIndex], 0, externalTexture, frame);
+            this.peakDetectionMeasured = true;
+        }
+        this.recordPass(commandEncoder, this.passes[peakDetection.reducePassIndex], 0, null, frame);
+        if (frame.peakDetectionReadback !== null) {
+            commandEncoder.copyBufferToBuffer(stateBuffer, 0, frame.peakDetectionReadback, 0, PEAK_DETECTION_STATE_BYTE_LENGTH);
+        }
+    }
+
+    /** Throws unless a frame that asks for the peak detection has a plan with the detection, and its readback holds the state. */
+    private requirePeakDetectionInput(frame: PresentationFrameInput): void {
+        if (!frame.peakDetection) {
+            if (frame.peakDetectionReadback !== null) {
+                throw new Error('peak-detection: a readback for a frame that measures nothing');
+            }
+            return;
+        }
+        this.requirePeakDetection();
+        const readback = frame.peakDetectionReadback;
+        if (readback !== null && readback.size < PEAK_DETECTION_STATE_BYTE_LENGTH) {
+            throw new RangeError(`peak-detection-readback: ${readback.size} bytes, expected at least ${PEAK_DETECTION_STATE_BYTE_LENGTH}`);
+        }
+    }
+
+    private requirePeakDetection(): PlannedPeakDetection {
+        if (this.peakDetection === null) {
+            throw new Error('peak-detection: the plan has none');
+        }
+        return this.peakDetection;
     }
 
     /**
@@ -1038,15 +1171,29 @@ export class PresentationExecutor {
             pass.bindGroups[phase];
         const recording = pass.recording;
         switch (recording.kind) {
-            case 'compute': {
-                const lines = getBlackBarLineCounts(this.uniformValues.sourceWidth, this.uniformValues.sourceHeight);
-                recordComputePass(commandEncoder, pass, recording, bindGroup, lines.rows + lines.columns);
+            case 'compute':
+                recordComputePass(commandEncoder, pass, recording, bindGroup, this.getFrameWorkgroupCounts(pass, frame));
                 break;
-            }
             case 'render':
                 recordRenderPass(commandEncoder, pass, recording, bindGroup, phase, frame);
                 break;
         }
+    }
+
+    /**
+     * Returns the workgroups of a compute pass the frame's size decides: the black bar analysis's, a workgroup per row and per column of the source,
+     * and the peak detection's, one invocation per source pixel of the region the output presents, which object-fit and the crop leave.
+     */
+    private getFrameWorkgroupCounts(pass: ExecutorPass, frame: PresentationFrameInput): readonly [number, number, number] {
+        const values = this.uniformValues;
+        if (pass.index === this.peakDetection?.measurePassIndex) {
+            return getPeakDetectionWorkgroupCounts(
+                values.sourceWidth * Math.abs(frame.geometry.textureScaleX),
+                values.sourceHeight * Math.abs(frame.geometry.textureScaleY)
+            );
+        }
+        const lines = getBlackBarLineCounts(values.sourceWidth, values.sourceHeight);
+        return [ lines.rows + lines.columns, 1, 1 ];
     }
 
     /** Destroys every texture and buffer the executor owns; frame pool buffers belong to the GPU decode route. */
@@ -1126,12 +1273,7 @@ export class PresentationExecutor {
             }
         }
         for (const buffer of plan.buffers) {
-            const usage = GPUBufferUsage.STORAGE
-                | (uniformBufferIds.has(buffer.id) ? GPUBufferUsage.UNIFORM : 0)
-                | (buffer.indirect ? GPUBufferUsage.INDIRECT : 0)
-                // Frames that ask for the black bar analysis take a copy of its statistics
-                | (buffer.id === plan.blackBarAnalysis?.bufferId ? GPUBufferUsage.COPY_SRC : 0);
-            this.plannedBuffers.set(buffer.id, this.createOwnedBuffer(buffer.id, buffer.byteLength, usage));
+            this.plannedBuffers.set(buffer.id, this.createOwnedBuffer(buffer.id, buffer.byteLength, getPlannedBufferUsage(plan, buffer, uniformBufferIds)));
         }
     }
 
@@ -1181,8 +1323,8 @@ export class PresentationExecutor {
     }
 
     private createComputeDispatch(pass: PlannedPass, index: number): ComputeDispatch {
-        if (index === this.blackBarAnalysis?.passIndex) {
-            return { kind: 'source-lines' };
+        if (index === this.blackBarAnalysis?.passIndex || index === this.peakDetection?.measurePassIndex) {
+            return { kind: 'frame' };
         }
         if (pass.indirectBufferId !== null) {
             return { indirectBuffer: this.requireBuffer(pass.indirectBufferId), kind: 'indirect' };
@@ -1302,6 +1444,7 @@ export class PresentationExecutor {
             case 'external-frame-calibration':
                 return this.externalFrameCalibrationBuffer && { buffer: this.externalFrameCalibrationBuffer };
             case 'render-settings':
+            case 'render-settings-storage':
                 return this.renderSettingsBuffer && { buffer: this.renderSettingsBuffer };
             case 'sampler-linear':
                 return this.sampler;

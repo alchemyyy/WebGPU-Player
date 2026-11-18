@@ -154,4 +154,22 @@ describe('ToneMappingPanel', () => {
         panel.element.remove();
         expect(vi.mocked(context.session.setHDROutputEnabled)).toHaveBeenCalledWith(false);
     });
+    it('follows the presenter\'s peak detection and sends its toggle as a command of its own', () => {
+        const context = createFakePanelContext();
+        const panel = createToneMappingPanel(context);
+        const peakDetectionInput = panel.element.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')[1];
+        expect(peakDetectionInput.checked).toBe(true);
+        context.store.setState((state) => ({
+            presentation: { ...state.presentation, renderSettings: createHDRToSDRRenderSettings({ toneMapping: { peakDetection: false } }) }
+        }));
+        expect(peakDetectionInput.checked).toBe(false);
+
+        // A click fires change only on a connected checkbox
+        document.body.append(panel.element);
+        peakDetectionInput.click();
+        panel.element.remove();
+        expect(vi.mocked(context.session.setPeakDetectionEnabled)).toHaveBeenCalledWith(true);
+        // The toggle keeps the input peak automatic, which the settings command would end
+        expect(context.session.setRenderSettings).not.toHaveBeenCalled();
+    });
 });

@@ -27,6 +27,10 @@ import {
 } from 'webgpu-player/presentation/passes/PresentationExecutor';
 import type { TexturePresentationGeometry } from 'webgpu-player/presentation/PresentationGeometry';
 import { BLACK_BAR_STATISTICS_BYTE_LENGTH } from 'webgpu-player/presentation/passes/builtin/BlackBarAnalysisPass';
+import {
+    PEAK_DETECTION_ACCUMULATION_BYTE_LENGTH,
+    PEAK_DETECTION_STATE_BYTE_LENGTH
+} from 'webgpu-player/presentation/passes/builtin/PeakDetectionPass';
 import { BYTES_PER_WORD } from 'webgpu-player/presentation/WebGPUConstants';
 import { RENDER_SETTINGS_UNIFORM_BYTE_LENGTH } from 'webgpu-player/presentation/RenderSettings';
 import { DOLBY_VISION_RPU_SCHEMA_BYTE_LENGTH } from 'webgpu-player/demux/dolby-vision/DolbyVisionRPUParser';
@@ -101,6 +105,7 @@ type RecordedBufferCopy = {
 };
 
 type CommandEncoderHarness = {
+    clears: MockBuffer[]
     copies: RecordedBufferCopy[]
     encoder: GPUCommandEncoder
     passes: RecordedPass[]
@@ -111,6 +116,8 @@ type DeviceHarness = {
     bindGroups: MockDescribed<GPUBindGroupDescriptor>[]
     bufferWrites: BufferWrite[]
     buffers: MockBuffer[]
+    /** The command encoders the executor created itself */
+    commandEncoders: CommandEncoderHarness[]
     compilationMessages: Map<string, GPUCompilationMessage[]>
     computePipelines: MockDescribed<GPUComputePipelineDescriptor>[]
     device: GPUDevice
@@ -119,6 +126,8 @@ type DeviceHarness = {
     pipelineLayouts: MockDescribed<GPUPipelineLayoutDescriptor>[]
     renderPipelines: MockDescribed<GPURenderPipelineDescriptor>[]
     sampler: object
+    /** The command buffers the executor submitted itself */
+    submissions: object[]
     textureWrites: TextureWrite[]
     textures: MockTexture[]
 };
@@ -222,6 +231,10 @@ const WORKGROUP_COUNTS: readonly [number, number, number] = [ 4, 2, 1 ];
 const INDIRECT_ARGUMENTS_BYTE_LENGTH = 12;
 const STATE_BYTE_LENGTH = 64;
 const BLACK_BAR_BUFFER_ID = 'black-bars';
+const PEAK_ACCUMULATION_BUFFER_ID = 'peak-accumulation';
+const PEAK_STATE_BUFFER_ID = 'peak-state';
+// The peak detection's workgroups over the region GEOMETRY presents, 16x16 source pixels each: 1440x540 of the 1920x1080 source
+const PEAK_DETECTION_WORKGROUP_COUNTS = [ 90, 34, 1 ];
 // A linear 3D LUT and a nearest table of 32-bit floats, which repeats
 const LUT_PASS_TEXTURE: PlannedPassTexture = { dimension: '3d', edge: 'clamp', filter: 'linear', format: 'rgba16float', id: 'lut', size: [ 17, 17, 17 ] };
 const WEIGHTS_PASS_TEXTURE: PlannedPassTexture = { dimension: '2d', edge: 'repeat', filter: 'nearest', format: 'rgba32float', id: 'weights', size: [ 5, 648, 1 ] };
@@ -272,12 +285,14 @@ function createDeviceHarness(): DeviceHarness {
         bindGroups: [],
         bufferWrites: [],
         buffers: [],
+        commandEncoders: [],
         compilationMessages: new Map<string, GPUCompilationMessage[]>(),
         computePipelines: [],
         externalTextures: [],
         pipelineLayouts: [],
         renderPipelines: [],
         sampler: { label: 'sampler' },
+        submissions: [],
         textureWrites: [],
         textures: []
     };
@@ -334,10 +349,18 @@ function createDeviceHarness(): DeviceHarness {
             harness.textures.push(texture);
             return texture;
         }),
+        createCommandEncoder: vi.fn(() => {
+            const commandEncoder = createCommandEncoderHarness();
+            harness.commandEncoders.push(commandEncoder);
+            return commandEncoder.encoder;
+        }),
         features: new Set<string>(),
         importExternalTexture,
         limits: { maxTextureDimension2D: MAXIMUM_TEXTURE_DIMENSION },
         queue: {
+            submit: vi.fn((commandBuffers: object[]) => {
+                harness.submissions.push(...commandBuffers);
+            }),
             writeBuffer: vi.fn((buffer: MockBuffer, bufferOffset: number, data: ArrayBuffer, dataOffset = 0, size?: number) => {
                 const byteLength = size ?? data.byteLength - dataOffset;
                 harness.bufferWrites.push({ buffer, bufferOffset, bytes: data.slice(dataOffset, dataOffset + byteLength) });
@@ -352,6 +375,7 @@ function createDeviceHarness(): DeviceHarness {
 
 function createCommandEncoderHarness(): CommandEncoderHarness {
     const passes: RecordedPass[] = [];
+    const clears: MockBuffer[] = [];
     const copies: RecordedBufferCopy[] = [];
     const encoder = {
         beginComputePass: () => {
@@ -405,11 +429,15 @@ function createCommandEncoderHarness(): CommandEncoderHarness {
                 }
             };
         },
+        clearBuffer: (buffer: MockBuffer): void => {
+            clears.push(buffer);
+        },
         copyBufferToBuffer: (source: MockBuffer, sourceOffset: number, destination: MockBuffer, destinationOffset: number, size: number): void => {
             copies.push({ destination, destinationOffset, size, source, sourceOffset });
-        }
+        },
+        finish: (): object => ({ label: 'command buffer' })
     } as unknown as GPUCommandEncoder;
-    return { copies, encoder, passes };
+    return { clears, copies, encoder, passes };
 }
 
 function createCompilationMessage(type: GPUCompilationMessageType, lineNum: number, linePos: number, message: string): GPUCompilationMessage {
@@ -427,6 +455,7 @@ function createPlan(plan: Partial<PresentationPlan>): PresentationPlan {
         parameterSets: [],
         passTextures: [],
         passes: [],
+        peakDetection: null,
         report: { activePasses: [], inactivePasses: [] },
         sourceKind: 'external',
         textures: [],
@@ -475,6 +504,8 @@ function createFrameInput(source: PresentationFrameSource, newFrame = true): Pre
         frameDurationMicroseconds: 0,
         geometry: GEOMETRY,
         newFrame,
+        peakDetection: false,
+        peakDetectionReadback: null,
         refreshMicroseconds: 0,
         skippedFrameCount: SKIPPED_FRAME_COUNT,
         source,
@@ -638,6 +669,50 @@ function encodeFrame(executor: PresentationExecutor, frame: PresentationFrameInp
     const commandEncoder = createCommandEncoderHarness();
     executor.encode(commandEncoder.encoder, frame);
     return commandEncoder.passes;
+}
+
+/** Returns a plan whose peak detection, its measurement over the source and its single-invocation reduction, comes before the frame's passes. */
+function createPeakDetectionPlan(framePasses: readonly PlannedPass[], textures: readonly PlannedTexture[] = []): PresentationPlan {
+    return createPlan({
+        buffers: [
+            { byteLength: PEAK_DETECTION_ACCUMULATION_BYTE_LENGTH, id: PEAK_ACCUMULATION_BUFFER_ID, indirect: false, persistent: false },
+            { byteLength: PEAK_DETECTION_STATE_BYTE_LENGTH, id: PEAK_STATE_BUFFER_ID, indirect: false, persistent: true }
+        ],
+        passes: [
+            createComputePass('Peak detection', {
+                bindings: [
+                    { binding: 0, kind: 'presentation' },
+                    { binding: 1, kind: 'engine', resource: 'external-texture' },
+                    { access: 'storage', binding: 2, bufferId: PEAK_ACCUMULATION_BUFFER_ID, kind: 'buffer' }
+                ],
+                workgroupCounts: null
+            }),
+            createComputePass('Peak reduction', {
+                bindings: [
+                    { binding: 0, kind: 'presentation' },
+                    { binding: 1, kind: 'engine', resource: 'render-settings-storage' },
+                    { access: 'read-only-storage', binding: 2, bufferId: PEAK_ACCUMULATION_BUFFER_ID, kind: 'buffer' },
+                    { access: 'storage', binding: 3, bufferId: PEAK_STATE_BUFFER_ID, kind: 'buffer' }
+                ],
+                coordinateMapping: 'identity',
+                workgroupCounts: [ 1, 1, 1 ]
+            }),
+            ...framePasses
+        ],
+        peakDetection: { accumulationBufferId: PEAK_ACCUMULATION_BUFFER_ID, measurePassIndex: 0, reducePassIndex: 1, stateBufferId: PEAK_STATE_BUFFER_ID },
+        textures: [ ...textures ],
+        usesRenderSettings: true
+    });
+}
+
+/** Names a frame's recorded passes: the peak measurement by its dispatch over the presented region, the reduction by its single workgroup. */
+function describePeakDetectionPasses(passes: readonly RecordedPass[]): string[] {
+    return passes.map((pass: RecordedPass): string => {
+        if (pass.kind === 'render') {
+            return 'render';
+        }
+        return pass.directDispatches[0]?.join() === PEAK_DETECTION_WORKGROUP_COUNTS.join() ? 'measure' : 'reduce';
+    });
 }
 
 const PLANE_BINDINGS: readonly PlannedBinding[] = [
@@ -1553,6 +1628,133 @@ describe('PresentationExecutor', () => {
         const plainExecutor = await PresentationExecutor.create(harness.device, createPlan({ passes: [ outputPass ] }));
         expect(() => plainExecutor.encode(createCommandEncoderHarness().encoder, { ...createExternalFrameInput(), blackBarReadback: readback }))
             .toThrow('black-bar-analysis');
+    });
+
+    it('runs the peak detection only for a frame that asks for it, before the frame\'s passes, from a cleared accumulation, and copies its state', async () => {
+        const harness = createDeviceHarness();
+        const outputPass = createRenderPass('Output', {
+            bindings: [ { binding: 0, kind: 'engine', resource: 'external-texture' }, { binding: 1, kind: 'engine', resource: 'render-settings' } ]
+        });
+        const executor = await PresentationExecutor.create(harness.device, createPeakDetectionPlan([ outputPass ]));
+        const accumulation = findBuffer(harness, PEAK_ACCUMULATION_BUFFER_ID);
+        const state = findBuffer(harness, PEAK_STATE_BUFFER_ID);
+        const renderSettings = findBuffer(harness, 'Presentation render settings');
+        expect(accumulation.descriptor.usage).toBe(GPU_BUFFER_USAGE.STORAGE | GPU_BUFFER_USAGE.COPY_DST);
+        expect(state.descriptor.usage).toBe(GPU_BUFFER_USAGE.STORAGE | GPU_BUFFER_USAGE.COPY_SRC | GPU_BUFFER_USAGE.COPY_DST);
+        // The reduction writes the detected peak and average into the render settings the output pass reads
+        expect(renderSettings.descriptor.usage).toBe(GPU_BUFFER_USAGE.COPY_DST | GPU_BUFFER_USAGE.UNIFORM | GPU_BUFFER_USAGE.STORAGE);
+        const readback = { label: 'readback', size: PEAK_DETECTION_STATE_BYTE_LENGTH } as unknown as GPUBuffer;
+
+        const unmeasured = createCommandEncoderHarness();
+        executor.encode(unmeasured.encoder, createExternalFrameInput());
+        expect(unmeasured.passes.map((pass: RecordedPass): string => pass.kind)).toEqual([ 'render' ]);
+        expect(unmeasured.clears).toEqual([]);
+
+        const measured = createCommandEncoderHarness();
+        executor.encode(measured.encoder, { ...createExternalFrameInput(), peakDetection: true, peakDetectionReadback: readback });
+        expect(measured.passes.map((pass: RecordedPass): string => pass.kind)).toEqual([ 'compute', 'compute', 'render' ]);
+        expect(getComputePass(measured.passes, 0).directDispatches).toEqual([ PEAK_DETECTION_WORKGROUP_COUNTS ]);
+        expect(getComputePass(measured.passes, 1).directDispatches).toEqual([ [ 1, 1, 1 ] ]);
+        expect(getComputePass(measured.passes, 1).bindGroup?.descriptor.entries).toContainEqual({ binding: 1, resource: { buffer: renderSettings } });
+        expect(measured.clears).toEqual([ accumulation ]);
+        expect(measured.copies).toEqual([ { destination: readback, destinationOffset: 0, size: PEAK_DETECTION_STATE_BYTE_LENGTH, source: state, sourceOffset: 0 } ]);
+
+        // A history reset starts the smoothed state over at the next measured frame only
+        executor.resetHistory();
+        const reset = createCommandEncoderHarness();
+        executor.encode(reset.encoder, { ...createExternalFrameInput(), peakDetection: true });
+        expect(reset.clears).toEqual([ accumulation, state ]);
+        expect(reset.copies).toEqual([]);
+        const following = createCommandEncoderHarness();
+        executor.encode(following.encoder, { ...createExternalFrameInput(), peakDetection: true });
+        expect(following.clears).toEqual([ accumulation ]);
+
+        // A readback too small for the state, one for a frame that measures nothing, or a plan without the detection is refused
+        const smallReadback = { label: 'small readback', size: PEAK_DETECTION_STATE_BYTE_LENGTH - BYTES_PER_WORD } as unknown as GPUBuffer;
+        expect(() => executor.encode(createCommandEncoderHarness().encoder, { ...createExternalFrameInput(), peakDetection: true, peakDetectionReadback: smallReadback }))
+            .toThrow(RangeError);
+        expect(() => executor.encode(createCommandEncoderHarness().encoder, { ...createExternalFrameInput(), peakDetectionReadback: readback }))
+            .toThrow('peak-detection');
+        const plainExecutor = await PresentationExecutor.create(harness.device, createPlan({ passes: [ outputPass ], usesRenderSettings: true }));
+        const plainRenderSettings = harness.buffers.filter((buffer: MockBuffer): boolean => buffer.label === 'Presentation render settings').at(-1);
+        expect(plainRenderSettings?.descriptor.usage).toBe(GPU_BUFFER_USAGE.COPY_DST | GPU_BUFFER_USAGE.UNIFORM);
+        expect(() => plainExecutor.encode(createCommandEncoderHarness().encoder, { ...createExternalFrameInput(), peakDetection: true }))
+            .toThrow('peak-detection: the plan has none');
+    });
+
+    it('keeps the tone mapping of the last measured frame through redraws: a redraw or a draw from history writes the state without measuring', async () => {
+        const harness = createDeviceHarness();
+        const executor = await PresentationExecutor.create(harness.device, createPeakDetectionPlan([
+            createRenderPass('Producer', {
+                bindings: [ { binding: 0, kind: 'engine', resource: 'external-texture' } ],
+                coordinateMapping: 'identity',
+                target: { kind: 'texture', textureId: 'history' }
+            }),
+            createRenderPass('Output', {
+                bindings: [
+                    { access: 'sampled', binding: 0, historyOffset: 0, kind: 'texture', textureId: 'history' },
+                    { binding: 1, kind: 'engine', resource: 'render-settings' }
+                ],
+                inputTextureId: 'history'
+            })
+        ], [ createTexture('history', {}) ]));
+        const accumulation = findBuffer(harness, PEAK_ACCUMULATION_BUFFER_ID);
+        const state = findBuffer(harness, PEAK_STATE_BUFFER_ID);
+        const record = (frame: Partial<PresentationFrameInput>): CommandEncoderHarness => {
+            const commandEncoder = createCommandEncoderHarness();
+            executor.encode(commandEncoder.encoder, { ...createExternalFrameInput(false), peakDetection: true, ...frame });
+            return commandEncoder;
+        };
+
+        // The first frame with a source measures even as a redraw, as a replaced plan's first draw of a paused frame does
+        expect(describePeakDetectionPasses(record({}).passes)).toEqual([ 'measure', 'reduce', 'render', 'render' ]);
+        expect(describePeakDetectionPasses(record({ newFrame: true }).passes)).toEqual([ 'measure', 'reduce', 'render', 'render' ]);
+        // A redraw and a draw from history clear the accumulation and reduce it, which keeps the state and writes it into the settings again
+        const redraw = record({});
+        expect(describePeakDetectionPasses(redraw.passes)).toEqual([ 'reduce', 'render', 'render' ]);
+        expect(redraw.clears).toEqual([ accumulation ]);
+        const historyDraw = record({ source: null });
+        expect(describePeakDetectionPasses(historyDraw.passes)).toEqual([ 'reduce', 'render' ]);
+        expect(historyDraw.clears).toEqual([ accumulation ]);
+
+        // After a history reset the next draw clears the state, and the first frame with a source measures again
+        executor.resetHistory();
+        const resetDraw = record({ source: null });
+        expect(describePeakDetectionPasses(resetDraw.passes)).toEqual([ 'reduce', 'render' ]);
+        expect(resetDraw.clears).toEqual([ accumulation, state ]);
+        expect(describePeakDetectionPasses(record({}).passes)).toEqual([ 'measure', 'reduce', 'render', 'render' ]);
+    });
+
+    it('takes over a replaced executor\'s smoothed state on the same device once it measured since its last history reset', async () => {
+        const harness = createDeviceHarness();
+        const outputPass = createRenderPass('Output', {
+            bindings: [ { binding: 0, kind: 'engine', resource: 'external-texture' }, { binding: 1, kind: 'engine', resource: 'render-settings' } ]
+        });
+        const previous = await PresentationExecutor.create(harness.device, createPeakDetectionPlan([ outputPass ]));
+        const previousState = findBuffer(harness, PEAK_STATE_BUFFER_ID);
+        const replacement = await PresentationExecutor.create(harness.device, createPeakDetectionPlan([ outputPass ]));
+        const replacementState = harness.buffers.filter((buffer: MockBuffer): boolean => buffer.label === PEAK_STATE_BUFFER_ID).at(-1);
+
+        // Nothing measured yet: nothing to take over, so the replacement's first frame measures
+        replacement.adoptPeakDetectionState(previous);
+        expect(harness.submissions).toEqual([]);
+
+        encodeFrame(previous, { ...createExternalFrameInput(), peakDetection: true });
+        replacement.adoptPeakDetectionState(previous);
+        expect(harness.submissions).toHaveLength(1);
+        expect(harness.commandEncoders.at(-1)?.copies).toEqual([
+            { destination: replacementState, destinationOffset: 0, size: PEAK_DETECTION_STATE_BYTE_LENGTH, source: previousState, sourceOffset: 0 }
+        ]);
+        // The taken-over state already holds a measurement, so a redraw of the paused frame only writes it into the settings
+        expect(describePeakDetectionPasses(encodeFrame(replacement, { ...createExternalFrameInput(false), peakDetection: true }))).toEqual([ 'reduce', 'render' ]);
+
+        // A history reset since the last measurement, or a plan without the detection, takes nothing over
+        previous.resetHistory();
+        const afterReset = await PresentationExecutor.create(harness.device, createPeakDetectionPlan([ outputPass ]));
+        afterReset.adoptPeakDetectionState(previous);
+        const plain = await PresentationExecutor.create(harness.device, createPlan({ passes: [ outputPass ], usesRenderSettings: true }));
+        plain.adoptPeakDetectionState(replacement);
+        expect(harness.submissions).toHaveLength(1);
     });
 
     it('writes render settings and the RPU only when the plan binds them', async () => {

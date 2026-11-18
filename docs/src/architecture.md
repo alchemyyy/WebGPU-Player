@@ -194,7 +194,7 @@ The backing size is the CSS size times the device pixel ratio, capped by `maxTex
 - Every route presents through the pipeline in `src/presentation/passes/`.
 - A route's built-in chain is its fixed signal, which reads the source and reconstructs Dolby Vision, and its default color functions: transfer decode, tone mapping, output encode, display controls, and dither.
 - `planPresentation` arranges the chain and any user passes into GPU passes.
-  Without user passes every route is one pass, which renders exactly as the legacy fused shaders did.
+  Without user passes every route is one pass, which renders exactly as the legacy fused shaders did, besides the compute passes of the black bar analysis and the peak detection while they apply.
 - `PresentationExecutor` owns a plan's pipelines, textures, history rings, and bind groups.
   A frame costs one uniform write, the source's import or upload, and one encode per pass, and the presenter submits once.
 - A new plan compiles while the previous executor keeps presenting, and replaces it when ready.
@@ -304,6 +304,23 @@ The backing size is the CSS size times the device pixel ratio, capped by `maxTex
 - The presenter publishes on every layout it computes that differs from the last one it published, never per frame: a resize or fullscreen change, a change of object-fit or object-position, a new source size, and a new crop.
   Layout changes recompute while paused too, as they redraw the paused frame, so the handler fires then as well.
   Ending a session, a fallback, or removing the canvas publishes null.
+
+### Peak detection
+
+- An HDR-to-SDR PQ route measures each frame's scene peak and average on the GPU, as libplacebo's peak detection and mpv's `--hdr-compute-peak` do, while `toneMapping.peakDetection` is on, its default, and the input peak follows the source (`automaticInputPeakNits`); see [Decisions](decisions.md#video-decode-and-dolby-vision).
+  Either turned off builds a plan without it, as does a route that reads no PQ.
+- The presenter asks for it (`PlanRequest.peakDetection`) with the source primaries' luminance coefficients, BT.2020's on the Dolby Vision routes, whose RPU reconstructs BT.2020 PQ.
+  The planner places two compute passes before every other pass (`passes/builtin/PeakDetectionPass.ts`, `PresentationPlan.peakDetection`):
+  - `Presentation peak detection` runs one invocation per source pixel of the region the output presents, which object-fit and the black bar crop leave, in 16x16 workgroups, reads the route's signal there, and adds each workgroup's mean PQ luminance, its maximum maxRGB, and with a percentile its maxRGB histogram into 12 slices of the accumulation buffer, which every measured frame clears first;
+  - `Presentation peak reduction`, one invocation, reduces the slices, smooths them into the state buffer the plan keeps across frames, and writes the smoothed peak as the input peak, at least paper white, and the smoothed average as the scene average into the render settings, with the scene statistics mode an L1 or HDR10+ frame's statistics set, through the `render-settings-storage` binding of the render settings buffer.
+  The frame's own passes then tone-map from it in the same submission; the tone mapping code reads the render settings as for any frame with scene statistics.
+- A frame runs it only when its metadata leaves it to the detection (`PresentationFrameInput.peakDetection`): a frame with HDR10+ or a Dolby Vision L1 tone-maps from them, as the presenter writes them into the render settings, and measures nothing.
+- Only a new frame, or the first frame with a source since the state started over, measures; every other draw of a frame that tone-maps from the detection, a redraw for a resize, an OSD, or a settings change, and a draw from history, clears the accumulation and runs only the reduction, which keeps the state of an empty accumulation and writes it into the settings again, over the static settings the CPU may have written since.
+  The state starts over on a history reset, a seek or a new generation among them, and a new executor takes over its predecessor's state when that measured since its last reset (`PresentationExecutor.adoptPeakDetectionState`), so a plan rebuilt while paused tone-maps the paused frame as before.
+  Until a frame measured, the reduction leaves the static settings.
+- A deinterlacing plan measures the newest frame, the one after the frame it shows, which the smoothing makes harmless.
+- The smoothed state copies into a readback for a frame with a source that runs the detection while the last readback is free, and telemetry's `detectedPeakNits` and `detectedAverageNits` show it once mapped, null while frames tone-map from anything else; `appliedPeakDetectionFrameCount` counts the frames that tone-mapped from the detection.
+- Authorization measures nothing, so the static settings alone decide its output.
 
 ## Transitions
 

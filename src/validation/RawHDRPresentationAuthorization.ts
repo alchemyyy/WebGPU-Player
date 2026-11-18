@@ -530,12 +530,15 @@ export function encodeAuthorizationFrame(
 ): GPUCommandBuffer {
     const commandEncoder = device.createCommandEncoder({ label });
     executor.encode(commandEncoder, {
-        // Authorization renders the fixed chain, which analyzes no black bars and no field state changes
+        // Authorization renders the fixed chain, which analyzes no black bars and no field state changes, and measures no peak, so the static
+        // render settings alone decide its output
         blackBarReadback: null,
         fieldState: PRESENTATION_FIELD_STATE.none,
         frameDurationMicroseconds: 0,
         geometry: createIdentityGeometry(targetTexture.width, targetTexture.height),
         newFrame: true,
+        peakDetection: false,
+        peakDetectionReadback: null,
         refreshMicroseconds: 0,
         skippedFrameCount: 0,
         source,
